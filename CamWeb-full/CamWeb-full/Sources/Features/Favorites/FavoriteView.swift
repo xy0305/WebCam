@@ -22,7 +22,7 @@ struct FavoriteView: View {
 
                 let names = mergedNames
                 if names.isEmpty {
-                    ContentUnavailableView("暂无收藏", systemImage: "heart", description: Text("播放页点爱心即可收藏"))
+                    Text("暂无收藏，播放页点爱心即可收藏").foregroundStyle(.secondary).padding()
                 } else {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 14) {
