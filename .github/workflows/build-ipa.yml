@@ -27,14 +27,16 @@ jobs:
 
       - name: Build (unsigned)
         run: |
+          mkdir -p "$PWD/build-out"
           xcodebuild \
             -project CamWeb.xcodeproj \
             -scheme CamWeb \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
+            -derivedDataPath "$PWD/derived" \
             -resolvePackageDependencies \
+            CONFIGURATION_BUILD_DIR="$PWD/build-out" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -43,17 +45,19 @@ jobs:
 
       - name: Package IPA
         run: |
-          echo "Looking for .app"
-          find build -name '*.app' -type d || true
-          APP="$(find build -path '*Release-iphoneos/*.app' -type d | head -n 1)"
-          if [ -z "$APP" ]; then
-            APP="$(find build -name '*.app' -type d | head -n 1)"
-          fi
-          test -n "$APP" && test -d "$APP" || { echo "Build product not found"; ls -R build/Build/Products || ls -R build; exit 1; }
+          echo "=== build-out ==="
+          ls -la build-out || true
+          echo "=== find app ==="
+          find . derived build-out "$HOME/Library/Developer/Xcode/DerivedData" -name '*.app' -type d 2>/dev/null | head -50
+          APP=""
+          if [ -d build-out/CamWeb.app ]; then APP="build-out/CamWeb.app"; fi
+          if [ -z "$APP" ]; then APP="$(find build-out -name '*.app' -type d | head -n 1)"; fi
+          if [ -z "$APP" ]; then APP="$(find derived -name '*.app' -type d | head -n 1)"; fi
+          test -n "$APP" && test -d "$APP" || { echo "still no app"; exit 1; }
           echo "Using $APP"
           rm -rf Payload
           mkdir -p Payload
-          cp -R "$APP" Payload/
+          cp -R "$APP" "Payload/"
           zip -qry CamWeb-unsigned.ipa Payload
           ls -lh CamWeb-unsigned.ipa
 
