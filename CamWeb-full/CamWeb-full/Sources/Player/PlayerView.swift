@@ -175,7 +175,8 @@ struct PlayerView: View {
     private var playerOptions: KSOptions {
         let o = KSOptions()
         o.appendHeader(APIClient.commonHeaders)
-        o.isAutoPlay = !paused
+        KSOptions.isAutoPlay = !paused
+        o.videoAdaptable = false
         o.canStartPictureInPictureAutomaticallyFromInline = true
         return o
     }
@@ -261,7 +262,8 @@ struct MiniPlayerView: View {
     private var miniOptions: KSOptions {
         let o = KSOptions()
         o.appendHeader(APIClient.commonHeaders)
-        o.isAutoPlay = true
+        KSOptions.isAutoPlay = true
+        o.videoAdaptable = false
         o.canStartPictureInPictureAutomaticallyFromInline = true
         return o
     }
