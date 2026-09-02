@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 
-/// Downloads live HLS segments and appends them as-is (source copy, no re-encode).
 @MainActor
 final class HLSRecorder: ObservableObject {
     @Published var isRecording = false
@@ -31,8 +30,35 @@ final class HLSRecorder: ObservableObject {
         bytesText = "0 MB"
         startTimer()
         UIApplication.shared.isIdleTimerDisabled = true
-        task = Task.detached { [weak self] in
-            await Self.pump(username: username, startURL: hlsURL, recorder: self)
+
+        let name = username
+        let startURL = hlsURL
+        task = Task { [weak self] in
+            var playlistURL = startURL
+            var seen = Set<String>()
+            while let self, !Task.isCancelled, self.isRecording {
+                do {
+                    var current = playlistURL
+                    var text = try await HLSFetcher.text(current)
+                    if text.contains("#EXT-X-STREAM-INF"), let variant = HLSFetcher.pickVariant(text, base: current) {
+                        current = variant
+                        playlistURL = variant
+                        text = try await HLSFetcher.text(current)
+                    }
+                    for seg in HLSFetcher.parseSegments(text, base: current) where !seen.contains(seg.absoluteString) {
+                        seen.insert(seg.absoluteString)
+                        let data = try await HLSFetcher.data(seg)
+                        self.append(data)
+                    }
+                } catch {
+                    if Task.isCancelled { break }
+                    if let fresh = try? await StreamSource.resolve(username: name) {
+                        playlistURL = fresh.hlsURL
+                        seen.removeAll()
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+            }
         }
     }
 
@@ -45,16 +71,16 @@ final class HLSRecorder: ObservableObject {
         try? fileHandle?.close()
         fileHandle = nil
         if written > 0 {
-            alert = "Saved source stream to Recordings."
+            alert = "已保存到录像"
         } else {
             if let outputURL { try? FileManager.default.removeItem(at: outputURL) }
-            alert = "No media was written."
+            alert = "没有写到数据"
         }
         outputURL = nil
         written = 0
     }
 
-    fileprivate func append(_ data: Data) {
+    private func append(_ data: Data) {
         fileHandle?.write(data)
         written += Int64(data.count)
         bytesText = String(format: "%.1f MB", Double(written) / 1_048_576)
@@ -81,46 +107,18 @@ final class HLSRecorder: ObservableObject {
         f.dateFormat = "yyyyMMdd_HHmmss"
         return f.string(from: Date())
     }
+}
 
-    nonisolated private static func pump(username: String, startURL: URL, recorder: HLSRecorder?) async {
-        var playlistURL = startURL
-        var seen = Set<String>()
-        while !Task.isCancelled {
-            do {
-                var current = playlistURL
-                var text = try await fetchText(current)
-                if text.contains("#EXT-X-STREAM-INF") {
-                    if let variant = pickVariant(text, base: current) {
-                        current = variant
-                        playlistURL = variant
-                        text = try await fetchText(current)
-                    }
-                }
-                let segs = parseSegments(text, base: current)
-                for seg in segs where !seen.contains(seg.absoluteString) {
-                    seen.insert(seg.absoluteString)
-                    let data = try await fetchData(seg)
-                    await MainActor.run { recorder?.append(data) }
-                }
-            } catch {
-                if Task.isCancelled { break }
-                if let fresh = try? await StreamSource.resolve(username: username) {
-                    playlistURL = fresh.hlsURL
-                    seen.removeAll()
-                }
-            }
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-        }
+enum HLSFetcher {
+    static func text(_ url: URL) async throws -> String {
+        String(data: try await data(url), encoding: .utf8) ?? ""
     }
 
-    nonisolated private static func fetchText(_ url: URL) async throws -> String {
-        let data = try await fetchData(url)
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-
-    nonisolated private static func fetchData(_ url: URL) async throws -> Data {
+    static func data(_ url: URL) async throws -> Data {
         var req = URLRequest(url: url)
-        for (k, v) in APIClient.commonHeaders { req.setValue(v, forHTTPHeaderField: k) }
+        for (k, v) in APIClient.commonHeaders {
+            req.setValue(v, forHTTPHeaderField: k)
+        }
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw StreamSourceError.badResponse
@@ -128,12 +126,11 @@ final class HLSRecorder: ObservableObject {
         return data
     }
 
-    nonisolated private static func pickVariant(_ playlist: String, base: URL) -> URL? {
+    static func pickVariant(_ playlist: String, base: URL) -> URL? {
         var bestURL: URL?
         var bestBW = -1
-        let lines = playlist.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var pendingBW = 0
-        for line in lines {
+        for line in playlist.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
             if line.hasPrefix("#EXT-X-STREAM-INF") {
                 pendingBW = 0
                 if let r = line.range(of: "BANDWIDTH=") {
@@ -150,7 +147,7 @@ final class HLSRecorder: ObservableObject {
         return bestURL
     }
 
-    nonisolated private static func parseSegments(_ playlist: String, base: URL) -> [URL] {
+    static func parseSegments(_ playlist: String, base: URL) -> [URL] {
         playlist.split(whereSeparator: \.isNewline).compactMap { raw in
             let line = raw.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty, !line.hasPrefix("#") else { return nil }
