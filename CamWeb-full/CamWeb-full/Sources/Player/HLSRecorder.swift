@@ -10,6 +10,7 @@ final class RecordingManager: ObservableObject {
     @Published var banner: String?
 
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
+    private var keepAlivePlayer: AVAudioPlayer?
 
     var activeUsernames: [String] { Array(sessions.keys).sorted() }
     var isAnyRecording: Bool { !sessions.isEmpty }
@@ -52,8 +53,10 @@ final class RecordingManager: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = isAnyRecording
         if isAnyRecording {
             extendBackground()
+            startKeepAliveAudio()
         } else {
             endBackground()
+            stopKeepAliveAudio()
         }
     }
 
@@ -69,6 +72,46 @@ final class RecordingManager: ObservableObject {
             UIApplication.shared.endBackgroundTask(bgTask)
             bgTask = .invalid
         }
+    }
+
+    /// iOS 后台网络会被掐，靠 UIBackgroundModes=audio + 静音循环把进程保住。
+    private func startKeepAliveAudio() {
+        guard keepAlivePlayer == nil else { return }
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? session.setActive(true)
+        if let url = Self.silentWavURL(),
+           let player = try? AVAudioPlayer(contentsOf: url) {
+            player.numberOfLoops = -1
+            player.volume = 0.01
+            player.prepareToPlay()
+            player.play()
+            keepAlivePlayer = player
+        }
+    }
+
+    private func stopKeepAliveAudio() {
+        keepAlivePlayer?.stop()
+        keepAlivePlayer = nil
+    }
+
+    private static func silentWavURL() -> URL? {
+        let dir = FileManager.default.temporaryDirectory
+        let url = dir.appendingPathComponent("camweb-keepalive.wav")
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        // 最小合法 WAV：44 字节头 + 0.1s 静音 PCM
+        var data = Data()
+        func ascii(_ s: String) { data.append(contentsOf: s.utf8) }
+        func le32(_ v: UInt32) { var x = v.littleEndian; Swift.withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
+        func le16(_ v: UInt16) { var x = v.littleEndian; Swift.withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
+        let sampleRate: UInt32 = 8000
+        let samples: UInt32 = 800
+        ascii("RIFF"); le32(36 + samples * 2); ascii("WAVE")
+        ascii("fmt "); le32(16); le16(1); le16(1); le32(sampleRate); le32(sampleRate * 2); le16(2); le16(16)
+        ascii("data"); le32(samples * 2)
+        data.append(Data(count: Int(samples * 2)))
+        try? data.write(to: url)
+        return url
     }
 }
 

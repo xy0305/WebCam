@@ -181,10 +181,16 @@ struct PlayerView: View {
                 .overlay(Capsule().stroke(Color.yellow.opacity(0.45), lineWidth: 1))
 
                 if let subject = displayRoom.roomSubject, !subject.isEmpty {
-                    Text(subject)
+                    Text(plainSubject(subject))
                         .font(.subheadline)
                         .foregroundStyle(Color(white: 0.55))
                         .lineLimit(3)
+                }
+
+                if !displayRoom.hashtags.isEmpty {
+                    FlowTags(tags: displayRoom.hashtags) { tag in
+                        appState.openTag(tag)
+                    }
                 }
 
                 Spacer()
@@ -713,5 +719,75 @@ struct MiniPlayerView: View {
         o.videoAdaptable = false
         o.canStartPictureInPictureAutomaticallyFromInline = true
         return o
+    }
+}
+
+private func plainSubject(_ text: String) -> String {
+    text.split(whereSeparator: { $0.isWhitespace })
+        .filter { !$0.hasPrefix("#") }
+        .joined(separator: " ")
+}
+
+private struct FlowTags: View {
+    let tags: [String]
+    var onTap: (String) -> Void
+
+    var body: some View {
+        TagFlowLayout(spacing: 8) {
+            ForEach(tags, id: \.self) { tag in
+                Button {
+                    onTap(tag)
+                } label: {
+                    Text("#\(tag)")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+private struct TagFlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowH: CGFloat = 0
+        var maxX: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > 0, x + s.width > maxWidth {
+                x = 0
+                y += rowH + spacing
+                rowH = 0
+            }
+            x += s.width + spacing
+            rowH = max(rowH, s.height)
+            maxX = max(maxX, x - spacing)
+        }
+        return CGSize(width: maxWidth.isFinite ? maxWidth : maxX, height: y + rowH)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowH: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + s.width > bounds.maxX {
+                x = bounds.minX
+                y += rowH + spacing
+                rowH = 0
+            }
+            v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
+            x += s.width + spacing
+            rowH = max(rowH, s.height)
+        }
     }
 }

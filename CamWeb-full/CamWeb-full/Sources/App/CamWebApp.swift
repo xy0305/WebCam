@@ -58,8 +58,9 @@ final class AppState: ObservableObject {
     static let shared = AppState()
     @Published var acceptedAge: Bool
     @Published var tab: AppTab = .channels
-    @Published var groupTitle = "Default"
+    @Published var groupTitle = "频道"
     @Published var genderFilter = ""
+    @Published var keywordFilter = ""
     @Published var miniUsername: String?
     @Published var miniURL: URL?
     @Published var playingUsername: String?
@@ -88,6 +89,16 @@ final class AppState: ObservableObject {
     func closePlayer() {
         playingUsername = nil
         playingRoom = nil
+    }
+
+    func openTag(_ tag: String) {
+        let t = tag.trimmingCharacters(in: CharacterSet(charactersIn: "#")).lowercased()
+        guard !t.isEmpty else { return }
+        keywordFilter = t
+        groupTitle = "#\(t)"
+        genderFilter = ""
+        closePlayer()
+        tab = .channels
     }
 
     func acceptAge() {

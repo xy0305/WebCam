@@ -49,6 +49,26 @@ struct Room: Decodable, Identifiable, Hashable {
         return "\(n)"
     }
 
+    /// API tags + 房间标题里的 #hashtag
+    var hashtags: [String] {
+        var out: [String] = []
+        var seen = Set<String>()
+        func add(_ raw: String) {
+            let t = raw.trimmingCharacters(in: CharacterSet(charactersIn: "# \t"))
+                .lowercased()
+            guard t.count >= 2 else { return }
+            guard t.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }) else { return }
+            if seen.insert(t).inserted { out.append(t) }
+        }
+        tags?.forEach(add)
+        if let subject = roomSubject {
+            for part in subject.split(whereSeparator: { $0.isWhitespace || $0 == "," }) {
+                if part.hasPrefix("#") { add(String(part)) }
+            }
+        }
+        return out
+    }
+
     enum CodingKeys: String, CodingKey {
         case username
         case displayName = "display_name"

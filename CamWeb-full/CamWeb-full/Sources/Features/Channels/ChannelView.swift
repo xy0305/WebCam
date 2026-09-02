@@ -53,7 +53,7 @@ struct ChannelView: View {
                     .refreshable { await reload() }
                 }
             }
-            .navigationTitle(appState.genderFilter.isEmpty ? "频道" : appState.groupTitle)
+            .navigationTitle(appState.keywordFilter.isEmpty && appState.genderFilter.isEmpty ? "频道" : appState.groupTitle)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -69,12 +69,16 @@ struct ChannelView: View {
             }
             .searchable(text: $searchText, prompt: "搜索频道")
             .task { if rooms.isEmpty { await reload() } }
+            .onChange(of: appState.keywordFilter) { _, _ in
+                Task { await reload() }
+            }
             .overlay { if loading && rooms.isEmpty { ProgressView() } }
         }
     }
 
     private func applyFilter(_ gender: String, title: String) {
         appState.genderFilter = gender
+        appState.keywordFilter = ""
         appState.groupTitle = title
         Task { await reload() }
     }
@@ -86,7 +90,11 @@ struct ChannelView: View {
         reachedEnd = false
         defer { loading = false }
         do {
-            rooms = try await RoomAPI.fetchRooms(offset: 0, gender: emptyNil(appState.genderFilter))
+            rooms = try await RoomAPI.fetchRooms(
+                offset: 0,
+                gender: emptyNil(appState.genderFilter),
+                keywords: emptyNil(appState.keywordFilter)
+            )
             offset = rooms.count
             reachedEnd = rooms.isEmpty
         } catch {
@@ -99,7 +107,11 @@ struct ChannelView: View {
         loadingMore = true
         defer { loadingMore = false }
         do {
-            let more = try await RoomAPI.fetchRooms(offset: offset, gender: emptyNil(appState.genderFilter))
+            let more = try await RoomAPI.fetchRooms(
+                offset: offset,
+                gender: emptyNil(appState.genderFilter),
+                keywords: emptyNil(appState.keywordFilter)
+            )
             if more.isEmpty { reachedEnd = true }
             let exist = Set(rooms.map(\.username))
             rooms.append(contentsOf: more.filter { !exist.contains($0.username) })
