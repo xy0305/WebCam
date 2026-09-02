@@ -120,7 +120,7 @@ final class SwipeNavController: UINavigationController, UIGestureRecognizerDeleg
 }
 
 private struct NativeDismissKey: EnvironmentKey {
-    static let defaultValue: () -> Void = { AppState.shared.closePlayer() }
+    static let defaultValue: () -> Void = {}
 }
 
 extension EnvironmentValues {
