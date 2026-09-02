@@ -21,6 +21,7 @@ final class AuthManager: ObservableObject {
     private init() {}
 
     func restore() async {
+        CookieBridge.restoreSnapshot()
         await CookieBridge.syncWebKitToURLSession()
         if CookieBridge.hasSessionCookie() {
             if let name = UserDefaults.standard.string(forKey: accountKey), !name.isEmpty {
@@ -61,6 +62,7 @@ final class AuthManager: ObservableObject {
         account = Account(username: name, loggedInAt: Date())
         isLoggedIn = true
         continueAsGuest = false
+        CookieBridge.snapshot()
     }
 
     func fetchContextUsername() async -> String? {
