@@ -20,7 +20,7 @@ struct PlayerView: View {
     @State private var paused = false
     @State private var speed: Float = 1
     @State private var showSpeed = false
-    @StateObject private var recorder = HLSRecorder()
+    @ObservedObject private var recs = RecordingManager.shared
     @ObservedObject private var fav = FollowingStore.shared
 
     var body: some View {
@@ -51,16 +51,15 @@ struct PlayerView: View {
         .onTapGesture { showChrome.toggle() }
         .task { await resolve() }
         .onDisappear {
-            if recorder.isRecording { recorder.stop() }
             if layout != .mini { OrientationLock.set(.portrait) }
         }
         .alert("录制", isPresented: Binding(
-            get: { recorder.alert != nil },
-            set: { if !$0 { recorder.alert = nil } }
+            get: { recs.banner != nil },
+            set: { if !$0 { recs.banner = nil } }
         )) {
-            Button("好", role: .cancel) { recorder.alert = nil }
+            Button("好", role: .cancel) { recs.banner = nil }
         } message: {
-            Text(recorder.alert ?? "")
+            Text(recs.banner ?? "")
         }
         .confirmationDialog("倍速", isPresented: $showSpeed, titleVisibility: .visible) {
             Button("0.75x") { speed = 0.75 }
@@ -105,7 +104,7 @@ struct PlayerView: View {
             HStack(spacing: 10) {
                 iconBtn("pip.enter") { enterMini() }
                 iconBtn(fav.isFollowing(username) ? "heart.fill" : "heart") { fav.toggle(username) }
-                iconBtn(recorder.isRecording ? "stop.circle.fill" : "record.circle") { toggleRecord() }
+                iconBtn(recs.isRecording(username) ? "stop.circle.fill" : "record.circle") { toggleRecord() }
             }
         }
         .padding(.horizontal, 12)
@@ -119,7 +118,7 @@ struct PlayerView: View {
     private var bottomBar: some View {
         VStack(spacing: 10) {
             HStack {
-                Text(recorder.isRecording ? recorder.elapsedText : "LIVE")
+                Text(recs.session(for: username)?.elapsedText ?? (recs.isRecording(username) ? "REC" : "LIVE"))
                     .font(.system(.caption, design: .monospaced))
                 Rectangle()
                     .fill(Color.white.opacity(0.35))
@@ -127,7 +126,7 @@ struct PlayerView: View {
                     .overlay(alignment: .leading) {
                         Rectangle().fill(Color.pink).frame(width: 8, height: 3)
                     }
-                Text(recorder.isRecording ? recorder.bytesText : "00:00")
+                Text(recs.session(for: username)?.bytesText ?? "00:00")
                     .font(.system(.caption, design: .monospaced))
             }
             .padding(.horizontal, 12)
@@ -209,10 +208,8 @@ struct PlayerView: View {
     }
 
     private func toggleRecord() {
-        if recorder.isRecording {
-            recorder.stop()
-        } else if let stream {
-            recorder.start(username: username, hlsURL: stream.hlsURL)
+        if let stream {
+            recs.toggle(username: username, hlsURL: stream.hlsURL)
         }
     }
 }
