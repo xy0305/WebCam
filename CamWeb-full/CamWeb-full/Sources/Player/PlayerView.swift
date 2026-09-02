@@ -16,6 +16,7 @@ struct PlayerView: View {
     @State private var isLocked = false
     @State private var isPlaying = false
     @State private var isBuffering = false
+    @State private var hasStarted = false
     @State private var isVerticalLive = false
     @State private var autoHideTask: Task<Void, Never>?
     @ObservedObject private var recs = RecordingManager.shared
@@ -79,32 +80,33 @@ struct PlayerView: View {
             Color.black
 
             if let stream {
-                KSVideoPlayerView(
-                    coordinator: coordinator,
-                    url: stream.hlsURL,
-                    options: playerOptions,
-                    title: username
-                )
-            } else if loading {
-                ProgressView("解析直播流…")
+                KSVideoPlayer(coordinator: coordinator, url: stream.hlsURL, options: playerOptions)
+            }
+
+            if !hasStarted && errorText == nil {
+                ProgressView()
                     .tint(.white)
-                    .foregroundStyle(.white)
-            } else {
+                    .scaleEffect(1.15)
+            } else if stream == nil {
                 errorView
             }
 
             gestureLayer
 
-            if isMaskVisible && !isLocked {
+            if hasStarted && isMaskVisible && !isLocked {
                 topShadowGradient
                 bottomShadowGradient
             }
 
-            lockButton(isLandscape: isLandscape)
+            if hasStarted {
+                lockButton(isLandscape: isLandscape)
+            }
 
-            if isMaskVisible && !isLocked {
+            if hasStarted && isMaskVisible && !isLocked {
                 controlsLayer(isLandscape: isLandscape)
                     .transition(.opacity)
+            } else if !hasStarted {
+                loadingBackButton(isLandscape: isLandscape)
             }
         }
         .frame(height: height)
@@ -291,6 +293,26 @@ struct PlayerView: View {
             )
     }
 
+    private func loadingBackButton(isLandscape: Bool) -> some View {
+        VStack {
+            HStack {
+                Button { handleBack(isLandscape: isLandscape) } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .padding(10)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Spacer()
+            }
+            Spacer()
+        }
+        .padding(.top, 4)
+        .padding(.leading, isLandscape ? 25 : 0)
+    }
+
     // MARK: - 锁屏（左侧中部，始终可点）
 
     private func lockButton(isLandscape: Bool) -> some View {
@@ -386,8 +408,8 @@ struct PlayerView: View {
             }
             .padding(.top, 4)
 
-            // 中央暂停大按钮（加载中不显示）
-            if !isPlaying && !loading && !isBuffering && stream != nil {
+            // 中央暂停大按钮（首帧出来后、用户暂停时才显示）
+            if !isPlaying && !isBuffering && stream != nil {
                 Button {
                     coordinator.playerLayer?.play()
                     isPlaying = true
@@ -524,6 +546,9 @@ struct PlayerView: View {
         coordinator.onStateChanged = { layer, state in
             isPlaying = state.isPlaying
             isBuffering = state == .buffering || state == .preparing
+            if state.isPlaying || state == .readyToPlay || state == .paused {
+                hasStarted = true
+            }
             if state == .readyToPlay {
                 let size = layer.player.naturalSize
                 if size.width > 1, size.height > 1 {
@@ -581,6 +606,7 @@ struct PlayerView: View {
         loading = true
         errorText = nil
         coordinator.isMaskShow = false
+        hasStarted = false
         do { stream = try await StreamSource.resolve(username: username) }
         catch { errorText = error.localizedDescription; stream = nil }
         loading = false
