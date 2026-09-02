@@ -2,46 +2,42 @@ import SwiftUI
 
 struct FavoriteView: View {
     @EnvironmentObject var auth: AuthManager
+    @EnvironmentObject var appState: AppState
     @ObservedObject private var local = FollowingStore.shared
     @State private var remote: [Room] = []
     @State private var loading = false
 
-    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("收藏")
-                    .font(.system(size: 34, weight: .bold))
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                Text(auth.isLoggedIn ? "已登录，尝试同步官网关注" : "未登录，仅显示本机收藏")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-
+            Group {
                 let names = mergedNames
                 if names.isEmpty {
-                    Text("暂无收藏，播放页点爱心即可收藏").foregroundStyle(.secondary).padding()
+                    ContentUnavailableView {
+                        Label("暂无收藏", systemImage: "heart")
+                    } description: {
+                        Text("播放页点爱心即可收藏")
+                    }
                 } else {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(names, id: \.self) { name in
-                                NavigationLink(value: name) {
+                                Button {
+                                    appState.openPlayer(username: name)
+                                } label: {
                                     ChannelCard(room: remote.first(where: { $0.username == name }) ?? Room(username: name))
                                 }
                                 .buttonStyle(.plain)
                             }
                         }
                         .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                     }
                     .refreshable { await loadRemote() }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(Color.white)
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: String.self) { PlayerView(username: $0) }
+            .navigationTitle("收藏")
             .task { await loadRemote() }
         }
     }

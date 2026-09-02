@@ -7,21 +7,9 @@ struct RecordingsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("配置")
-                    .font(.system(size: 34, weight: .bold))
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                Text("离开播放页也会继续录。可同时录多路。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-
+            List {
                 if !recs.activeUsernames.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("正在录制 \(recs.activeUsernames.count) 路")
-                            .font(.headline)
-                            .padding(.horizontal, 16)
+                    Section("正在录制 \(recs.activeUsernames.count) 路") {
                         ForEach(recs.activeUsernames, id: \.self) { name in
                             HStack {
                                 Circle().fill(Color.red).frame(width: 8, height: 8)
@@ -36,17 +24,15 @@ struct RecordingsView: View {
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(.red)
                             }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 6)
                         }
                     }
-                    .padding(.bottom, 8)
                 }
 
-                if files.isEmpty && recs.activeUsernames.isEmpty {
-                    Text("没有录像，播放时点录制会保存到这里").foregroundStyle(.secondary).padding()
-                } else {
-                    List {
+                Section {
+                    if files.isEmpty {
+                        Text("没有录像，播放时点录制会保存到这里")
+                            .foregroundStyle(.secondary)
+                    } else {
                         ForEach(files, id: \.path) { url in
                             NavigationLink {
                                 KSVideoPlayerView(url: url, options: KSOptions(), title: url.lastPathComponent)
@@ -68,11 +54,11 @@ struct RecordingsView: View {
                             }
                         }
                     }
-                    .scrollContentBackground(.hidden)
+                } header: {
+                    Text("录像")
                 }
             }
-            .background(Color.white)
-            .toolbar(.hidden, for: .navigationBar)
+            .navigationTitle("录像")
             .onAppear { files = RecordingStore.list() }
             .onChange(of: recs.activeUsernames.count) { _, _ in
                 files = RecordingStore.list()

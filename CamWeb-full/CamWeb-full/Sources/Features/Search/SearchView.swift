@@ -1,64 +1,54 @@
 import SwiftUI
 
 struct SearchView: View {
+    @EnvironmentObject var appState: AppState
     @State private var query = ""
     @State private var results: [Room] = []
     @State private var searching = false
     @State private var errorText: String?
 
-    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("搜索")
-                    .font(.system(size: 34, weight: .bold))
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("用户名或关键词", text: $query)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.search)
-                        .onSubmit { Task { await search() } }
-                    if searching { ProgressView() }
-                }
-                .padding(12)
-                .background(Color(white: 0.93), in: Capsule())
-                .padding(.horizontal, 16)
-
-                if let name = sanitized {
-                    NavigationLink(value: name) {
-                        Text("直接播放 \(name)")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(14)
-                            .background(Color.pink, in: Capsule())
-                            .foregroundStyle(.white)
+            Group {
+                if results.isEmpty && !searching {
+                    ContentUnavailableView {
+                        Label("搜索主播", systemImage: "magnifyingglass")
+                    } description: {
+                        Text("输入用户名或关键词搜直播房间")
                     }
-                    .padding(.horizontal, 16)
-                }
-
-                if let errorText {
-                    Text(errorText).foregroundStyle(.red).padding(.horizontal, 16)
-                }
-
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 14) {
-                        ForEach(results) { room in
-                            NavigationLink(value: room.username) {
-                                ChannelCard(room: room)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 14) {
+                            ForEach(results) { room in
+                                Button {
+                                    appState.openPlayer(username: room.username)
+                                } label: {
+                                    ChannelCard(room: room)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                     }
-                    .padding(.horizontal, 16)
                 }
             }
-            .background(Color.white)
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: String.self) { PlayerView(username: $0) }
+            .navigationTitle("搜索")
+            .searchable(text: $query, prompt: "用户名或关键词")
+            .onSubmit(of: .search) { Task { await search() } }
+            .overlay { if searching { ProgressView() } }
+            .toolbar {
+                if let name = sanitized {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("播放 \(name)") {
+                            appState.openPlayer(username: name)
+                        }
+                        .font(.subheadline.weight(.semibold))
+                    }
+                }
+            }
         }
     }
 

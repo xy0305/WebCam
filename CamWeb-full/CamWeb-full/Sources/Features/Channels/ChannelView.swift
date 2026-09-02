@@ -3,43 +3,40 @@ import SwiftUI
 struct ChannelView: View {
     @EnvironmentObject var appState: AppState
     @State private var rooms: [Room] = []
-    @State private var query = ""
     @State private var loading = false
     @State private var loadingMore = false
     @State private var errorText: String?
     @State private var offset = 0
     @State private var reachedEnd = false
+    @State private var searchText = ""
 
-    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
 
     var filtered: [Room] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return rooms }
         return rooms.filter { $0.username.contains(q) || $0.title.lowercased().contains(q) }
     }
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                header
-                Text(appState.groupTitle)
-                    .font(.system(size: 34, weight: .bold))
-                    .padding(.horizontal, 16)
-                HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("搜索", text: $query)
-                }
-                .padding(12)
-                .background(Color(white: 0.93), in: Capsule())
-                .padding(.horizontal, 16)
-
+            Group {
                 if let errorText, rooms.isEmpty {
-                    Text(errorText).foregroundStyle(.secondary).padding()
+                    ContentUnavailableView {
+                        Label("加载失败", systemImage: "wifi.exclamationmark")
+                    } description: {
+                        Text(errorText)
+                    } actions: {
+                        Button("重试") { Task { await reload() } }
+                            .buttonStyle(.borderedProminent)
+                    }
                 } else {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(filtered) { room in
-                                NavigationLink(value: room.username) {
+                                Button {
+                                    appState.openPlayer(username: room.username)
+                                } label: {
                                     ChannelCard(room: room)
                                 }
                                 .buttonStyle(.plain)
@@ -49,50 +46,31 @@ struct ChannelView: View {
                             }
                         }
                         .padding(.horizontal, 16)
-                        .padding(.bottom, 24)
-                        if loadingMore { ProgressView().padding(.bottom, 20) }
+                        .padding(.vertical, 8)
+
+                        if loadingMore { ProgressView().padding(.vertical, 16) }
                     }
                     .refreshable { await reload() }
                 }
             }
-            .background(Color.white)
-            .toolbar(.hidden, for: .navigationBar)
+            .navigationTitle(appState.genderFilter.isEmpty ? "频道" : appState.groupTitle)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("全部频道") { applyFilter("", title: "频道") }
+                        Button("Female") { applyFilter("f", title: "女主播") }
+                        Button("Male") { applyFilter("m", title: "男主播") }
+                        Button("Couple") { applyFilter("c", title: "情侣") }
+                        Button("Trans") { applyFilter("t", title: "Trans") }
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                    }
+                }
+            }
+            .searchable(text: $searchText, prompt: "搜索频道")
             .task { if rooms.isEmpty { await reload() } }
             .overlay { if loading && rooms.isEmpty { ProgressView() } }
-            .navigationDestination(for: String.self) { PlayerView(username: $0) }
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Menu {
-                Button("全部频道") { applyFilter("", title: "Default") }
-                Button("Female") { applyFilter("f", title: "Female") }
-                Button("Male") { applyFilter("m", title: "Male") }
-                Button("Couple") { applyFilter("c", title: "Couple") }
-                Button("Trans") { applyFilter("t", title: "Trans") }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "archivebox.fill")
-                    Text(appState.genderFilter.isEmpty ? "全部频道" : appState.groupTitle)
-                        .fontWeight(.semibold)
-                }
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color(white: 0.94), in: Capsule())
-            }
-            Spacer()
-            Button { Task { await reload() } } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 40, height: 36)
-                    .background(Color(white: 0.94), in: Capsule())
-            }
-            .foregroundStyle(.primary)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
     }
 
     private func applyFilter(_ gender: String, title: String) {
@@ -117,7 +95,7 @@ struct ChannelView: View {
     }
 
     private func loadMore() async {
-        guard !loadingMore, !reachedEnd, query.isEmpty else { return }
+        guard !loadingMore, !reachedEnd, searchText.isEmpty else { return }
         loadingMore = true
         defer { loadingMore = false }
         do {

@@ -12,10 +12,12 @@ struct PlayerView: View {
     let username: String
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var appState: AppState
+    @StateObject private var coordinator = KSVideoPlayer.Coordinator()
     @State private var stream: ResolvedStream?
     @State private var errorText: String?
     @State private var loading = true
     @State private var showChrome = true
+    @State private var hideChromeTask: Task<Void, Never>?
     @State private var layout: PlayLayout = .portrait
     @State private var paused = false
     @State private var speed: Float = 1
@@ -27,7 +29,7 @@ struct PlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let stream {
-                KSVideoPlayerView(url: stream.hlsURL, options: playerOptions, title: username)
+                KSVideoPlayerView(coordinator: coordinator, url: stream.hlsURL, options: playerOptions, title: username)
                     .ignoresSafeArea()
             } else if loading {
                 ProgressView("解析直播流…").tint(.white).foregroundStyle(.white)
@@ -48,8 +50,8 @@ struct PlayerView: View {
         }
         .statusBarHidden(layout == .landscape)
         .navigationBarHidden(true)
-        .onTapGesture { showChrome.toggle() }
-        .task { await resolve() }
+        .onTapGesture { toggleChrome() }
+        .task { await resolve(); scheduleChromeHide() }
         .onDisappear {
             if layout != .mini { OrientationLock.set(.portrait) }
         }
@@ -102,7 +104,7 @@ struct PlayerView: View {
             }
             Spacer()
             HStack(spacing: 10) {
-                iconBtn("pip.enter") { enterMini() }
+                iconBtn("pip.enter") { startSystemPiP() }
                 iconBtn(fav.isFollowing(username) ? "heart.fill" : "heart") { fav.toggle(username) }
                 iconBtn(recs.isRecording(username) ? "stop.circle.fill" : "record.circle") { toggleRecord() }
             }
@@ -181,6 +183,22 @@ struct PlayerView: View {
         return o
     }
 
+    private func toggleChrome() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showChrome.toggle()
+        }
+        if showChrome { scheduleChromeHide() }
+    }
+
+    private func scheduleChromeHide() {
+        hideChromeTask?.cancel()
+        hideChromeTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { showChrome = false }
+        }
+    }
+
     private func apply(_ mode: PlayLayout) {
         layout = mode
         switch mode {
@@ -198,6 +216,10 @@ struct PlayerView: View {
         appState.startMini(username: username, url: stream.hlsURL)
         OrientationLock.set(.portrait)
         dismiss()
+    }
+
+    private func startSystemPiP() {
+        coordinator.playerLayer?.isPipActive.toggle()
     }
 
     private func resolve() async {
