@@ -136,11 +136,23 @@ struct PlayerView: View {
 
             Spacer()
 
-            // 横竖屏切换
-            circleBtn(isLandscape ? "rectangle.portrait" : "rectangle.landscape", size: 28) {
+            // 横竖屏切换（醒目按钮）
+            Button {
                 toggleOrientation()
                 scheduleChromeHide()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isLandscape ? "rectangle.portrait.fill" : "rectangle.landscape.fill")
+                        .font(.subheadline.weight(.semibold))
+                    Text(isLandscape ? "竖屏" : "横屏")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.35), in: Capsule())
             }
+            .buttonStyle(.plain)
 
             // 清晰度
             Menu {
@@ -264,8 +276,20 @@ struct PlayerView: View {
 
 enum OrientationLock {
     static func set(_ mask: UIInterfaceOrientationMask) {
-        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { return }
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+        // 更新 AppDelegate 支持的方向
+        AppDelegate.supportedOrientations = mask
+
+        // 请求几何更新，让旋转立即生效
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+        }
+
+        // 强制刷新支持的方向
+        if let root = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first?.keyWindow?.rootViewController {
+            root.setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
     }
 }
 

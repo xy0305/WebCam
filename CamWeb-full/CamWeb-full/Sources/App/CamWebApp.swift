@@ -4,6 +4,8 @@ import AVFAudio
 
 @main
 struct CamWebApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     init() {
         URLCache.shared = URLCache(memoryCapacity: 40 * 1024 * 1024, diskCapacity: 200 * 1024 * 1024)
         let session = AVAudioSession.sharedInstance()
@@ -17,6 +19,16 @@ struct CamWebApp: App {
                 .environmentObject(AuthManager.shared)
                 .environmentObject(AppState.shared)
         }
+    }
+}
+
+/// AppDelegate：管理整 App 支持的界面方向，让播放器能真正切换横竖屏
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    static var supportedOrientations: UIInterfaceOrientationMask = .portrait
+
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        return AppDelegate.supportedOrientations
     }
 }
 
