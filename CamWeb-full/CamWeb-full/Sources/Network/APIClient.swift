@@ -12,6 +12,15 @@ enum APIClient {
         ]
     }
 
+    /// HLS CDN 请求头：不要 Origin / CSRF / JSON Accept，否则 edge 会 403
+    static var hlsHeaders: [String: String] {
+        [
+            "User-Agent": userAgent,
+            "Accept": "*/*",
+            "Referer": "https://chaturbate.com/",
+        ]
+    }
+
     static func applyCommonHeaders(_ req: inout URLRequest) {
         for (k, v) in commonHeaders {
             if req.value(forHTTPHeaderField: k) == nil {
@@ -41,6 +50,34 @@ enum APIClient {
                 last = error
                 if attempt < retry {
                     try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 600_000_000))
+                }
+            }
+        }
+        throw last
+    }
+
+    /// 拉 HLS playlist / 分片。不带 CSRF、Origin，避免 CDN 403。
+    static func hlsData(for url: URL, retry: Int = 1) async throws -> (Data, HTTPURLResponse) {
+        var last: Error = URLError(.badServerResponse)
+        for attempt in 0...retry {
+            do {
+                var r = URLRequest(url: url)
+                r.cachePolicy = .reloadIgnoringLocalCacheData
+                r.timeoutInterval = 20
+                for (k, v) in hlsHeaders {
+                    r.setValue(v, forHTTPHeaderField: k)
+                }
+                let (data, resp) = try await URLSession.shared.data(for: r)
+                guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+                if (http.statusCode == 403 || http.statusCode >= 500), attempt < retry {
+                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 400_000_000))
+                    continue
+                }
+                return (data, http)
+            } catch {
+                last = error
+                if attempt < retry {
+                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 400_000_000))
                 }
             }
         }

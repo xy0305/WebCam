@@ -22,10 +22,10 @@ final class RecordingManager: ObservableObject {
         sessions[username.lowercased()]
     }
 
-    func start(username: String, masterURL: URL) {
+    func start(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
         let name = username.lowercased()
         guard sessions[name] == nil else { return }
-        let session = RecordingSession(username: name, masterURL: masterURL)
+        let session = RecordingSession(username: name, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist)
         session.onFinished = { [weak self] name, message in
             self?.sessions[name] = nil
             self?.banner = message
@@ -40,11 +40,11 @@ final class RecordingManager: ObservableObject {
         sessions[username.lowercased()]?.stop(userInitiated: true)
     }
 
-    func toggle(username: String, masterURL: URL) {
+    func toggle(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
         if isRecording(username) {
             stop(username)
         } else {
-            start(username: username, masterURL: masterURL)
+            start(username: username, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist)
         }
     }
 
@@ -79,7 +79,8 @@ final class RecordingManager: ObservableObject {
 final class RecordingSession: ObservableObject, Identifiable {
     var id: String { username }
     let username: String
-    let masterURL: URL
+    let videoPlaylist: URL
+    let audioPlaylist: URL?
 
     @Published var elapsedText = "00:00"
     @Published var bytesText = "0 MB"
@@ -93,9 +94,10 @@ final class RecordingSession: ObservableObject, Identifiable {
     private var videoPartURL: URL?
     private var audioPartURL: URL?
 
-    init(username: String, masterURL: URL) {
+    init(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
         self.username = username
-        self.masterURL = masterURL
+        self.videoPlaylist = videoPlaylist
+        self.audioPlaylist = audioPlaylist
     }
 
     func start() {
@@ -112,11 +114,13 @@ final class RecordingSession: ObservableObject, Identifiable {
         startedAt = Date()
         startTimer()
 
-        let master = masterURL
+        let videoPL = videoPlaylist
+        let audioPL = audioPlaylist
         let name = username
         workTask = Task.detached(priority: .utility) { [weak self] in
             let result = await Self.harvest(
-                master: master,
+                videoPlaylist: videoPL,
+                audioPlaylist: audioPL,
                 videoPart: videoPart,
                 audioPart: audioPart,
                 finalURL: finalURL
@@ -135,13 +139,13 @@ final class RecordingSession: ObservableObject, Identifiable {
     }
 
     nonisolated private static func harvest(
-        master: URL,
+        videoPlaylist: URL,
+        audioPlaylist: URL?,
         videoPart: URL,
         audioPart: URL,
         finalURL: URL
     ) async -> HarvestResult {
         do {
-            let lists = try await StreamSource.playlists(from: master)
             var videoSeen = Set<String>()
             var audioSeen = Set<String>()
             var videoMapDone = false
@@ -152,12 +156,12 @@ final class RecordingSession: ObservableObject, Identifiable {
             while !Task.isCancelled {
                 do {
                     wroteVideo += try await pull(
-                        playlist: lists.video,
+                        playlist: videoPlaylist,
                         dest: videoPart,
                         seen: &videoSeen,
                         mapDone: &videoMapDone
                     )
-                    if let audio = lists.audio {
+                    if let audio = audioPlaylist {
                         wroteAudio += try await pull(
                             playlist: audio,
                             dest: audioPart,
@@ -203,10 +207,7 @@ final class RecordingSession: ObservableObject, Identifiable {
         seen: inout Set<String>,
         mapDone: inout Bool
     ) async throws -> Int64 {
-        var req = URLRequest(url: playlist)
-        req.setValue("*/*", forHTTPHeaderField: "Accept")
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        let (data, http) = try await APIClient.data(for: req, retry: 0)
+        let (data, http) = try await APIClient.hlsData(for: playlist, retry: 0)
         guard (200..<300).contains(http.statusCode),
               let text = String(data: data, encoding: .utf8) else { return 0 }
 
@@ -274,12 +275,10 @@ final class RecordingSession: ObservableObject, Identifiable {
     }
 
     nonisolated private static func fetchBytes(_ url: URL) async throws -> Data {
-        var req = URLRequest(url: url)
-        req.setValue("*/*", forHTTPHeaderField: "Accept")
-        req.timeoutInterval = 20
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        let (data, http) = try await APIClient.data(for: req, retry: 1)
-        guard (200..<300).contains(http.statusCode) else { throw StreamSourceError.badResponse }
+        let (data, http) = try await APIClient.hlsData(for: url, retry: 1)
+        guard (200..<300).contains(http.statusCode) else {
+            throw StreamSourceError.httpStatus(http.statusCode)
+        }
         return data
     }
 

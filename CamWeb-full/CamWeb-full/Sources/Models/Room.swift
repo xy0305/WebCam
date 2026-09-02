@@ -104,12 +104,14 @@ enum StreamSourceError: LocalizedError {
     case blocked
     case badResponse
     case needLogin
+    case httpStatus(Int)
     var errorDescription: String? {
         switch self {
         case .offline(let s): return "房间不是公开状态（\(s)）"
         case .blocked: return "拿不到直播地址（地区或私密）"
         case .badResponse: return "接口请求失败"
         case .needLogin: return "需要登录后才能继续"
+        case .httpStatus(let c): return "接口请求失败 (\(c))"
         }
     }
 }

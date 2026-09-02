@@ -590,7 +590,11 @@ struct PlayerView: View {
 
     private func toggleRecord() {
         guard let stream else { return }
-        recs.toggle(username: username, masterURL: stream.masterURL)
+        recs.toggle(
+            username: username,
+            videoPlaylist: stream.videoPlaylist,
+            audioPlaylist: stream.audioPlaylist
+        )
     }
 }
 

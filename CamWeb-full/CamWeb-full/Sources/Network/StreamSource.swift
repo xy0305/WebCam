@@ -4,8 +4,12 @@ struct ResolvedStream: Sendable {
     let username: String
     /// 播放用：有声最高画质迷你 master（data: URI），AVPlayer 直接播
     let hlsURL: URL
-    /// 录制用：官方原始 master（音视频一体的完整 playlist）
+    /// 官方原始 master
     let masterURL: URL
+    /// 录制用：最高码率视频媒体 playlist（播放时已解析，不再回拉 master）
+    let videoPlaylist: URL
+    /// 录制用：音频媒体 playlist（音视频分离时才有）
+    let audioPlaylist: URL?
     let status: String
 }
 
@@ -15,12 +19,40 @@ enum StreamSource {
         for _ in 0..<3 {
             do {
                 let master = try await fetchMaster(username: username)
-                // 有声音的最高画质：把音频轨与最高码率视频变体合成迷你 master
-                if let audible = await buildAudibleStream(master) {
-                    return ResolvedStream(username: username, hlsURL: audible, masterURL: master, status: "public")
+                if let text = try? await fetchMasterText(master), text.contains("#EXTM3U") {
+                    if text.contains("#EXT-X-STREAM-INF") {
+                        let parsed = parseMaster(text, base: master)
+                        guard let video = parsed.variants.first?.url else {
+                            return ResolvedStream(
+                                username: username, hlsURL: master, masterURL: master,
+                                videoPlaylist: master, audioPlaylist: nil, status: "public"
+                            )
+                        }
+                        let hls: URL
+                        if let audio = parsed.audioUri,
+                           let mini = buildMiniMasterDataUri(
+                                audioUri: audio, videoUrl: video,
+                                bandwidth: parsed.variants.first?.bandwidth ?? 2_000_000,
+                                resolution: parsed.variants.first?.resolution ?? ""
+                           ) {
+                            hls = mini
+                        } else {
+                            hls = master
+                        }
+                        return ResolvedStream(
+                            username: username, hlsURL: hls, masterURL: master,
+                            videoPlaylist: video, audioPlaylist: parsed.audioUri, status: "public"
+                        )
+                    }
+                    return ResolvedStream(
+                        username: username, hlsURL: master, masterURL: master,
+                        videoPlaylist: master, audioPlaylist: nil, status: "public"
+                    )
                 }
-                // 保底：直接返回官方 master（音视频一体，让 AVPlayer 自行组合）
-                return ResolvedStream(username: username, hlsURL: master, masterURL: master, status: "public")
+                return ResolvedStream(
+                    username: username, hlsURL: master, masterURL: master,
+                    videoPlaylist: master, audioPlaylist: nil, status: "public"
+                )
             } catch {
                 last = error
                 try await Task.sleep(nanoseconds: 700_000_000)
@@ -29,7 +61,7 @@ enum StreamSource {
         throw last
     }
 
-    /// 依次尝试 chatvideocontext 与 get_edge_hls_url_ajax，返回官方 master URL
+    /// 依次尝试 ajax 与 chatvideocontext，返回官方 master URL
     private static func fetchMaster(username: String) async throws -> URL {
         if let url = await fromAjax(username: username) {
             return url
@@ -37,39 +69,12 @@ enum StreamSource {
         return try await fromContext(username: username)
     }
 
-    /// 拉取 master 文本，解析出音频轨 + 视频变体，生成「有声最高画质」迷你 master（data: URI）
-    private static func buildAudibleStream(_ master: URL) async -> URL? {
-        guard let text = try? await fetchMasterText(master), text.contains("#EXTM3U") else {
-            return nil
-        }
-        let parsed = Self.parseMaster(text, base: master)
-        guard let audioUri = parsed.audioUri,
-              let videoUri = parsed.variants.first?.url else {
-            return nil
-        }
-        let bandwidth = parsed.variants.first?.bandwidth ?? 2_000_000
-        let resolution = parsed.variants.first?.resolution ?? ""
-        return Self.buildMiniMasterDataUri(audioUri: audioUri, videoUrl: videoUri,
-                                           bandwidth: bandwidth, resolution: resolution)
-    }
-
-    /// 录制用：从官方 master 解析出最高码率视频 playlist + 音频 playlist
-    static func playlists(from master: URL) async throws -> (video: URL, audio: URL?) {
-        let text = try await fetchMasterText(master)
-        if text.contains("#EXT-X-STREAM-INF") {
-            let parsed = parseMaster(text, base: master)
-            guard let video = parsed.variants.first?.url else { throw StreamSourceError.blocked }
-            return (video, parsed.audioUri)
-        }
-        return (master, nil)
-    }
-
-    /// 用 Accept: */* 拉取 master playlist（音视频分离的 m3u8 需要 */* 才返回正确内容）
+    /// 用 HLS 专用头拉 playlist 文本（不带 CSRF / Origin）
     private static func fetchMasterText(_ url: URL) async throws -> String {
-        var req = URLRequest(url: url)
-        req.setValue("*/*", forHTTPHeaderField: "Accept")
-        let (data, http) = try await APIClient.data(for: req, retry: 1)
-        guard (200..<300).contains(http.statusCode) else { throw StreamSourceError.badResponse }
+        let (data, http) = try await APIClient.hlsData(for: url, retry: 1)
+        guard (200..<300).contains(http.statusCode) else {
+            throw StreamSourceError.httpStatus(http.statusCode)
+        }
         return String(data: data, encoding: .utf8) ?? ""
     }
 
@@ -82,7 +87,6 @@ enum StreamSource {
 
         let lines = doc.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         for line in lines {
-            // 音频轨
             if line.hasPrefix("#EXT-X-MEDIA:"), line.range(of: "TYPE=AUDIO", options: .caseInsensitive) != nil {
                 if let r = line.range(of: "URI=\"", options: []) {
                     let after = line[r.upperBound...]
@@ -93,13 +97,11 @@ enum StreamSource {
                 }
                 continue
             }
-            // 视频变体头
             if line.hasPrefix("#EXT-X-STREAM-INF:") {
                 if let br = captureInt("BANDWIDTH=", in: line) { pendingBandwidth = br }
                 if let rs = captureString("RESOLUTION=", in: line) { pendingResolution = rs }
                 continue
             }
-            // 变体 URL 行（排除音频轨行）
             if !line.isEmpty, !line.hasPrefix("#") {
                 if !line.contains("_audio_"), let abs = resolveAbsolute(line, base: base) {
                     variants.append(Variant(url: abs, bandwidth: pendingBandwidth, resolution: pendingResolution))
@@ -182,7 +184,7 @@ enum StreamSource {
         var req = URLRequest(url: URL(string: "https://chaturbate.com/api/chatvideocontext/\(username)/")!)
         req.setValue("https://chaturbate.com/\(username)/", forHTTPHeaderField: "Referer")
         let (data, http) = try await APIClient.data(for: req, retry: 1)
-        guard (200..<300).contains(http.statusCode) else { throw StreamSourceError.badResponse }
+        guard (200..<300).contains(http.statusCode) else { throw StreamSourceError.httpStatus(http.statusCode) }
         let obj = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
         let status = (obj["room_status"] as? String) ?? "unknown"
         guard status == "public" else { throw StreamSourceError.offline(status) }
