@@ -99,16 +99,23 @@ struct Room: Decodable, Identifiable, Hashable {
         loadState = .live
     }
 
-    init(username: String, displayName: String? = nil, loadState: CardLoadState = .live) {
+    init(
+        username: String,
+        displayName: String? = nil,
+        roomSubject: String? = nil,
+        numUsers: Int? = nil,
+        tags: [String]? = nil,
+        loadState: CardLoadState = .live
+    ) {
         self.username = username.lowercased()
         self.displayName = displayName ?? username
-        roomSubject = nil
-        numUsers = nil
+        self.roomSubject = roomSubject
+        self.numUsers = numUsers
         imageURL = nil
         currentShow = nil
         isHD = nil
         gender = nil
-        tags = nil
+        self.tags = tags
         self.loadState = loadState
     }
 }

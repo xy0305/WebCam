@@ -6,6 +6,7 @@ struct SearchView: View {
     @State private var results: [Room] = []
     @State private var searching = false
     @State private var errorText: String?
+    @State private var searchTask: Task<Void, Never>?
 
     private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
 
@@ -14,9 +15,10 @@ struct SearchView: View {
             Group {
                 if results.isEmpty && !searching {
                     ContentUnavailableView {
-                        Label("搜索主播", systemImage: "magnifyingglass")
+                        Label(errorText == nil ? "搜索主播" : "没有结果",
+                              systemImage: errorText == nil ? "magnifyingglass" : "person.slash")
                     } description: {
-                        Text("输入用户名或关键词搜直播房间")
+                        Text(errorText ?? "输入用户名或关键词，支持精确用户名")
                     }
                 } else {
                     ScrollView {
@@ -37,35 +39,40 @@ struct SearchView: View {
             }
             .navigationTitle("搜索")
             .searchable(text: $query, prompt: "用户名或关键词")
-            .onSubmit(of: .search) { Task { await search() } }
-            .overlay { if searching { ProgressView() } }
-            .toolbar {
-                if let name = sanitized {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("播放 \(name)") {
-                            appState.openPlayer(username: name, room: Room(username: name))
-                        }
-                        .font(.subheadline.weight(.semibold))
-                    }
-                }
+            .onSubmit(of: .search) { Task { await search(query) } }
+            .onChange(of: query) { _, newValue in
+                scheduleSearch(newValue)
             }
+            .overlay { if searching { ProgressView() } }
         }
     }
 
-    private var sanitized: String? {
-        let s = query.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
-        return s.count >= 2 ? s : nil
+    private func scheduleSearch(_ text: String) {
+        searchTask?.cancel()
+        let q = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2 else {
+            results = []
+            errorText = nil
+            searching = false
+            return
+        }
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await search(q)
+        }
     }
 
-    private func search() async {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 2 else { return }
+    private func search(_ q: String) async {
         searching = true
         errorText = nil
         defer { searching = false }
         do {
-            results = try await RoomAPI.fetchRooms(keywords: q)
-            if results.isEmpty { errorText = "没有匹配房间，仍可直接播放用户名" }
+            let rooms = try await RoomAPI.search(q)
+            results = rooms
+            if rooms.isEmpty {
+                errorText = "没有匹配房间"
+            }
         } catch {
             errorText = error.localizedDescription
         }
