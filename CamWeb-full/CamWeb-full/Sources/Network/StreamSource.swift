@@ -11,14 +11,28 @@ enum StreamSource {
         var last: Error = StreamSourceError.badResponse
         for _ in 0..<3 {
             do {
-                if let s = try? await fromAjax(username: username) { return s }
-                return try await fromContext(username: username)
+                var s: ResolvedStream
+                if let ajax = try? await fromAjax(username: username) {
+                    s = ajax
+                } else {
+                    s = try await fromContext(username: username)
+                }
+                if let hi = await upgradeToHighest(s.hlsURL) {
+                    s = ResolvedStream(username: s.username, hlsURL: hi, status: s.status)
+                }
+                return s
             } catch {
                 last = error
                 try await Task.sleep(nanoseconds: 700_000_000)
             }
         }
         throw last
+    }
+
+    static func upgradeToHighest(_ url: URL) async -> URL? {
+        guard let text = try? await HLSFetcher.text(url) else { return nil }
+        guard text.contains("#EXT-X-STREAM-INF") else { return url }
+        return HLSFetcher.pickVariant(text, base: url) ?? url
     }
 
     private static func fromAjax(username: String) async throws -> ResolvedStream {
