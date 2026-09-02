@@ -23,12 +23,11 @@ struct CamWebApp: App {
 }
 
 /// AppDelegate：管理整 App 支持的界面方向，让播放器能真正切换横竖屏
+/// 方向由 KSPlayer 的 KSOptions.supportedInterfaceOrientations 统一控制
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    static var supportedOrientations: UIInterfaceOrientationMask = .portrait
-
     func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        return AppDelegate.supportedOrientations
+        return KSOptions.supportedInterfaceOrientations
     }
 }
 

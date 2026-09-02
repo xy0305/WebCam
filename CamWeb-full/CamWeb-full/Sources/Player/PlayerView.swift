@@ -39,6 +39,9 @@ struct PlayerView: View {
             // 锁屏按钮（右侧中部，常驻可见，便于唤回）
             lockButton
 
+            // 常驻横屏按钮（右下角，永不消失）
+            orientationButton
+
             // 控制栏（上下渐隐）
             if showChrome {
                 overlayChrome
@@ -136,24 +139,6 @@ struct PlayerView: View {
 
             Spacer()
 
-            // 横竖屏切换（醒目按钮）
-            Button {
-                toggleOrientation()
-                scheduleChromeHide()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: isLandscape ? "rectangle.portrait.fill" : "rectangle.landscape.fill")
-                        .font(.subheadline.weight(.semibold))
-                    Text(isLandscape ? "竖屏" : "横屏")
-                        .font(.subheadline.weight(.semibold))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(.black.opacity(0.35), in: Capsule())
-            }
-            .buttonStyle(.plain)
-
             // 清晰度
             Menu {
                 Button("原画") { scheduleChromeHide() }
@@ -209,6 +194,33 @@ struct PlayerView: View {
         .padding(.vertical, 44)
     }
 
+    // MARK: - 常驻横屏按钮（右下角，永不消失）
+
+    private var orientationButton: some View {
+        VStack {
+            Spacer()
+            Button {
+                toggleOrientation()
+                scheduleChromeHide()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: isLandscape ? "rectangle.portrait.fill" : "rectangle.landscape.fill")
+                        .font(.subheadline.weight(.semibold))
+                    Text(isLandscape ? "竖屏" : "横屏")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.black.opacity(0.45), in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .padding(.trailing, 16)
+        .padding(.bottom, 100)
+    }
+
     private func circleBtn(_ name: String, size: CGFloat, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: name)
@@ -249,8 +261,8 @@ struct PlayerView: View {
     }
 
     private func toggleOrientation() {
+        OrientationLock.toggle()
         isLandscape.toggle()
-        OrientationLock.set(isLandscape ? .landscape : .portrait)
     }
 
     private func startSystemPiP() {
@@ -275,21 +287,47 @@ struct PlayerView: View {
 }
 
 enum OrientationLock {
+    /// 切换到指定方向（portrait / landscape）
     static func set(_ mask: UIInterfaceOrientationMask) {
-        // 更新 AppDelegate 支持的方向
-        AppDelegate.supportedOrientations = mask
+        // 1. 更新 KSPlayer 全局支持方向（AppDelegate 会读这个值）
+        KSOptions.supportedInterfaceOrientations = mask
 
-        // 请求几何更新，让旋转立即生效
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
-        }
-
-        // 强制刷新支持的方向
-        if let root = UIApplication.shared.connectedScenes
+        guard let windowScene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
-            .first?.keyWindow?.rootViewController {
-            root.setNeedsUpdateOfSupportedInterfaceOrientations()
+            .first else { return }
+
+        // 2. 先通知 ViewController 刷新支持的方向
+        if let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
+            rootVC.setNeedsUpdateOfSupportedInterfaceOrientations()
         }
+
+        // 3. 延迟到下一个 run loop，请求几何更新
+        DispatchQueue.main.async {
+            let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: mask)
+            windowScene.requestGeometryUpdate(preferences) { _ in }
+
+            // 4. 旋转完成后恢复自由旋转，允许后续自动全屏
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                KSOptions.supportedInterfaceOrientations = .allButUpsideDown
+                if let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
+                    rootVC.setNeedsUpdateOfSupportedInterfaceOrientations()
+                }
+            }
+        }
+    }
+
+    /// 切换 iPhone 横竖屏
+    static func toggle() {
+        let isCurrentlyLandscape = Self.isLandscape
+        set(isCurrentlyLandscape ? .portrait : .landscape)
+    }
+
+    /// 当前是否横屏
+    static var isLandscape: Bool {
+        let orientation = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.interfaceOrientation
+        return orientation == .landscapeLeft || orientation == .landscapeRight
     }
 }
 
