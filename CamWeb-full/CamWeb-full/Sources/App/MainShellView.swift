@@ -19,6 +19,13 @@ struct MainShellView: View {
             CapsuleTabBar(tab: $appState.tab)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
+
+            if appState.miniUsername != nil {
+                HStack {
+                    Spacer()
+                    MiniPlayerView()
+                }
+            }
         }
         .background(Color(white: 0.97))
     }
