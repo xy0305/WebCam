@@ -71,8 +71,11 @@ struct Room: Decodable, Identifiable, Hashable {
         isHD = try c.decodeIfPresent(Bool.self, forKey: .isHD)
         gender = try c.decodeIfPresent(String.self, forKey: .gender)
         tags = try c.decodeIfPresent([String].self, forKey: .tags)
-        imageURL = (try c.decodeIfPresent(String.self, forKey: .imageURL))
-            ?? (try c.decodeIfPresent(String.self, forKey: .imageURL2))
+        if let img = try c.decodeIfPresent(String.self, forKey: .imageURL) {
+            imageURL = img
+        } else {
+            imageURL = try c.decodeIfPresent(String.self, forKey: .imageURL2)
+        }
         loadState = .live
     }
 
