@@ -34,7 +34,6 @@ final class RecordingManager: ObservableObject {
         sessions[name] = session
         session.start()
         refreshIdle()
-        banner = "开始录制 \(name)"
     }
 
     func stop(_ username: String) {
@@ -73,10 +72,9 @@ final class RecordingManager: ObservableObject {
     }
 }
 
-/// 用 AVAssetReader（读直播 HLS 音视频轨）+ AVAssetWriter（转封装成 .mp4）录制。
-/// 纯系统 AVFoundation 方案：AVPlayer 能播的流（含 LL-HLS 音视频分离），AVAssetReader 一定能读。
-/// copy 转封装不重编码，快且能跟上实时；AVAssetWriter.finishWriting 会正确写 moov atom，
-/// 即使直播中途停止也能产出可播放文件。
+/// 自己拉 HLS 媒体 playlist 和分片（带 Chaturbate 请求头），拼成 fMP4 / TS。
+/// 停录后再用 AVAssetExportSession 把音视频封装成可播 .mp4。
+/// AVAssetReader 直接读直播 master 会失败（LL-HLS 音视频分离、无请求头）。
 @MainActor
 final class RecordingSession: ObservableObject, Identifiable {
     var id: String { username }
@@ -91,8 +89,9 @@ final class RecordingSession: ObservableObject, Identifiable {
 
     private var timer: Timer?
     private var startedAt: Date?
-    private var outputURL: URL?
     private var workTask: Task<Void, Never>?
+    private var videoPartURL: URL?
+    private var audioPartURL: URL?
 
     init(username: String, masterURL: URL) {
         self.username = username
@@ -102,165 +101,284 @@ final class RecordingSession: ObservableObject, Identifiable {
     func start() {
         let dir = RecordingStore.directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("\(username)_\(Self.stamp()).mp4")
-        outputURL = url
+        let stamp = Self.stamp()
+        let videoPart = dir.appendingPathComponent("\(username)_\(stamp)_v.part")
+        let audioPart = dir.appendingPathComponent("\(username)_\(stamp)_a.part")
+        let finalURL = dir.appendingPathComponent("\(username)_\(stamp).mp4")
+        videoPartURL = videoPart
+        audioPartURL = audioPart
 
         isRunning = true
         startedAt = Date()
         startTimer()
 
-        let source = masterURL
-        let destination = url
+        let master = masterURL
         let name = username
         workTask = Task.detached(priority: .utility) { [weak self] in
-            let result = await Self.record(source: source, destination: destination)
+            let result = await Self.harvest(
+                master: master,
+                videoPart: videoPart,
+                audioPart: audioPart,
+                finalURL: finalURL
+            )
             await MainActor.run {
-                self?.finish(result: result, name: name, destination: destination)
+                self?.finish(result: result, name: name, destination: result.outputURL ?? finalURL)
             }
         }
     }
 
-    /// 录制结果
-    private struct RecordResult {
+    private struct HarvestResult {
         let success: Bool
-        let error: Error?
+        let outputURL: URL?
+        let bytes: Int64
+        let error: String?
     }
 
-    /// 核心录制逻辑（后台线程，非隔离）
-    nonisolated private static func record(source: URL, destination: URL) async -> RecordResult {
+    nonisolated private static func harvest(
+        master: URL,
+        videoPart: URL,
+        audioPart: URL,
+        finalURL: URL
+    ) async -> HarvestResult {
         do {
-            try await transcode(source: source, destination: destination)
-            return RecordResult(success: true, error: nil)
-        } catch {
-            return RecordResult(success: false, error: error)
-        }
-    }
+            let lists = try await StreamSource.playlists(from: master)
+            var videoSeen = Set<String>()
+            var audioSeen = Set<String>()
+            var videoMapDone = false
+            var audioMapDone = false
+            var wroteVideo: Int64 = 0
+            var wroteAudio: Int64 = 0
 
-    /// AVAssetReader 读 → AVAssetWriter 写（copy 转封装）
-    nonisolated private static func transcode(source: URL, destination: URL) async throws {
-        let asset = AVURLAsset(url: source)
-
-        // 加载轨道（async API，iOS 15+ 确定存在）
-        let videoTracks = try await asset.loadTracks(withMediaType: .video)
-        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
-
-        guard !videoTracks.isEmpty || !audioTracks.isEmpty else {
-            throw StreamSourceError.blocked
-        }
-
-        let reader = try AVAssetReader(asset: asset)
-        let writer = try AVAssetWriter(outputURL: destination, fileType: .mp4)
-
-        var videoInput: AVAssetWriterInput?
-        var videoOutput: AVAssetReaderTrackOutput?
-        var audioInput: AVAssetWriterInput?
-        var audioOutput: AVAssetReaderTrackOutput?
-
-        // 视频轨：copy 转封装（不重编码）
-        if let videoTrack = videoTracks.first {
-            let input = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
-            input.expectsMediaDataInRealTime = true
-            if writer.canAdd(input) {
-                writer.add(input)
-                videoInput = input
-                let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
-                if reader.canAdd(output) {
-                    reader.add(output)
-                    videoOutput = output
-                }
-            }
-        }
-
-        // 音频轨：copy 转封装
-        if let audioTrack = audioTracks.first {
-            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
-            input.expectsMediaDataInRealTime = true
-            if writer.canAdd(input) {
-                writer.add(input)
-                audioInput = input
-                let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-                if reader.canAdd(output) {
-                    reader.add(output)
-                    audioOutput = output
-                }
-            }
-        }
-
-        guard videoOutput != nil || audioOutput != nil else {
-            throw StreamSourceError.blocked
-        }
-
-        reader.startReading()
-        writer.startWriting()
-
-        var sessionStarted = false
-
-        // 持续读直播流（HLS 动态分片），直到被取消
-        while !Task.isCancelled {
-            var gotAny = false
-
-            if let videoOutput, let videoInput, videoInput.isReadyForMoreMediaData {
-                while let buffer = videoOutput.copyNextSampleBuffer() {
-                    if !sessionStarted {
-                        writer.startSession(atSourceTime: buffer.presentationTimeStamp)
-                        sessionStarted = true
+            while !Task.isCancelled {
+                do {
+                    wroteVideo += try await pull(
+                        playlist: lists.video,
+                        dest: videoPart,
+                        seen: &videoSeen,
+                        mapDone: &videoMapDone
+                    )
+                    if let audio = lists.audio {
+                        wroteAudio += try await pull(
+                            playlist: audio,
+                            dest: audioPart,
+                            seen: &audioSeen,
+                            mapDone: &audioMapDone
+                        )
                     }
-                    videoInput.append(buffer)
-                    gotAny = true
+                } catch is CancellationError {
+                    break
+                } catch {
+                    // 单次拉 playlist/分片失败不中断整段录制
+                }
+                if Task.isCancelled { break }
+                try? await Task.sleep(nanoseconds: 800_000_000)
+            }
+
+            let videoSize = fileSize(videoPart)
+            guard videoSize > 1024 else {
+                cleanup([videoPart, audioPart])
+                return HarvestResult(success: false, outputURL: nil, bytes: 0, error: "没有收到视频分片")
+            }
+
+            if wroteAudio > 1024, fileSize(audioPart) > 1024 {
+                if let muxed = await mux(video: videoPart, audio: audioPart, dest: finalURL) {
+                    cleanup([videoPart, audioPart])
+                    return HarvestResult(success: true, outputURL: muxed, bytes: fileSize(muxed), error: nil)
                 }
             }
 
-            if let audioOutput, let audioInput, audioInput.isReadyForMoreMediaData {
-                while let buffer = audioOutput.copyNextSampleBuffer() {
-                    audioInput.append(buffer)
-                    gotAny = true
-                }
-            }
-
-            if !gotAny {
-                // 读到当前末尾，稍等新分片
-                try await Task.sleep(nanoseconds: 400_000_000)
-            }
-        }
-
-        // 收尾
-        videoInput?.markAsFinished()
-        audioInput?.markAsFinished()
-
-        // 等写完成（正确写 moov atom）
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            writer.finishWriting {
-                cont.resume()
-            }
-        }
-        if writer.status != .completed {
-            throw writer.error ?? StreamSourceError.badResponse
+            let fallback = fallbackURL(from: videoPart, finalURL: finalURL)
+            try? FileManager.default.moveItem(at: videoPart, to: fallback)
+            cleanup([audioPart, videoPart])
+            return HarvestResult(success: true, outputURL: fallback, bytes: fileSize(fallback), error: nil)
+        } catch {
+            cleanup([videoPart, audioPart])
+            return HarvestResult(success: false, outputURL: nil, bytes: 0, error: error.localizedDescription)
         }
     }
 
-    private func finish(result: RecordResult, name: String, destination: URL) {
+    nonisolated private static func pull(
+        playlist: URL,
+        dest: URL,
+        seen: inout Set<String>,
+        mapDone: inout Bool
+    ) async throws -> Int64 {
+        var req = URLRequest(url: playlist)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, http) = try await APIClient.data(for: req, retry: 0)
+        guard (200..<300).contains(http.statusCode),
+              let text = String(data: data, encoding: .utf8) else { return 0 }
+
+        let parsed = parseMedia(text, base: playlist)
+        var written: Int64 = 0
+
+        if !mapDone, let map = parsed.map {
+            let chunk = try await fetchBytes(map)
+            try append(chunk, to: dest)
+            written += Int64(chunk.count)
+            mapDone = true
+        }
+
+        for seg in parsed.segments {
+            let key = seg.absoluteString
+            if seen.contains(key) { continue }
+            let chunk = try await fetchBytes(seg)
+            try append(chunk, to: dest)
+            written += Int64(chunk.count)
+            seen.insert(key)
+        }
+        return written
+    }
+
+    nonisolated private static func parseMedia(_ doc: String, base: URL) -> (map: URL?, segments: [URL]) {
+        var map: URL?
+        var segs: [URL] = []
+        var expectURI = false
+        let lines = doc.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        for line in lines {
+            if line.hasPrefix("#EXT-X-MAP:") {
+                map = extractURI(line, base: base)
+                continue
+            }
+            if line.hasPrefix("#EXTINF:") {
+                expectURI = true
+                continue
+            }
+            if expectURI && !line.isEmpty && !line.hasPrefix("#") {
+                if let url = resolve(line, base: base) { segs.append(url) }
+                expectURI = false
+            }
+        }
+        return (map, segs)
+    }
+
+    nonisolated private static func extractURI(_ line: String, base: URL) -> URL? {
+        if let r = line.range(of: "URI=\"") {
+            let after = line[r.upperBound...]
+            if let end = after.firstIndex(of: "\"") {
+                return resolve(String(after[..<end]), base: base)
+            }
+        }
+        if let r = line.range(of: "URI=") {
+            let after = line[r.upperBound...]
+            let raw = after.split(separator: ",").first.map(String.init) ?? String(after)
+            return resolve(raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"")), base: base)
+        }
+        return nil
+    }
+
+    nonisolated private static func resolve(_ str: String, base: URL) -> URL? {
+        if str.hasPrefix("http://") || str.hasPrefix("https://") { return URL(string: str) }
+        return URL(string: str, relativeTo: base)?.absoluteURL
+    }
+
+    nonisolated private static func fetchBytes(_ url: URL) async throws -> Data {
+        var req = URLRequest(url: url)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 20
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, http) = try await APIClient.data(for: req, retry: 1)
+        guard (200..<300).contains(http.statusCode) else { throw StreamSourceError.badResponse }
+        return data
+    }
+
+    nonisolated private static func append(_ data: Data, to url: URL) throws {
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+    }
+
+    nonisolated private static func fileSize(_ url: URL) -> Int64 {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+    }
+
+    nonisolated private static func cleanup(_ urls: [URL]) {
+        for u in urls { try? FileManager.default.removeItem(at: u) }
+    }
+
+    nonisolated private static func fallbackURL(from part: URL, finalURL: URL) -> URL {
+        if let data = try? Data(contentsOf: part, options: .mappedIfSafe), data.count >= 1, data[0] == 0x47 {
+            return finalURL.deletingPathExtension().appendingPathExtension("ts")
+        }
+        return finalURL
+    }
+
+    nonisolated private static func mux(video: URL, audio: URL, dest: URL) async -> URL? {
+        let vAsset = AVURLAsset(url: video)
+        let aAsset = AVURLAsset(url: audio)
+        let mix = AVMutableComposition()
+        do {
+            let vTracks = try await vAsset.loadTracks(withMediaType: .video)
+            let aTracks = try await aAsset.loadTracks(withMediaType: .audio)
+            let vDuration = try await vAsset.load(.duration)
+            let aDuration = try await aAsset.load(.duration)
+            if let vt = vTracks.first {
+                let track = mix.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+                try track?.insertTimeRange(CMTimeRange(start: .zero, duration: vDuration), of: vt, at: .zero)
+            }
+            if let at = aTracks.first {
+                let track = mix.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                let duration = CMTimeMinimum(vDuration, aDuration)
+                try track?.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: at, at: .zero)
+            }
+            guard mix.tracks.isEmpty == false else { return nil }
+
+            try? FileManager.default.removeItem(at: dest)
+            guard let session = AVAssetExportSession(asset: mix, presetName: AVAssetExportPresetPassthrough)
+                    ?? AVAssetExportSession(asset: mix, presetName: AVAssetExportPresetHighestQuality) else {
+                return nil
+            }
+            session.outputURL = dest
+            session.outputFileType = .mp4
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                session.exportAsynchronously { cont.resume() }
+            }
+            if session.status == .completed, FileManager.default.fileExists(atPath: dest.path), fileSize(dest) > 1024 {
+                return dest
+            }
+            if session.presetName == AVAssetExportPresetPassthrough {
+                try? FileManager.default.removeItem(at: dest)
+                guard let retry = AVAssetExportSession(asset: mix, presetName: AVAssetExportPresetHighestQuality) else {
+                    return nil
+                }
+                retry.outputURL = dest
+                retry.outputFileType = .mp4
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    retry.exportAsynchronously { cont.resume() }
+                }
+                if retry.status == .completed, fileSize(dest) > 1024 { return dest }
+            }
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
+    private func finish(result: HarvestResult, name: String, destination: URL) {
         stopTimer()
         isRunning = false
         let msg: String
-        if result.success, FileManager.default.fileExists(atPath: destination.path) {
-            let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int) ?? 0
+        if result.success, let url = result.outputURL, FileManager.default.fileExists(atPath: url.path) {
+            let size = result.bytes > 0 ? result.bytes : Self.fileSize(url)
             bytesText = String(format: "%.1f MB", Double(size) / 1_048_576)
             msg = "\(name) 已保存 \(bytesText)"
         } else {
-            if FileManager.default.fileExists(atPath: destination.path) {
+            if FileManager.default.fileExists(atPath: destination.path), Self.fileSize(destination) < 1024 {
                 try? FileManager.default.removeItem(at: destination)
             }
-            msg = "\(name) 录制失败：\(result.error?.localizedDescription ?? "未知")"
+            msg = "\(name) 录制失败：\(result.error ?? "未知")"
         }
         onFinished?(name, msg)
     }
 
     func stop(userInitiated: Bool) {
         isRunning = false
-        stopTimer()
         workTask?.cancel()
-        workTask = nil
-        // finish 会在 detached task 里收到取消后回调
     }
 
     private func startTimer() {
@@ -270,6 +388,10 @@ final class RecordingSession: ObservableObject, Identifiable {
                 guard let self, let startedAt = self.startedAt else { return }
                 let s = Int(Date().timeIntervalSince(startedAt))
                 self.elapsedText = String(format: "%02d:%02d", s / 60, s % 60)
+                if let video = self.videoPartURL {
+                    let n = Self.fileSize(video) + (self.audioPartURL.map { Self.fileSize($0) } ?? 0)
+                    self.bytesText = String(format: "%.1f MB", Double(n) / 1_048_576)
+                }
             }
         }
     }

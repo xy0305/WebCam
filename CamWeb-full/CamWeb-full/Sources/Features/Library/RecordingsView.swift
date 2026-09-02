@@ -63,6 +63,9 @@ struct RecordingsView: View {
             .onChange(of: recs.activeUsernames.count) { _, _ in
                 files = RecordingStore.list()
             }
+            .onChange(of: recs.banner) { _, _ in
+                files = RecordingStore.list()
+            }
         }
     }
 }

@@ -53,6 +53,17 @@ enum StreamSource {
                                            bandwidth: bandwidth, resolution: resolution)
     }
 
+    /// 录制用：从官方 master 解析出最高码率视频 playlist + 音频 playlist
+    static func playlists(from master: URL) async throws -> (video: URL, audio: URL?) {
+        let text = try await fetchMasterText(master)
+        if text.contains("#EXT-X-STREAM-INF") {
+            let parsed = parseMaster(text, base: master)
+            guard let video = parsed.variants.first?.url else { throw StreamSourceError.blocked }
+            return (video, parsed.audioUri)
+        }
+        return (master, nil)
+    }
+
     /// 用 Accept: */* 拉取 master playlist（音视频分离的 m3u8 需要 */* 才返回正确内容）
     private static func fetchMasterText(_ url: URL) async throws -> String {
         var req = URLRequest(url: url)
