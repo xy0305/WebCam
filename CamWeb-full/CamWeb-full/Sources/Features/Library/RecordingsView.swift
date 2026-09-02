@@ -1,9 +1,9 @@
-import KSPlayer
 import SwiftUI
 
 struct RecordingsView: View {
     @ObservedObject private var recs = RecordingManager.shared
     @State private var files: [URL] = []
+    @State private var playing: PlayingFile?
 
     var body: some View {
         NavigationStack {
@@ -34,15 +34,16 @@ struct RecordingsView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(files, id: \.path) { url in
-                            NavigationLink {
-                                KSVideoPlayerView(url: url, options: KSOptions(), title: url.lastPathComponent)
-                                    .ignoresSafeArea(edges: .bottom)
-                                    .navigationTitle(url.lastPathComponent)
-                                    .navigationBarTitleDisplayMode(.inline)
+                            Button {
+                                playing = PlayingFile(url: url)
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(url.lastPathComponent).font(.subheadline.weight(.semibold))
-                                    Text(RecordingStore.sizeText(url)).font(.caption).foregroundStyle(.secondary)
+                                    Text(url.lastPathComponent)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(RecordingStore.sizeText(url))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                 }
                             }
                             .swipeActions {
@@ -66,6 +67,14 @@ struct RecordingsView: View {
             .onChange(of: recs.banner) { _, _ in
                 files = RecordingStore.list()
             }
+            .fullScreenCover(item: $playing) { item in
+                RecordingPlayerView(url: item.url)
+            }
         }
     }
+}
+
+private struct PlayingFile: Identifiable {
+    let url: URL
+    var id: String { url.path }
 }
