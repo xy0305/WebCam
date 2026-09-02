@@ -2,6 +2,7 @@ import SwiftUI
 
 struct FavoriteView: View {
     @EnvironmentObject var auth: AuthManager
+    @EnvironmentObject var appState: AppState
     @ObservedObject private var local = FollowingStore.shared
     @State private var remote: [Room] = []
     @State private var loading = false
@@ -27,7 +28,9 @@ struct FavoriteView: View {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(names, id: \.self) { name in
-                                NavigationLink(value: name) {
+                                Button {
+                                    appState.openPlayer(username: name)
+                                } label: {
                                     ChannelCard(room: remote.first(where: { $0.username == name }) ?? Room(username: name))
                                 }
                                 .buttonStyle(.plain)
@@ -41,7 +44,6 @@ struct FavoriteView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(Color.white)
             .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: String.self) { PlayerView(username: $0) }
             .task { await loadRemote() }
         }
     }
