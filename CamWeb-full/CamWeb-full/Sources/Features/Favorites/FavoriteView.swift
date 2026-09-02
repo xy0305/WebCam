@@ -58,6 +58,8 @@ struct FavoriteView: View {
         guard auth.isLoggedIn else { return }
         loading = true
         defer { loading = false }
-        remote = (try? await RoomAPI.fetchFollowed()) ?? []
+        let rooms = (try? await RoomAPI.fetchFollowed()) ?? []
+        remote = rooms
+        if !rooms.isEmpty { local.mergeRemote(rooms) }
     }
 }
