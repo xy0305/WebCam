@@ -43,11 +43,19 @@ jobs:
 
       - name: Package IPA
         run: |
-          APP="build/Build/Products/Release-iphoneos/CamWeb.app"
-          test -d "$APP" || { echo "Build product not found"; ls -R build/Build/Products; exit 1; }
+          echo "Looking for .app"
+          find build -name '*.app' -type d || true
+          APP="$(find build -path '*Release-iphoneos/*.app' -type d | head -n 1)"
+          if [ -z "$APP" ]; then
+            APP="$(find build -name '*.app' -type d | head -n 1)"
+          fi
+          test -n "$APP" && test -d "$APP" || { echo "Build product not found"; ls -R build/Build/Products || ls -R build; exit 1; }
+          echo "Using $APP"
+          rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry CamWeb-unsigned.ipa Payload
+          ls -lh CamWeb-unsigned.ipa
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
