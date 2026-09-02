@@ -97,7 +97,6 @@ final class RecordingSession: ObservableObject, Identifiable {
     init(username: String, masterURL: URL) {
         self.username = username
         self.masterURL = masterURL
-        super.init()
     }
 
     func start() {
@@ -141,9 +140,9 @@ final class RecordingSession: ObservableObject, Identifiable {
     nonisolated private static func transcode(source: URL, destination: URL) async throws {
         let asset = AVURLAsset(url: source)
 
-        // 同步加载轨道（HLS 会阻塞等待 master 加载完成）
-        let videoTracks = asset.tracks(withMediaType: .video)
-        let audioTracks = asset.tracks(withMediaType: .audio)
+        // 加载轨道（async API，iOS 15+ 确定存在）
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
 
         guard !videoTracks.isEmpty || !audioTracks.isEmpty else {
             throw StreamSourceError.blocked
@@ -203,7 +202,7 @@ final class RecordingSession: ObservableObject, Identifiable {
             if let videoOutput, let videoInput, videoInput.isReadyForMoreMediaData {
                 while let buffer = videoOutput.copyNextSampleBuffer() {
                     if !sessionStarted {
-                        writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(buffer))
+                        writer.startSession(atSourceTime: buffer.presentationTimeStamp)
                         sessionStarted = true
                     }
                     videoInput.append(buffer)
