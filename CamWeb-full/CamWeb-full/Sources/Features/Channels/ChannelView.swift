@@ -53,8 +53,18 @@ struct ChannelView: View {
                     .refreshable { await reload() }
                 }
             }
-            .navigationTitle(appState.keywordFilter.isEmpty && appState.genderFilter.isEmpty ? "频道" : appState.groupTitle)
+            .navigationTitle(isFiltered ? appState.groupTitle : "频道")
+            .navigationBarBackButtonHidden(true)
             .toolbar {
+                if isFiltered {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            clearFilter()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("全部频道") { applyFilter("", title: "频道") }
@@ -67,6 +77,9 @@ struct ChannelView: View {
                     }
                 }
             }
+            .edgeSwipeBack(enabled: isFiltered) {
+                clearFilter()
+            }
             .searchable(text: $searchText, prompt: "搜索频道")
             .task { if rooms.isEmpty { await reload() } }
             .onChange(of: appState.keywordFilter) { _, _ in
@@ -74,6 +87,14 @@ struct ChannelView: View {
             }
             .overlay { if loading && rooms.isEmpty { ProgressView() } }
         }
+    }
+
+    private var isFiltered: Bool {
+        !appState.keywordFilter.isEmpty || !appState.genderFilter.isEmpty
+    }
+
+    private func clearFilter() {
+        applyFilter("", title: "频道")
     }
 
     private func applyFilter(_ gender: String, title: String) {

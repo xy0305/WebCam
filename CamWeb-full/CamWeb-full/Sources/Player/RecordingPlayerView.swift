@@ -50,6 +50,10 @@ struct RecordingPlayerView: View {
             coordinator.isMaskShow = false
             scheduleHide()
         }
+        .edgeSwipeBack {
+            coordinator.playerLayer?.pause()
+            dismiss()
+        }
         .onDisappear {
             hideTask?.cancel()
             coordinator.playerLayer?.pause()

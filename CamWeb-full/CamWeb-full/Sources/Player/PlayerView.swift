@@ -62,6 +62,9 @@ struct PlayerView: View {
             autoHideTask?.cancel()
             OrientationLock.set(.portrait, keepLocked: true)
         }
+        .edgeSwipeBack {
+            handleBack(isLandscape: OrientationLock.isLandscape)
+        }
         .alert("录制", isPresented: Binding(
             get: { recs.banner != nil },
             set: { if !$0 { recs.banner = nil } }
