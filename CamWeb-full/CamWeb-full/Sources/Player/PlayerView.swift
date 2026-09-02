@@ -12,6 +12,7 @@ struct PlayerView: View {
     @State private var loading = true
     @State private var showChrome = true
     @State private var locked = false
+    @State private var isLandscape = false
     @State private var hideChromeTask: Task<Void, Never>?
     @ObservedObject private var recs = RecordingManager.shared
     @ObservedObject private var fav = FollowingStore.shared
@@ -35,7 +36,7 @@ struct PlayerView: View {
                 .onTapGesture { toggleChrome() }
                 .gesture(TapGesture(count: 2).onEnded { dismiss() })
 
-            // 锁屏按钮（右侧中部，常驻，锁定后隐藏控制栏）
+            // 锁屏按钮（右侧中部，常驻可见，便于唤回）
             lockButton
 
             // 控制栏（上下渐隐）
@@ -68,16 +69,12 @@ struct PlayerView: View {
             Text(errorText ?? "打不开")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.8))
-            Button {
-                Task { await resolve() }
-            } label: {
-                Text("重试")
-                    .font(.headline)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 10)
-                    .background(Color.white.opacity(0.2), in: Capsule())
-                    .foregroundStyle(.white)
-            }
+            Button("重试") { Task { await resolve() } }
+                .font(.headline)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 10)
+                .background(Color.white.opacity(0.2), in: Capsule())
+                .foregroundStyle(.white)
         }
     }
 
@@ -101,27 +98,22 @@ struct PlayerView: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(username)
-                    .font(.headline)
-                    .lineLimit(1)
+                Text(username).font(.headline).lineLimit(1)
                 HStack(spacing: 5) {
                     Circle().fill(Color.red).frame(width: 6, height: 6)
-                    Text("LIVE")
-                        .font(.caption2.weight(.bold))
+                    Text("LIVE").font(.caption2.weight(.bold))
                 }
             }
 
             Spacer()
 
-            if !locked {
-                circleBtn(recs.isRecording(username) ? "stop.circle.fill" : "record.circle", size: 30) {
-                    toggleRecord()
-                }
+            circleBtn(recs.isRecording(username) ? "stop.circle.fill" : "record.circle", size: 30) {
+                toggleRecord()
             }
         }
         .padding(.horizontal, 14)
         .padding(.top, 6)
-        .padding(.bottom, 24)
+        .padding(.bottom, 28)
         .background(
             LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea(edges: .top)
@@ -129,36 +121,40 @@ struct PlayerView: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: 18) {
-            // 左侧：收藏 + 录制状态
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 14) {
-                    circleBtn(fav.isFollowing(username) ? "heart.fill" : "heart", size: 26) {
-                        fav.toggle(username)
-                    }
-                    if recs.isRecording(username) {
-                        Text(recs.session(for: username)?.elapsedText ?? "REC")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.9))
-                    }
-                }
+        HStack(spacing: 22) {
+            // 左侧：收藏
+            circleBtn(fav.isFollowing(username) ? "heart.fill" : "heart", size: 30) {
+                fav.toggle(username)
+                scheduleChromeHide()
+            }
+
+            if recs.isRecording(username) {
+                Text(recs.session(for: username)?.elapsedText ?? "REC")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.9))
             }
 
             Spacer()
 
-            // 右侧：清晰度 / 倍速 / PiP
+            // 横竖屏切换
+            circleBtn(isLandscape ? "rectangle.portrait" : "rectangle.landscape", size: 28) {
+                toggleOrientation()
+                scheduleChromeHide()
+            }
+
+            // 清晰度
             Menu {
-                Button("原画") { }
+                Button("原画") { scheduleChromeHide() }
             } label: {
                 HStack(spacing: 4) {
                     Text("原画")
-                    Image(systemName: "chevron.up")
-                        .font(.caption2)
+                    Image(systemName: "chevron.up").font(.caption2)
                 }
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
             }
 
+            // 倍速
             Menu {
                 Button("0.75x") { }
                 Button("1.0x") { }
@@ -166,17 +162,17 @@ struct PlayerView: View {
                 Button("1.5x") { }
                 Button("2.0x") { }
             } label: {
-                Text("倍速")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                Text("倍速").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
             }
 
+            // PiP
             circleBtn("pip.enter", size: 28) {
                 startSystemPiP()
+                scheduleChromeHide()
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 24)
+        .padding(.top, 28)
         .padding(.bottom, 14)
         .background(
             LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
@@ -184,25 +180,21 @@ struct PlayerView: View {
         )
     }
 
-    // MARK: - 锁屏按钮（右侧中部，参考 pure_live）
+    // MARK: - 锁屏按钮（右侧中部常驻，锁定后仍可见以便解锁）
 
     private var lockButton: some View {
         VStack {
             Spacer()
-            circleBtn(locked ? "lock.fill" : "lock.open", size: 34) {
+            circleBtn(locked ? "lock.fill" : "lock.open", size: 36) {
                 locked.toggle()
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    showChrome = !locked
-                }
+                withAnimation(.easeInOut(duration: 0.25)) { showChrome = !locked }
                 if !locked { scheduleChromeHide() }
             }
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.trailing, 20)
-        .padding(.vertical, 40)
-        .opacity(showChrome || locked ? 1 : 0)
-        .animation(.easeInOut(duration: 0.25), value: showChrome)
+        .padding(.vertical, 44)
     }
 
     private func circleBtn(_ name: String, size: CGFloat, action: @escaping () -> Void) -> some View {
@@ -231,9 +223,7 @@ struct PlayerView: View {
 
     private func toggleChrome() {
         guard !locked else { return }
-        withAnimation(.easeInOut(duration: 0.25)) {
-            showChrome.toggle()
-        }
+        withAnimation(.easeInOut(duration: 0.25)) { showChrome.toggle() }
         if showChrome { scheduleChromeHide() }
     }
 
@@ -246,6 +236,11 @@ struct PlayerView: View {
         }
     }
 
+    private func toggleOrientation() {
+        isLandscape.toggle()
+        OrientationLock.set(isLandscape ? .landscape : .portrait)
+    }
+
     private func startSystemPiP() {
         coordinator.playerLayer?.isPipActive.toggle()
     }
@@ -253,7 +248,6 @@ struct PlayerView: View {
     private func resolve() async {
         loading = true
         errorText = nil
-        // 关闭 KSPlayer 自带控制层，完全使用自定义 UI
         coordinator.isMaskShow = false
         do { stream = try await StreamSource.resolve(username: username) }
         catch { errorText = error.localizedDescription; stream = nil }
@@ -261,9 +255,10 @@ struct PlayerView: View {
     }
 
     private func toggleRecord() {
-        if let stream {
-            recs.toggle(username: username, hlsURL: stream.hlsURL)
-        }
+        guard let stream else { return }
+        // 录制用官方 master（音视频一体的完整 playlist），而非 data: 迷你 master
+        recs.toggle(username: username, masterURL: stream.masterURL)
+        scheduleChromeHide()
     }
 }
 
@@ -294,10 +289,7 @@ struct MiniPlayerView: View {
                                 .foregroundStyle(.white)
                         }
                         Spacer()
-                        Text(name)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.trailing, 8)
+                        Text(name).font(.caption.weight(.semibold)).foregroundStyle(.white).padding(.trailing, 8)
                     }
                     .padding(6)
                 }

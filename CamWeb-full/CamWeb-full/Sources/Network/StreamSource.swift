@@ -2,7 +2,10 @@ import Foundation
 
 struct ResolvedStream: Sendable {
     let username: String
+    /// 播放用：有声最高画质迷你 master（data: URI），AVPlayer 直接播
     let hlsURL: URL
+    /// 录制用：官方原始 master（音视频一体的完整 playlist）
+    let masterURL: URL
     let status: String
 }
 
@@ -14,10 +17,10 @@ enum StreamSource {
                 let master = try await fetchMaster(username: username)
                 // 有声音的最高画质：把音频轨与最高码率视频变体合成迷你 master
                 if let audible = await buildAudibleStream(master) {
-                    return ResolvedStream(username: username, hlsURL: audible, status: "public")
+                    return ResolvedStream(username: username, hlsURL: audible, masterURL: master, status: "public")
                 }
                 // 保底：直接返回官方 master（音视频一体，让 AVPlayer 自行组合）
-                return ResolvedStream(username: username, hlsURL: master, status: "public")
+                return ResolvedStream(username: username, hlsURL: master, masterURL: master, status: "public")
             } catch {
                 last = error
                 try await Task.sleep(nanoseconds: 700_000_000)
