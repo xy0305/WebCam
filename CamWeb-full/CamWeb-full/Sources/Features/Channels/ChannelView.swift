@@ -39,7 +39,9 @@ struct ChannelView: View {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(filtered) { room in
-                                NavigationLink(value: room.username) {
+                                Button {
+                                    appState.openPlayer(username: room.username)
+                                } label: {
                                     ChannelCard(room: room)
                                 }
                                 .buttonStyle(.plain)
@@ -59,7 +61,6 @@ struct ChannelView: View {
             .toolbar(.hidden, for: .navigationBar)
             .task { if rooms.isEmpty { await reload() } }
             .overlay { if loading && rooms.isEmpty { ProgressView() } }
-            .navigationDestination(for: String.self) { PlayerView(username: $0) }
         }
     }
 
