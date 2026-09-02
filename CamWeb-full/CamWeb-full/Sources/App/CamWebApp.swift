@@ -3,19 +3,15 @@ import KSPlayer
 
 @main
 struct CamWebApp: App {
-    @StateObject private var auth = AuthManager.shared
-    @StateObject private var appState = AppState.shared
-
     init() {
-        KSOptions.secondPlayerType = KSMEPlayer.self
         URLCache.shared = URLCache(memoryCapacity: 40 * 1024 * 1024, diskCapacity: 200 * 1024 * 1024)
     }
 
     var body: some Scene {
         WindowGroup {
             RootFlow()
-                .environmentObject(auth)
-                .environmentObject(appState)
+                .environmentObject(AuthManager.shared)
+                .environmentObject(AppState.shared)
                 .preferredColorScheme(.light)
         }
     }
@@ -50,9 +46,21 @@ final class AppState: ObservableObject {
     @Published var tab: AppTab = .channels
     @Published var groupTitle = "Default"
     @Published var genderFilter = ""
+    @Published var miniUsername: String?
+    @Published var miniURL: URL?
 
     private init() {
         acceptedAge = UserDefaults.standard.bool(forKey: "camweb.age")
+    }
+
+    func startMini(username: String, url: URL) {
+        miniUsername = username
+        miniURL = url
+    }
+
+    func stopMini() {
+        miniUsername = nil
+        miniURL = nil
     }
 
     func acceptAge() {
