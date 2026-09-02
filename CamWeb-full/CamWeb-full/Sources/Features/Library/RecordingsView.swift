@@ -2,6 +2,7 @@ import KSPlayer
 import SwiftUI
 
 struct RecordingsView: View {
+    @ObservedObject private var recs = RecordingManager.shared
     @State private var files: [URL] = []
 
     var body: some View {
@@ -11,12 +12,38 @@ struct RecordingsView: View {
                     .font(.system(size: 34, weight: .bold))
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
-                Text("本地源流录像（.ts 原切片拼接）")
+                Text("离开播放页也会继续录。可同时录多路。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
 
-                if files.isEmpty {
+                if !recs.activeUsernames.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("正在录制 \(recs.activeUsernames.count) 路")
+                            .font(.headline)
+                            .padding(.horizontal, 16)
+                        ForEach(recs.activeUsernames, id: \.self) { name in
+                            HStack {
+                                Circle().fill(Color.red).frame(width: 8, height: 8)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(name).font(.subheadline.weight(.semibold))
+                                    Text("\(recs.session(for: name)?.elapsedText ?? "")  \(recs.session(for: name)?.bytesText ?? "")")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("停止") { recs.stop(name) }
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.red)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                        }
+                    }
+                    .padding(.bottom, 8)
+                }
+
+                if files.isEmpty && recs.activeUsernames.isEmpty {
                     Text("没有录像，播放时点录制会保存到这里").foregroundStyle(.secondary).padding()
                 } else {
                     List {
@@ -47,6 +74,9 @@ struct RecordingsView: View {
             .background(Color.white)
             .toolbar(.hidden, for: .navigationBar)
             .onAppear { files = RecordingStore.list() }
+            .onChange(of: recs.activeUsernames.count) { _, _ in
+                files = RecordingStore.list()
+            }
         }
     }
 }
