@@ -1,6 +1,6 @@
 import Foundation
 import UIKit
-import KSPlayer
+import AVFoundation
 
 @MainActor
 final class RecordingManager: ObservableObject {
@@ -73,12 +73,12 @@ final class RecordingManager: ObservableObject {
     }
 }
 
-/// 用 KSPlayer 的 MEPlayer（FFmpeg 内核）+ KSOptions.outputURL 录制直播流。
-/// FFmpeg 的 `avformat_alloc_output_context2` 会根据文件扩展名（.mp4）推断封装格式，
-/// 自动处理 HLS 音视频分离、fMP4 分片转封装，产出可播放的 MP4。
-/// 这是 KSPlayer 官方支持的录制方式，无需额外依赖。
+/// 用 AVAssetReader（读直播 HLS 音视频轨）+ AVAssetWriter（转封装成 .mp4）录制。
+/// 纯系统 AVFoundation 方案：AVPlayer 能播的流（含 LL-HLS 音视频分离），AVAssetReader 一定能读。
+/// copy 转封装不重编码，快且能跟上实时；AVAssetWriter.finishWriting 会正确写 moov atom，
+/// 即使直播中途停止也能产出可播放文件。
 @MainActor
-final class RecordingSession: NSObject, ObservableObject, Identifiable {
+final class RecordingSession: ObservableObject, Identifiable {
     var id: String { username }
     let username: String
     let masterURL: URL
@@ -92,8 +92,7 @@ final class RecordingSession: NSObject, ObservableObject, Identifiable {
     private var timer: Timer?
     private var startedAt: Date?
     private var outputURL: URL?
-    private var player: KSMEPlayer?
-    private var sizeCheckTimer: Timer?
+    private var workTask: Task<Void, Never>?
 
     init(username: String, masterURL: URL) {
         self.username = username
@@ -104,62 +103,165 @@ final class RecordingSession: NSObject, ObservableObject, Identifiable {
     func start() {
         let dir = RecordingStore.directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // 用 .ts（MPEG-TS 流式格式）而非 .mp4：直播录制中途停止时，
-        // MP4 的 moov atom 写不完整会损坏文件；TS 无 moov atom，随时停止都能播放。
-        let url = dir.appendingPathComponent("\(username)_\(Self.stamp()).ts")
+        let url = dir.appendingPathComponent("\(username)_\(Self.stamp()).mp4")
         outputURL = url
 
         isRunning = true
         startedAt = Date()
         startTimer()
 
-        // 配置 KSOptions：设置 outputURL 触发 FFmpeg 录制
-        let options = KSOptions()
-        options.outputURL = url
-        KSOptions.isAutoPlay = true
-        options.videoAdaptable = false
-        // 带上与播放一致的请求头（Referer/UA），确保能拉到源
-        options.appendHeader(APIClient.commonHeaders)
-
-        // 用 MEPlayer（FFmpeg 内核）实例拉流录制
-        let mePlayer = KSMEPlayer(url: masterURL, options: options)
-        player = mePlayer
-        mePlayer.prepareToPlay()
-        mePlayer.play()
-
-        // 定期检查录制文件大小，更新进度
-        sizeCheckTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateFileSize()
+        let source = masterURL
+        let destination = url
+        let name = username
+        workTask = Task.detached(priority: .utility) { [weak self] in
+            let result = await Self.record(source: source, destination: destination)
+            await MainActor.run {
+                self?.finish(result: result, name: name, destination: destination)
             }
         }
     }
 
-    private func updateFileSize() {
-        guard let outputURL, FileManager.default.fileExists(atPath: outputURL.path) else { return }
-        let size = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int) ?? 0
-        bytesText = String(format: "%.1f MB", Double(size) / 1_048_576)
+    /// 录制结果
+    private struct RecordResult {
+        let success: Bool
+        let error: Error?
+    }
+
+    /// 核心录制逻辑（后台线程，非隔离）
+    nonisolated private static func record(source: URL, destination: URL) async -> RecordResult {
+        do {
+            try await transcode(source: source, destination: destination)
+            return RecordResult(success: true, error: nil)
+        } catch {
+            return RecordResult(success: false, error: error)
+        }
+    }
+
+    /// AVAssetReader 读 → AVAssetWriter 写（copy 转封装）
+    nonisolated private static func transcode(source: URL, destination: URL) async throws {
+        let asset = AVURLAsset(url: source)
+
+        // 同步加载轨道（HLS 会阻塞等待 master 加载完成）
+        let videoTracks = asset.tracks(withMediaType: .video)
+        let audioTracks = asset.tracks(withMediaType: .audio)
+
+        guard !videoTracks.isEmpty || !audioTracks.isEmpty else {
+            throw StreamSourceError.blocked
+        }
+
+        let reader = try AVAssetReader(asset: asset)
+        let writer = try AVAssetWriter(outputURL: destination, fileType: .mp4)
+
+        var videoInput: AVAssetWriterInput?
+        var videoOutput: AVAssetReaderTrackOutput?
+        var audioInput: AVAssetWriterInput?
+        var audioOutput: AVAssetReaderTrackOutput?
+
+        // 视频轨：copy 转封装（不重编码）
+        if let videoTrack = videoTracks.first {
+            let input = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
+            input.expectsMediaDataInRealTime = true
+            if writer.canAdd(input) {
+                writer.add(input)
+                videoInput = input
+                let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
+                if reader.canAdd(output) {
+                    reader.add(output)
+                    videoOutput = output
+                }
+            }
+        }
+
+        // 音频轨：copy 转封装
+        if let audioTrack = audioTracks.first {
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+            input.expectsMediaDataInRealTime = true
+            if writer.canAdd(input) {
+                writer.add(input)
+                audioInput = input
+                let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+                if reader.canAdd(output) {
+                    reader.add(output)
+                    audioOutput = output
+                }
+            }
+        }
+
+        guard videoOutput != nil || audioOutput != nil else {
+            throw StreamSourceError.blocked
+        }
+
+        reader.startReading()
+        writer.startWriting()
+
+        var sessionStarted = false
+
+        // 持续读直播流（HLS 动态分片），直到被取消
+        while !Task.isCancelled {
+            var gotAny = false
+
+            if let videoOutput, let videoInput, videoInput.isReadyForMoreMediaData {
+                while let buffer = videoOutput.copyNextSampleBuffer() {
+                    if !sessionStarted {
+                        writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(buffer))
+                        sessionStarted = true
+                    }
+                    videoInput.append(buffer)
+                    gotAny = true
+                }
+            }
+
+            if let audioOutput, let audioInput, audioInput.isReadyForMoreMediaData {
+                while let buffer = audioOutput.copyNextSampleBuffer() {
+                    audioInput.append(buffer)
+                    gotAny = true
+                }
+            }
+
+            if !gotAny {
+                // 读到当前末尾，稍等新分片
+                try await Task.sleep(nanoseconds: 400_000_000)
+            }
+        }
+
+        // 收尾
+        videoInput?.markAsFinished()
+        audioInput?.markAsFinished()
+
+        // 等写完成（正确写 moov atom）
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            writer.finishWriting {
+                cont.resume()
+            }
+        }
+        if writer.status != .completed {
+            throw writer.error ?? StreamSourceError.badResponse
+        }
+    }
+
+    private func finish(result: RecordResult, name: String, destination: URL) {
+        stopTimer()
+        isRunning = false
+        let msg: String
+        if result.success, FileManager.default.fileExists(atPath: destination.path) {
+            let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int) ?? 0
+            bytesText = String(format: "%.1f MB", Double(size) / 1_048_576)
+            msg = "\(name) 已保存 \(bytesText)"
+        } else {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try? FileManager.default.removeItem(at: destination)
+            }
+            msg = "\(name) 录制失败：\(result.error?.localizedDescription ?? "未知")"
+        }
+        onFinished?(name, msg)
     }
 
     func stop(userInitiated: Bool) {
         isRunning = false
         stopTimer()
-        sizeCheckTimer?.invalidate()
-        sizeCheckTimer = nil
-
-        // shutdown 会触发 FFmpeg 写完成并关闭文件
-        player?.shutdown()
-        player = nil
-
-        let msg: String
-        if let outputURL, FileManager.default.fileExists(atPath: outputURL.path) {
-            updateFileSize()
-            msg = "\(username) 已保存 \(bytesText)"
-        } else {
-            msg = "\(username) 没有录到数据"
-        }
-        outputURL = nil
-        onFinished?(username, msg)
+        workTask?.cancel()
+        workTask = nil
+        // finish 会在 detached task 里收到取消后回调
     }
 
     private func startTimer() {
