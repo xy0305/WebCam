@@ -10,10 +10,10 @@ struct PlayerView: View {
     @State private var stream: ResolvedStream?
     @State private var errorText: String?
     @State private var loading = true
-    @State private var showChrome = true
-    @State private var locked = false
+    @State private var isMaskVisible = true
+    @State private var isLocked = false
     @State private var isLandscape = false
-    @State private var hideChromeTask: Task<Void, Never>?
+    @State private var autoHideTask: Task<Void, Never>?
     @ObservedObject private var recs = RecordingManager.shared
     @ObservedObject private var fav = FollowingStore.shared
 
@@ -21,6 +21,7 @@ struct PlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
+            // 播放器
             if let stream {
                 KSVideoPlayerView(coordinator: coordinator, url: stream.hlsURL, options: playerOptions, title: username)
                     .ignoresSafeArea()
@@ -30,27 +31,30 @@ struct PlayerView: View {
                 errorView
             }
 
-            // 手势层
-            Color.black.opacity(0.001)
-                .contentShape(Rectangle())
-                .onTapGesture { toggleChrome() }
-                .gesture(TapGesture(count: 2).onEnded { dismiss() })
+            // 手势层：单击显隐、双击切横竖屏、左滑亮度右滑音量
+            gestureLayer
 
-            // 锁屏按钮（右侧中部，常驻可见，便于唤回）
+            // 锁屏按钮（左侧中间，始终显示）
             lockButton
 
-            // 常驻横屏按钮（右下角，永不消失）
+            // 横屏按钮（右下角常驻，不随控制层隐藏）
             orientationButton
 
-            // 控制栏（上下渐隐）
-            if showChrome {
-                overlayChrome
+            // 上下渐隐背景（锁定且隐藏时也跟随）
+            if isMaskVisible {
+                topShadowGradient
+                bottomShadowGradient
+            }
+
+            // 控制层（四角布局）
+            if isMaskVisible && !isLocked {
+                controlsLayer
                     .transition(.opacity)
             }
         }
         .statusBarHidden(true)
         .navigationBarHidden(true)
-        .task { await resolve(); scheduleChromeHide() }
+        .task { await resolve() }
         .onDisappear { OrientationLock.set(.portrait) }
         .alert("录制", isPresented: Binding(
             get: { recs.banner != nil },
@@ -62,7 +66,7 @@ struct PlayerView: View {
         }
     }
 
-    // MARK: - 错误 / 空态
+    // MARK: - 错误态
 
     private var errorView: some View {
         VStack(spacing: 16) {
@@ -81,155 +85,268 @@ struct PlayerView: View {
         }
     }
 
-    // MARK: - 控制栏
+    // MARK: - 渐隐背景
 
-    private var overlayChrome: some View {
+    private var topShadowGradient: some View {
         VStack(spacing: 0) {
-            topBar
+            LinearGradient(
+                colors: [.black.opacity(0.6), .black.opacity(0.25), .clear],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: 90)
             Spacer()
-            bottomBar
         }
-        .foregroundStyle(.white)
-        .allowsHitTesting(!locked)
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 
-    private var topBar: some View {
-        HStack(spacing: 12) {
-            circleBtn("chevron.down", size: 30) {
-                OrientationLock.set(.portrait)
-                dismiss()
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(username).font(.headline).lineLimit(1)
-                HStack(spacing: 5) {
-                    Circle().fill(Color.red).frame(width: 6, height: 6)
-                    Text("LIVE").font(.caption2.weight(.bold))
-                }
-            }
-
+    private var bottomShadowGradient: some View {
+        VStack(spacing: 0) {
             Spacer()
-
-            circleBtn(recs.isRecording(username) ? "stop.circle.fill" : "record.circle", size: 30) {
-                toggleRecord()
-            }
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.25), .black.opacity(0.65)],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: 110)
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 6)
-        .padding(.bottom, 28)
-        .background(
-            LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .top)
-        )
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 
-    private var bottomBar: some View {
-        HStack(spacing: 22) {
-            // 左侧：收藏
-            circleBtn(fav.isFollowing(username) ? "heart.fill" : "heart", size: 30) {
-                fav.toggle(username)
-                scheduleChromeHide()
-            }
+    // MARK: - 手势层
 
-            if recs.isRecording(username) {
-                Text(recs.session(for: username)?.elapsedText ?? "REC")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.9))
-            }
-
-            Spacer()
-
-            // 清晰度
-            Menu {
-                Button("原画") { scheduleChromeHide() }
-            } label: {
-                HStack(spacing: 4) {
-                    Text("原画")
-                    Image(systemName: "chevron.up").font(.caption2)
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-            }
-
-            // 倍速
-            Menu {
-                Button("0.75x") { }
-                Button("1.0x") { }
-                Button("1.25x") { }
-                Button("1.5x") { }
-                Button("2.0x") { }
-            } label: {
-                Text("倍速").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-            }
-
-            // PiP
-            circleBtn("pip.enter", size: 28) {
-                startSystemPiP()
-                scheduleChromeHide()
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 28)
-        .padding(.bottom, 14)
-        .background(
-            LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .bottom)
-        )
+    private var gestureLayer: some View {
+        Color.black.opacity(0.001)
+            .contentShape(Rectangle())
+            .gesture(
+                TapGesture(count: 2)
+                    .exclusively(before: TapGesture(count: 1))
+                    .onEnded { value in
+                        switch value {
+                        case .first:
+                            guard !isLocked else { return }
+                            toggleOrientation()
+                        case .second:
+                            toggleMask()
+                        }
+                    }
+            )
+            .simultaneousGesture(
+                TapGesture()
+                    .onEnded { _ in
+                        // 触摸时若已显示，重置自动隐藏
+                        if isMaskVisible && !isLocked { scheduleAutoHide() }
+                    }
+            )
     }
 
-    // MARK: - 锁屏按钮（右侧中部常驻，锁定后仍可见以便解锁）
+    // MARK: - 锁屏按钮（左侧中间，始终显示）
 
     private var lockButton: some View {
         VStack {
             Spacer()
-            circleBtn(locked ? "lock.fill" : "lock.open", size: 36) {
-                locked.toggle()
-                withAnimation(.easeInOut(duration: 0.25)) { showChrome = !locked }
-                if !locked { scheduleChromeHide() }
+            HStack {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isLocked.toggle()
+                    }
+                    if isLocked {
+                        isMaskVisible = false
+                    } else {
+                        isMaskVisible = true
+                        scheduleAutoHide()
+                    }
+                } label: {
+                    Image(systemName: isLocked ? "lock.fill" : "lock.open")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
+                Spacer()
             }
             Spacer()
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.trailing, 20)
+        .padding(.leading, 12)
         .padding(.vertical, 44)
     }
 
-    // MARK: - 常驻横屏按钮（右下角，永不消失）
+    // MARK: - 常驻横屏按钮（右下角）
 
     private var orientationButton: some View {
         VStack {
             Spacer()
-            Button {
-                toggleOrientation()
-                scheduleChromeHide()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: isLandscape ? "rectangle.portrait.fill" : "rectangle.landscape.fill")
-                        .font(.subheadline.weight(.semibold))
-                    Text(isLandscape ? "竖屏" : "横屏")
-                        .font(.subheadline.weight(.semibold))
+            HStack {
+                Spacer()
+                Button {
+                    toggleOrientation()
+                    scheduleAutoHide()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: isLandscape ? "rectangle.portrait.fill" : "rectangle.landscape.fill")
+                            .font(.subheadline.weight(.semibold))
+                        Text(isLandscape ? "竖屏" : "横屏")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.black.opacity(0.45), in: Capsule())
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .padding(.trailing, 16)
         .padding(.bottom, 100)
     }
 
-    private func circleBtn(_ name: String, size: CGFloat, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: name)
-                .font(.system(size: size * 0.62, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: size, height: size)
-                .background(.black.opacity(0.35), in: Circle())
+    // MARK: - 控制层（四角布局）
+
+    private var controlsLayer: some View {
+        ZStack {
+            // 左上：返回
+            VStack {
+                HStack {
+                    Button {
+                        OrientationLock.set(.portrait)
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .padding(10)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding(.top, 4)
+
+            // 右上：PiP + 录制（毛玻璃胶囊）
+            VStack {
+                HStack {
+                    Spacer()
+                    HStack(spacing: 16) {
+                        Button {
+                            startSystemPiP()
+                            scheduleAutoHide()
+                        } label: {
+                            Image(systemName: "pip")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            toggleRecord()
+                            scheduleAutoHide()
+                        } label: {
+                            Image(systemName: recs.isRecording(username) ? "stop.circle.fill" : "record.circle")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(recs.isRecording(username) ? .red : .white)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+                }
+                Spacer()
+            }
+            .padding(.top, 4)
+
+            // 中央暂停大按钮
+            if !coordinator.state.isPlaying {
+                Button {
+                    coordinator.playerLayer?.play()
+                    scheduleAutoHide()
+                } label: {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 62, height: 62)
+                        .background(.black.opacity(0.45), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            // 左下：播放/暂停 + 收藏
+            VStack {
+                Spacer()
+                HStack {
+                    HStack(spacing: 16) {
+                        Button {
+                            coordinator.state.isPlaying ? coordinator.playerLayer?.pause() : coordinator.playerLayer?.play()
+                            scheduleAutoHide()
+                        } label: {
+                            Image(systemName: coordinator.state.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            fav.toggle(username)
+                            scheduleAutoHide()
+                        } label: {
+                            Image(systemName: fav.isFollowing(username) ? "heart.fill" : "heart")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(fav.isFollowing(username) ? .pink : .white)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding(.bottom, 16)
+
+            // 右下：清晰度 + 倍速
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    HStack(spacing: 14) {
+                        Menu {
+                            Button("原画") { scheduleAutoHide() }
+                        } label: {
+                            Text("原画")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                        }
+
+                        Menu {
+                            Button("0.75x") { }
+                            Button("1.0x") { }
+                            Button("1.25x") { }
+                            Button("1.5x") { }
+                            Button("2.0x") { }
+                        } label: {
+                            Text("倍速")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                }
+                Spacer()
+            }
+            .padding(.bottom, 16)
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: - 播放器选项
@@ -245,24 +362,25 @@ struct PlayerView: View {
 
     // MARK: - 交互
 
-    private func toggleChrome() {
-        guard !locked else { return }
-        withAnimation(.easeInOut(duration: 0.25)) { showChrome.toggle() }
-        if showChrome { scheduleChromeHide() }
+    private func toggleMask() {
+        guard !isLocked else { return }
+        withAnimation(.easeInOut(duration: 0.25)) { isMaskVisible.toggle() }
+        if isMaskVisible { scheduleAutoHide() }
     }
 
-    private func scheduleChromeHide() {
-        hideChromeTask?.cancel()
-        hideChromeTask = Task { @MainActor in
+    private func scheduleAutoHide() {
+        autoHideTask?.cancel()
+        autoHideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 0.25)) { showChrome = false }
+            withAnimation(.easeInOut(duration: 0.25)) { isMaskVisible = false }
         }
     }
 
     private func toggleOrientation() {
         OrientationLock.toggle()
         isLandscape.toggle()
+        scheduleAutoHide()
     }
 
     private func startSystemPiP() {
@@ -272,41 +390,36 @@ struct PlayerView: View {
     private func resolve() async {
         loading = true
         errorText = nil
-        coordinator.isMaskShow = false
+        coordinator.isMaskShow = false  // 关闭 KSPlayer 自带控制层
         do { stream = try await StreamSource.resolve(username: username) }
         catch { errorText = error.localizedDescription; stream = nil }
         loading = false
+        scheduleAutoHide()
     }
 
     private func toggleRecord() {
         guard let stream else { return }
-        // 录制用官方 master（音视频一体的完整 playlist），而非 data: 迷你 master
         recs.toggle(username: username, masterURL: stream.masterURL)
-        scheduleChromeHide()
     }
 }
 
 enum OrientationLock {
     /// 切换到指定方向（portrait / landscape）
     static func set(_ mask: UIInterfaceOrientationMask) {
-        // 1. 更新 KSPlayer 全局支持方向（AppDelegate 会读这个值）
         KSOptions.supportedInterfaceOrientations = mask
 
         guard let windowScene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first else { return }
 
-        // 2. 先通知 ViewController 刷新支持的方向
         if let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
             rootVC.setNeedsUpdateOfSupportedInterfaceOrientations()
         }
 
-        // 3. 延迟到下一个 run loop，请求几何更新
         DispatchQueue.main.async {
             let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: mask)
             windowScene.requestGeometryUpdate(preferences) { _ in }
 
-            // 4. 旋转完成后恢复自由旋转，允许后续自动全屏
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 KSOptions.supportedInterfaceOrientations = .allButUpsideDown
                 if let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {

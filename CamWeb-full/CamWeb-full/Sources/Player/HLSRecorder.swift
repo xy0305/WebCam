@@ -104,7 +104,9 @@ final class RecordingSession: NSObject, ObservableObject, Identifiable {
     func start() {
         let dir = RecordingStore.directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("\(username)_\(Self.stamp()).mp4")
+        // 用 .ts（MPEG-TS 流式格式）而非 .mp4：直播录制中途停止时，
+        // MP4 的 moov atom 写不完整会损坏文件；TS 无 moov atom，随时停止都能播放。
+        let url = dir.appendingPathComponent("\(username)_\(Self.stamp()).ts")
         outputURL = url
 
         isRunning = true
