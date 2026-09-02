@@ -2,12 +2,6 @@ import KSPlayer
 import SwiftUI
 import UIKit
 
-enum PlayLayout: String, CaseIterable {
-    case portrait = "竖屏"
-    case landscape = "横屏"
-    case mini = "小窗"
-}
-
 struct PlayerView: View {
     let username: String
     @Environment(\.dismiss) private var dismiss
@@ -17,44 +11,43 @@ struct PlayerView: View {
     @State private var errorText: String?
     @State private var loading = true
     @State private var showChrome = true
+    @State private var locked = false
     @State private var hideChromeTask: Task<Void, Never>?
-    @State private var layout: PlayLayout = .portrait
-    @State private var paused = false
-    @State private var speed: Float = 1
-    @State private var showSpeed = false
     @ObservedObject private var recs = RecordingManager.shared
     @ObservedObject private var fav = FollowingStore.shared
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
+
             if let stream {
                 KSVideoPlayerView(coordinator: coordinator, url: stream.hlsURL, options: playerOptions, title: username)
                     .ignoresSafeArea()
             } else if loading {
                 ProgressView("解析直播流…").tint(.white).foregroundStyle(.white)
             } else {
-                VStack(spacing: 12) {
-                    Text("超时").font(.caption.bold()).padding(6).background(Color.red).foregroundStyle(.white)
-                    Text(errorText ?? "打不开").foregroundStyle(.white)
-                    Button("重试") { Task { await resolve() } }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(Color.pink, in: Capsule())
-                }
+                errorView
             }
 
+            // 手势层
+            Color.black.opacity(0.001)
+                .contentShape(Rectangle())
+                .onTapGesture { toggleChrome() }
+                .gesture(TapGesture(count: 2).onEnded { dismiss() })
+
+            // 锁屏按钮（右侧中部，常驻，锁定后隐藏控制栏）
+            lockButton
+
+            // 控制栏（上下渐隐）
             if showChrome {
-                chrome
+                overlayChrome
+                    .transition(.opacity)
             }
         }
-        .statusBarHidden(layout == .landscape)
+        .statusBarHidden(true)
         .navigationBarHidden(true)
-        .onTapGesture { toggleChrome() }
         .task { await resolve(); scheduleChromeHide() }
-        .onDisappear {
-            if layout != .mini { OrientationLock.set(.portrait) }
-        }
+        .onDisappear { OrientationLock.set(.portrait) }
         .alert("录制", isPresented: Binding(
             get: { recs.banner != nil },
             set: { if !$0 { recs.banner = nil } }
@@ -63,128 +56,182 @@ struct PlayerView: View {
         } message: {
             Text(recs.banner ?? "")
         }
-        .confirmationDialog("倍速", isPresented: $showSpeed, titleVisibility: .visible) {
-            Button("0.75x") { speed = 0.75 }
-            Button("1.0x") { speed = 1 }
-            Button("1.25x") { speed = 1.25 }
-            Button("1.5x") { speed = 1.5 }
-            Button("2.0x") { speed = 2 }
+    }
+
+    // MARK: - 错误 / 空态
+
+    private var errorView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(.white.opacity(0.7))
+            Text(errorText ?? "打不开")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.8))
+            Button {
+                Task { await resolve() }
+            } label: {
+                Text("重试")
+                    .font(.headline)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 10)
+                    .background(Color.white.opacity(0.2), in: Capsule())
+                    .foregroundStyle(.white)
+            }
         }
     }
 
-    private var chrome: some View {
-        VStack {
+    // MARK: - 控制栏
+
+    private var overlayChrome: some View {
+        VStack(spacing: 0) {
             topBar
             Spacer()
             bottomBar
         }
         .foregroundStyle(.white)
+        .allowsHitTesting(!locked)
     }
 
     private var topBar: some View {
-        HStack(alignment: .top) {
-            Button {
+        HStack(spacing: 12) {
+            circleBtn("chevron.down", size: 30) {
                 OrientationLock.set(.portrait)
                 dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.title3.weight(.semibold))
-                    .padding(10)
-                    .background(.black.opacity(0.35), in: Circle())
             }
-            VStack(alignment: .leading, spacing: 2) {
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(username)
                     .font(.headline)
                     .lineLimit(1)
-                Text("LIVE")
-                    .font(.caption2.weight(.bold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.red, in: Capsule())
+                HStack(spacing: 5) {
+                    Circle().fill(Color.red).frame(width: 6, height: 6)
+                    Text("LIVE")
+                        .font(.caption2.weight(.bold))
+                }
             }
+
             Spacer()
-            HStack(spacing: 10) {
-                iconBtn("pip.enter") { startSystemPiP() }
-                iconBtn(fav.isFollowing(username) ? "heart.fill" : "heart") { fav.toggle(username) }
-                iconBtn(recs.isRecording(username) ? "stop.circle.fill" : "record.circle") { toggleRecord() }
+
+            if !locked {
+                circleBtn(recs.isRecording(username) ? "stop.circle.fill" : "record.circle", size: 30) {
+                    toggleRecord()
+                }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
+        .padding(.horizontal, 14)
+        .padding(.top, 6)
+        .padding(.bottom, 24)
         .background(
-            LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea(edges: .top)
         )
     }
 
     private var bottomBar: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Text(recs.session(for: username)?.elapsedText ?? (recs.isRecording(username) ? "REC" : "LIVE"))
-                    .font(.system(.caption, design: .monospaced))
-                Rectangle()
-                    .fill(Color.white.opacity(0.35))
-                    .frame(height: 3)
-                    .overlay(alignment: .leading) {
-                        Rectangle().fill(Color.pink).frame(width: 8, height: 3)
+        HStack(spacing: 18) {
+            // 左侧：收藏 + 录制状态
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 14) {
+                    circleBtn(fav.isFollowing(username) ? "heart.fill" : "heart", size: 26) {
+                        fav.toggle(username)
                     }
-                Text(recs.session(for: username)?.bytesText ?? "00:00")
-                    .font(.system(.caption, design: .monospaced))
-            }
-            .padding(.horizontal, 12)
-
-            HStack(spacing: 14) {
-                Button {
-                    paused.toggle()
-                } label: {
-                    Image(systemName: paused ? "play.fill" : "pause.fill")
-                        .font(.title2)
+                    if recs.isRecording(username) {
+                        Text(recs.session(for: username)?.elapsedText ?? "REC")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
                 }
-                Spacer()
-                modeBtn(.portrait)
-                modeBtn(.landscape)
-                modeBtn(.mini)
-                Button("原画") { }
-                    .font(.subheadline.weight(.semibold))
-                Button("倍速") { showSpeed = true }
-                    .font(.subheadline.weight(.semibold))
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 18)
+
+            Spacer()
+
+            // 右侧：清晰度 / 倍速 / PiP
+            Menu {
+                Button("原画") { }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("原画")
+                    Image(systemName: "chevron.up")
+                        .font(.caption2)
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+            }
+
+            Menu {
+                Button("0.75x") { }
+                Button("1.0x") { }
+                Button("1.25x") { }
+                Button("1.5x") { }
+                Button("2.0x") { }
+            } label: {
+                Text("倍速")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+            }
+
+            circleBtn("pip.enter", size: 28) {
+                startSystemPiP()
+            }
         }
+        .padding(.horizontal, 20)
+        .padding(.top, 24)
+        .padding(.bottom, 14)
         .background(
-            LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea(edges: .bottom)
         )
     }
 
-    private func modeBtn(_ mode: PlayLayout) -> some View {
-        Button(mode.rawValue) { apply(mode) }
-            .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(layout == mode ? Color.pink : Color.white.opacity(0.15), in: Capsule())
+    // MARK: - 锁屏按钮（右侧中部，参考 pure_live）
+
+    private var lockButton: some View {
+        VStack {
+            Spacer()
+            circleBtn(locked ? "lock.fill" : "lock.open", size: 34) {
+                locked.toggle()
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showChrome = !locked
+                }
+                if !locked { scheduleChromeHide() }
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.trailing, 20)
+        .padding(.vertical, 40)
+        .opacity(showChrome || locked ? 1 : 0)
+        .animation(.easeInOut(duration: 0.25), value: showChrome)
     }
 
-    private func iconBtn(_ name: String, action: @escaping () -> Void) -> some View {
+    private func circleBtn(_ name: String, size: CGFloat, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: name)
-                .font(.body.weight(.semibold))
-                .padding(8)
+                .font(.system(size: size * 0.62, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: size, height: size)
                 .background(.black.opacity(0.35), in: Circle())
         }
+        .buttonStyle(.plain)
     }
+
+    // MARK: - 播放器选项
 
     private var playerOptions: KSOptions {
         let o = KSOptions()
         o.appendHeader(APIClient.commonHeaders)
-        KSOptions.isAutoPlay = !paused
+        KSOptions.isAutoPlay = true
         o.videoAdaptable = false
         o.canStartPictureInPictureAutomaticallyFromInline = true
         return o
     }
 
+    // MARK: - 交互
+
     private func toggleChrome() {
-        withAnimation(.easeInOut(duration: 0.2)) {
+        guard !locked else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
             showChrome.toggle()
         }
         if showChrome { scheduleChromeHide() }
@@ -195,27 +242,8 @@ struct PlayerView: View {
         hideChromeTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 0.2)) { showChrome = false }
+            withAnimation(.easeInOut(duration: 0.25)) { showChrome = false }
         }
-    }
-
-    private func apply(_ mode: PlayLayout) {
-        layout = mode
-        switch mode {
-        case .portrait:
-            OrientationLock.set(.portrait)
-        case .landscape:
-            OrientationLock.set(.landscape)
-        case .mini:
-            enterMini()
-        }
-    }
-
-    private func enterMini() {
-        guard let stream else { return }
-        appState.startMini(username: username, url: stream.hlsURL)
-        OrientationLock.set(.portrait)
-        dismiss()
     }
 
     private func startSystemPiP() {
@@ -225,6 +253,8 @@ struct PlayerView: View {
     private func resolve() async {
         loading = true
         errorText = nil
+        // 关闭 KSPlayer 自带控制层，完全使用自定义 UI
+        coordinator.isMaskShow = false
         do { stream = try await StreamSource.resolve(username: username) }
         catch { errorText = error.localizedDescription; stream = nil }
         loading = false
