@@ -1,7 +1,45 @@
 import SwiftUI
 
+struct ChannelFilter: Hashable {
+    var title: String
+    var gender: String
+    var keyword: String
+}
+
 struct ChannelView: View {
     @EnvironmentObject var appState: AppState
+    @State private var path: [ChannelFilter] = []
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            ChannelListPage(gender: "", keyword: "", title: "频道")
+                .navigationDestination(for: ChannelFilter.self) { filter in
+                    ChannelListPage(gender: filter.gender, keyword: filter.keyword, title: filter.title)
+                }
+        }
+        .onChange(of: appState.keywordFilter) { _, tag in
+            let t = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { return }
+            let filter = ChannelFilter(title: appState.groupTitle, gender: "", keyword: t)
+            if path.last != filter {
+                path.append(filter)
+            }
+        }
+        .onChange(of: path) { _, new in
+            if new.isEmpty, !appState.keywordFilter.isEmpty {
+                appState.keywordFilter = ""
+                appState.groupTitle = "频道"
+            }
+        }
+    }
+}
+
+struct ChannelListPage: View {
+    @EnvironmentObject var appState: AppState
+    let gender: String
+    let keyword: String
+    let title: String
+
     @State private var rooms: [Room] = []
     @State private var loading = false
     @State private var loadingMore = false
@@ -9,6 +47,7 @@ struct ChannelView: View {
     @State private var offset = 0
     @State private var reachedEnd = false
     @State private var searchText = ""
+    @State private var localGender: String = ""
 
     private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
 
@@ -19,88 +58,63 @@ struct ChannelView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let errorText, rooms.isEmpty {
-                    ContentUnavailableView {
-                        Label("加载失败", systemImage: "wifi.exclamationmark")
-                    } description: {
-                        Text(errorText)
-                    } actions: {
-                        Button("重试") { Task { await reload() } }
-                            .buttonStyle(.borderedProminent)
-                    }
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(filtered) { room in
-                                Button {
-                                    appState.openPlayer(username: room.username, room: room)
-                                } label: {
-                                    ChannelCard(room: room)
-                                }
-                                .buttonStyle(.plain)
-                                .onAppear {
-                                    if room.id == rooms.last?.id { Task { await loadMore() } }
-                                }
+        Group {
+            if let errorText, rooms.isEmpty {
+                ContentUnavailableView {
+                    Label("加载失败", systemImage: "wifi.exclamationmark")
+                } description: {
+                    Text(errorText)
+                } actions: {
+                    Button("重试") { Task { await reload() } }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(filtered) { room in
+                            Button {
+                                appState.openPlayer(username: room.username, room: room)
+                            } label: {
+                                ChannelCard(room: room)
+                            }
+                            .buttonStyle(.plain)
+                            .onAppear {
+                                if room.id == rooms.last?.id { Task { await loadMore() } }
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
 
-                        if loadingMore { ProgressView().padding(.vertical, 16) }
-                    }
-                    .refreshable { await reload() }
+                    if loadingMore { ProgressView().padding(.vertical, 16) }
                 }
+                .refreshable { await reload() }
             }
-            .navigationTitle(isFiltered ? appState.groupTitle : "频道")
-            .navigationBarBackButtonHidden(true)
-            .toolbar {
-                if isFiltered {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            clearFilter()
-                        } label: {
-                            Image(systemName: "chevron.left")
-                        }
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("全部频道") { applyFilter("", title: "频道") }
-                        Button("Female") { applyFilter("f", title: "女主播") }
-                        Button("Male") { applyFilter("m", title: "男主播") }
-                        Button("Couple") { applyFilter("c", title: "情侣") }
-                        Button("Trans") { applyFilter("t", title: "Trans") }
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
-                    }
-                }
-            }
-            .edgeSwipeBack(enabled: isFiltered) {
-                clearFilter()
-            }
-            .searchable(text: $searchText, prompt: "搜索频道")
-            .task { if rooms.isEmpty { await reload() } }
-            .onChange(of: appState.keywordFilter) { _, _ in
-                Task { await reload() }
-            }
-            .overlay { if loading && rooms.isEmpty { ProgressView() } }
         }
+        .navigationTitle(title)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("全部") { applyGender("") }
+                    Button("Female") { applyGender("f") }
+                    Button("Male") { applyGender("m") }
+                    Button("Couple") { applyGender("c") }
+                    Button("Trans") { applyGender("t") }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                }
+            }
+        }
+        .searchable(text: $searchText, prompt: "搜索频道")
+        .task {
+            localGender = gender
+            if rooms.isEmpty { await reload() }
+        }
+        .overlay { if loading && rooms.isEmpty { ProgressView() } }
     }
 
-    private var isFiltered: Bool {
-        !appState.keywordFilter.isEmpty || !appState.genderFilter.isEmpty
-    }
-
-    private func clearFilter() {
-        applyFilter("", title: "频道")
-    }
-
-    private func applyFilter(_ gender: String, title: String) {
-        appState.genderFilter = gender
-        appState.keywordFilter = ""
-        appState.groupTitle = title
+    private func applyGender(_ g: String) {
+        localGender = g
         Task { await reload() }
     }
 
@@ -113,8 +127,8 @@ struct ChannelView: View {
         do {
             rooms = try await RoomAPI.fetchRooms(
                 offset: 0,
-                gender: emptyNil(appState.genderFilter),
-                keywords: emptyNil(appState.keywordFilter)
+                gender: emptyNil(localGender),
+                keywords: emptyNil(keyword)
             )
             offset = rooms.count
             reachedEnd = rooms.isEmpty
@@ -130,8 +144,8 @@ struct ChannelView: View {
         do {
             let more = try await RoomAPI.fetchRooms(
                 offset: offset,
-                gender: emptyNil(appState.genderFilter),
-                keywords: emptyNil(appState.keywordFilter)
+                gender: emptyNil(localGender),
+                keywords: emptyNil(keyword)
             )
             if more.isEmpty { reachedEnd = true }
             let exist = Set(rooms.map(\.username))
