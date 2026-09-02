@@ -17,7 +17,7 @@ struct RecordingsView: View {
                     .padding(.horizontal, 16)
 
                 if files.isEmpty {
-                    ContentUnavailableView("没有录像", systemImage: "folder", description: Text("播放时点录制会保存到这里"))
+                    Text("没有录像，播放时点录制会保存到这里").foregroundStyle(.secondary).padding()
                 } else {
                     List {
                         ForEach(files, id: \.path) { url in
