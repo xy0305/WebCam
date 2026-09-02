@@ -34,7 +34,7 @@ struct ChannelView: View {
                 .padding(.horizontal, 16)
 
                 if let errorText, rooms.isEmpty {
-                    ContentUnavailableView("加载失败", systemImage: "wifi.slash", description: Text(errorText))
+                    Text(errorText).foregroundStyle(.secondary).padding()
                 } else {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 14) {
@@ -127,7 +127,6 @@ struct ChannelView: View {
             rooms.append(contentsOf: more.filter { !exist.contains($0.username) })
             offset = rooms.count
         } catch {
-            // keep existing list
         }
     }
 
