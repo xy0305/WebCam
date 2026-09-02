@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SearchView: View {
+    @EnvironmentObject var appState: AppState
     @State private var query = ""
     @State private var results: [Room] = []
     @State private var searching = false
@@ -29,7 +30,9 @@ struct SearchView: View {
                 .padding(.horizontal, 16)
 
                 if let name = sanitized {
-                    NavigationLink(value: name) {
+                    Button {
+                        appState.openPlayer(username: name)
+                    } label: {
                         Text("直接播放 \(name)")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
@@ -47,7 +50,9 @@ struct SearchView: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 14) {
                         ForEach(results) { room in
-                            NavigationLink(value: room.username) {
+                            Button {
+                                appState.openPlayer(username: room.username)
+                            } label: {
                                 ChannelCard(room: room)
                             }
                             .buttonStyle(.plain)
@@ -58,7 +63,6 @@ struct SearchView: View {
             }
             .background(Color.white)
             .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: String.self) { PlayerView(username: $0) }
         }
     }
 
