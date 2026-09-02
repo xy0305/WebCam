@@ -7,6 +7,7 @@ struct PlayerView: View {
     var room: Room? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.nativeDismiss) private var nativeDismiss
     @EnvironmentObject var appState: AppState
     @StateObject private var coordinator = KSVideoPlayer.Coordinator()
     @State private var stream: ResolvedStream?
@@ -61,9 +62,6 @@ struct PlayerView: View {
         .onDisappear {
             autoHideTask?.cancel()
             OrientationLock.set(.portrait, keepLocked: true)
-        }
-        .edgeSwipeBack {
-            handleBack(isLandscape: OrientationLock.isLandscape)
         }
         .alert("录制", isPresented: Binding(
             get: { recs.banner != nil },
@@ -593,7 +591,7 @@ struct PlayerView: View {
             OrientationLock.set(.portrait)
         } else {
             OrientationLock.set(.portrait, keepLocked: true)
-            dismiss()
+            nativeDismiss()
         }
     }
 

@@ -3,7 +3,33 @@ import SwiftUI
 struct MainShellView: View {
     @EnvironmentObject var appState: AppState
 
+    private var isCoverPresented: Bool {
+        appState.playingUsername != nil || appState.playingRecordingURL != nil
+    }
+
     var body: some View {
+        NativeSwipeStack(
+            isPresented: Binding(
+                get: { isCoverPresented },
+                set: { if !$0 { appState.closePlayer() } }
+            ),
+            root: { tabRoot },
+            cover: { coverPage }
+        )
+        .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private var coverPage: some View {
+        if let name = appState.playingUsername {
+            PlayerView(username: name, room: appState.playingRoom)
+                .environmentObject(appState)
+        } else if let url = appState.playingRecordingURL {
+            RecordingPlayerView(url: url)
+        }
+    }
+
+    private var tabRoot: some View {
         ZStack {
             TabView(selection: $appState.tab) {
                 ChannelView()
@@ -27,7 +53,6 @@ struct MainShellView: View {
                     .tag(AppTab.settings)
             }
 
-            // 应用内悬浮小窗（非系统 PiP）
             if appState.miniUsername != nil {
                 VStack {
                     Spacer()
@@ -36,15 +61,6 @@ struct MainShellView: View {
                         MiniPlayerView()
                     }
                 }
-            }
-        }
-        .fullScreenCover(isPresented: Binding(
-            get: { appState.playingUsername != nil },
-            set: { if !$0 { appState.closePlayer() } }
-        )) {
-            if let name = appState.playingUsername {
-                PlayerView(username: name, room: appState.playingRoom)
-                    .environmentObject(appState)
             }
         }
     }

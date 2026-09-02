@@ -1,9 +1,9 @@
 import SwiftUI
 
 struct RecordingsView: View {
+    @EnvironmentObject var appState: AppState
     @ObservedObject private var recs = RecordingManager.shared
     @State private var files: [URL] = []
-    @State private var playing: PlayingFile?
 
     var body: some View {
         NavigationStack {
@@ -35,7 +35,7 @@ struct RecordingsView: View {
                     } else {
                         ForEach(files, id: \.path) { url in
                             Button {
-                                playing = PlayingFile(url: url)
+                                appState.openRecording(url)
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(url.lastPathComponent)
@@ -67,14 +67,6 @@ struct RecordingsView: View {
             .onChange(of: recs.banner) { _, _ in
                 files = RecordingStore.list()
             }
-            .fullScreenCover(item: $playing) { item in
-                RecordingPlayerView(url: item.url)
-            }
         }
     }
-}
-
-private struct PlayingFile: Identifiable {
-    let url: URL
-    var id: String { url.path }
 }

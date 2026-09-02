@@ -5,6 +5,7 @@ import SwiftUI
 struct RecordingPlayerView: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.nativeDismiss) private var nativeDismiss
     @StateObject private var coordinator = KSVideoPlayer.Coordinator()
     @State private var isPlaying = false
     @State private var showChrome = true
@@ -50,10 +51,6 @@ struct RecordingPlayerView: View {
             coordinator.isMaskShow = false
             scheduleHide()
         }
-        .edgeSwipeBack {
-            coordinator.playerLayer?.pause()
-            dismiss()
-        }
         .onDisappear {
             hideTask?.cancel()
             coordinator.playerLayer?.pause()
@@ -64,7 +61,7 @@ struct RecordingPlayerView: View {
         HStack {
             Button {
                 coordinator.playerLayer?.pause()
-                dismiss()
+                nativeDismiss()
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .semibold))
