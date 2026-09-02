@@ -43,9 +43,8 @@ struct MainShellView: View {
             set: { if !$0 { appState.closePlayer() } }
         )) {
             if let name = appState.playingUsername {
-                PlayerView(username: name)
+                PlayerView(username: name, room: appState.playingRoom)
                     .environmentObject(appState)
-                    .ignoresSafeArea()
             }
         }
     }

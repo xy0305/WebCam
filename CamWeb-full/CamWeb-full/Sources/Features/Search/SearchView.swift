@@ -23,7 +23,7 @@ struct SearchView: View {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(results) { room in
                                 Button {
-                                    appState.openPlayer(username: room.username)
+                                    appState.openPlayer(username: room.username, room: room)
                                 } label: {
                                     ChannelCard(room: room)
                                 }
@@ -43,7 +43,7 @@ struct SearchView: View {
                 if let name = sanitized {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("播放 \(name)") {
-                            appState.openPlayer(username: name)
+                            appState.openPlayer(username: name, room: Room(username: name))
                         }
                         .font(.subheadline.weight(.semibold))
                     }

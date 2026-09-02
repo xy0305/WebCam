@@ -35,7 +35,7 @@ struct ChannelView: View {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(filtered) { room in
                                 Button {
-                                    appState.openPlayer(username: room.username)
+                                    appState.openPlayer(username: room.username, room: room)
                                 } label: {
                                     ChannelCard(room: room)
                                 }

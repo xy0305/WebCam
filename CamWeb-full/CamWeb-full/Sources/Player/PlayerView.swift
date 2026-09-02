@@ -4,6 +4,8 @@ import UIKit
 
 struct PlayerView: View {
     let username: String
+    var room: Room? = nil
+
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var appState: AppState
     @StateObject private var coordinator = KSVideoPlayer.Coordinator()
@@ -12,50 +14,53 @@ struct PlayerView: View {
     @State private var loading = true
     @State private var isMaskVisible = true
     @State private var isLocked = false
-    @State private var isLandscape = false
+    @State private var isPlaying = false
+    @State private var isBuffering = false
+    @State private var isVerticalLive = false
     @State private var autoHideTask: Task<Void, Never>?
     @ObservedObject private var recs = RecordingManager.shared
     @ObservedObject private var fav = FollowingStore.shared
 
+    private var displayRoom: Room {
+        room ?? appState.playingRoom ?? Room(username: username)
+    }
+
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { geo in
+            let isLandscape = geo.size.width > geo.size.height
+            let fillVideo = isLandscape || isVerticalLive
+            let videoHeight = fillVideo ? geo.size.height : (geo.size.width * 9 / 16)
 
-            // 播放器
-            if let stream {
-                KSVideoPlayerView(coordinator: coordinator, url: stream.hlsURL, options: playerOptions, title: username)
-                    .ignoresSafeArea()
-            } else if loading {
-                ProgressView("解析直播流…").tint(.white).foregroundStyle(.white)
-            } else {
-                errorView
+            ZStack(alignment: .top) {
+                Color.black.ignoresSafeArea()
+
+                if !fillVideo {
+                    infoPanel
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .padding(.top, videoHeight)
+                }
+
+                videoArea(height: videoHeight, isLandscape: isLandscape)
+                    .frame(width: geo.size.width, height: videoHeight)
             }
-
-            // 手势层：单击显隐、双击切横竖屏、左滑亮度右滑音量
-            gestureLayer
-
-            // 锁屏按钮（左侧中间，始终显示）
-            lockButton
-
-            // 横屏按钮（右下角常驻，不随控制层隐藏）
-            orientationButton
-
-            // 上下渐隐背景（锁定且隐藏时也跟随）
-            if isMaskVisible {
-                topShadowGradient
-                bottomShadowGradient
-            }
-
-            // 控制层（四角布局）
-            if isMaskVisible && !isLocked {
-                controlsLayer
-                    .transition(.opacity)
+            .statusBarHidden(isLandscape)
+            .onChange(of: isLandscape) { _, land in
+                if land { isMaskVisible = true; scheduleAutoHide() }
             }
         }
-        .statusBarHidden(true)
+        .background(Color.black)
         .navigationBarHidden(true)
         .task { await resolve() }
-        .onDisappear { OrientationLock.set(.portrait) }
+        .onAppear {
+            coordinator.isMaskShow = false
+            wireCoordinator()
+            UIDevice.current.isBatteryMonitoringEnabled = true
+            OrientationLock.unlock()
+        }
+        .onDisappear {
+            autoHideTask?.cancel()
+            OrientationLock.set(.portrait, keepLocked: true)
+        }
         .alert("录制", isPresented: Binding(
             get: { recs.banner != nil },
             set: { if !$0 { recs.banner = nil } }
@@ -64,6 +69,161 @@ struct PlayerView: View {
         } message: {
             Text(recs.banner ?? "")
         }
+    }
+
+    // MARK: - 视频区域（含叠加控制）
+
+    @ViewBuilder
+    private func videoArea(height: CGFloat, isLandscape: Bool) -> some View {
+        ZStack {
+            Color.black
+
+            if let stream {
+                KSVideoPlayerView(
+                    coordinator: coordinator,
+                    url: stream.hlsURL,
+                    options: playerOptions,
+                    title: username
+                )
+            } else if loading {
+                ProgressView("解析直播流…")
+                    .tint(.white)
+                    .foregroundStyle(.white)
+            } else {
+                errorView
+            }
+
+            gestureLayer
+
+            if isMaskVisible && !isLocked {
+                topShadowGradient
+                bottomShadowGradient
+            }
+
+            lockButton(isLandscape: isLandscape)
+
+            if isMaskVisible && !isLocked {
+                controlsLayer(isLandscape: isLandscape)
+                    .transition(.opacity)
+            }
+        }
+        .frame(height: height)
+        .clipped()
+    }
+
+    // MARK: - 竖屏信息栏（AngelLive：上视频下信息）
+
+    private var infoPanel: some View {
+        ZStack(alignment: .bottomTrailing) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(displayRoom.username)
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                HStack(spacing: 12) {
+                    AsyncImage(url: displayRoom.thumb) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                        default:
+                            Circle().fill(Color.gray.opacity(0.3))
+                                .overlay(
+                                    Image(systemName: "person.fill")
+                                        .foregroundStyle(.white.opacity(0.8))
+                                )
+                        }
+                    }
+                    .frame(width: 48, height: 48)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 2))
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(displayRoom.title)
+                            .font(.headline)
+                            .foregroundStyle(Color(white: 0.9))
+                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Image(systemName: "flame.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                            Text(displayRoom.viewersText)
+                                .font(.caption)
+                                .foregroundStyle(Color(white: 0.7))
+                        }
+                    }
+
+                    Spacer()
+
+                    Button {
+                        fav.toggle(username)
+                    } label: {
+                        Image(systemName: fav.isFollowing(username) ? "heart.fill" : "heart")
+                            .font(.title3)
+                            .foregroundStyle(fav.isFollowing(username) ? .red : Color(white: 0.7))
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(.white.opacity(0.1)))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle.fill")
+                    Text("当前平台不支持查看弹幕/评论")
+                }
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(Color(red: 1, green: 0.85, blue: 0.35))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(Color.black.opacity(0.35)))
+                .overlay(Capsule().stroke(Color.yellow.opacity(0.45), lineWidth: 1))
+
+                if let subject = displayRoom.roomSubject, !subject.isEmpty {
+                    Text(subject)
+                        .font(.subheadline)
+                        .foregroundStyle(Color(white: 0.55))
+                        .lineLimit(3)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 24)
+
+            Menu {
+                Button {
+                    fav.toggle(username)
+                } label: {
+                    Label(fav.isFollowing(username) ? "取消收藏" : "收藏",
+                          systemImage: fav.isFollowing(username) ? "heart.slash" : "heart")
+                }
+                if let url = URL(string: "https://chaturbate.com/\(username)/") {
+                    ShareLink(item: url) {
+                        Label("分享", systemImage: "square.and.arrow.up")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .padding(.trailing, 16)
+            .padding(.bottom, 16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.12, green: 0.10, blue: 0.08),
+                    Color(red: 0.07, green: 0.06, blue: 0.05)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     // MARK: - 错误态
@@ -96,7 +256,6 @@ struct PlayerView: View {
             .frame(height: 90)
             Spacer()
         }
-        .ignoresSafeArea()
         .allowsHitTesting(false)
     }
 
@@ -107,13 +266,12 @@ struct PlayerView: View {
                 colors: [.clear, .black.opacity(0.25), .black.opacity(0.65)],
                 startPoint: .top, endPoint: .bottom
             )
-            .frame(height: 110)
+            .frame(height: 80)
         }
-        .ignoresSafeArea()
         .allowsHitTesting(false)
     }
 
-    // MARK: - 手势层
+    // MARK: - 手势：单击显隐、双击切横竖屏
 
     private var gestureLayer: some View {
         Color.black.opacity(0.001)
@@ -131,18 +289,11 @@ struct PlayerView: View {
                         }
                     }
             )
-            .simultaneousGesture(
-                TapGesture()
-                    .onEnded { _ in
-                        // 触摸时若已显示，重置自动隐藏
-                        if isMaskVisible && !isLocked { scheduleAutoHide() }
-                    }
-            )
     }
 
-    // MARK: - 锁屏按钮（左侧中间，始终显示）
+    // MARK: - 锁屏（左侧中部，始终可点）
 
-    private var lockButton: some View {
+    private func lockButton(isLandscape: Bool) -> some View {
         VStack {
             Spacer()
             HStack {
@@ -164,56 +315,34 @@ struct PlayerView: View {
                         .background(.ultraThinMaterial, in: Circle())
                 }
                 .buttonStyle(.plain)
+                .padding(.leading, isLandscape ? 25 : 12)
                 Spacer()
             }
             Spacer()
         }
-        .padding(.leading, 12)
-        .padding(.vertical, 44)
+        .opacity(isMaskVisible || isLocked ? 1 : 0)
+        .allowsHitTesting(isMaskVisible || isLocked)
     }
 
-    // MARK: - 常驻横屏按钮（右下角）
+    // MARK: - 四角控制（对齐 AngelLive）
 
-    private var orientationButton: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                Button {
-                    toggleOrientation()
-                    scheduleAutoHide()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: isLandscape ? "rectangle.portrait.fill" : "rectangle.landscape.fill")
-                            .font(.subheadline.weight(.semibold))
-                        Text(isLandscape ? "竖屏" : "横屏")
-                            .font(.subheadline.weight(.semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
+    private func controlsLayer(isLandscape: Bool) -> some View {
+        let inset: CGFloat = isLandscape ? 25 : 0
+        return ZStack {
+            if isLandscape {
+                VStack {
+                    landscapeStatusBar
+                        .padding(.top, 5)
+                    Spacer()
                 }
-                .buttonStyle(.plain)
+                .allowsHitTesting(false)
             }
-            Spacer()
-        }
-        .padding(.trailing, 16)
-        .padding(.bottom, 100)
-    }
 
-    // MARK: - 控制层（四角布局）
-
-    private var controlsLayer: some View {
-        ZStack {
             // 左上：返回
             VStack {
                 HStack {
-                    Button {
-                        OrientationLock.set(.portrait)
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.down")
+                    Button { handleBack(isLandscape: isLandscape) } label: {
+                        Image(systemName: "chevron.left")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(width: 30, height: 30)
@@ -221,28 +350,21 @@ struct PlayerView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .padding(.leading, inset)
                     Spacer()
                 }
                 Spacer()
             }
             .padding(.top, 4)
 
-            // 右上：PiP + 录制（毛玻璃胶囊）
+            // 右上：PiP + 录制
             VStack {
                 HStack {
                     Spacer()
                     HStack(spacing: 16) {
-                        Button {
+                        iconButton("pip") {
                             startSystemPiP()
-                            scheduleAutoHide()
-                        } label: {
-                            Image(systemName: "pip")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 30, height: 30)
                         }
-                        .buttonStyle(.plain)
-
                         Button {
                             toggleRecord()
                             scheduleAutoHide()
@@ -257,15 +379,18 @@ struct PlayerView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(.ultraThinMaterial, in: Capsule())
+                    .frame(height: 50)
+                    .padding(.trailing, inset)
                 }
                 Spacer()
             }
             .padding(.top, 4)
 
-            // 中央暂停大按钮
-            if !coordinator.state.isPlaying {
+            // 中央暂停大按钮（加载中不显示）
+            if !isPlaying && !loading && !isBuffering && stream != nil {
                 Button {
                     coordinator.playerLayer?.play()
+                    isPlaying = true
                     scheduleAutoHide()
                 } label: {
                     Image(systemName: "play.fill")
@@ -277,77 +402,109 @@ struct PlayerView: View {
                 .buttonStyle(.plain)
             }
 
-            // 左下：播放/暂停 + 收藏
+            // 左下：播放/暂停 + 刷新
             VStack {
                 Spacer()
                 HStack {
                     HStack(spacing: 16) {
-                        Button {
-                            coordinator.state.isPlaying ? coordinator.playerLayer?.pause() : coordinator.playerLayer?.play()
-                            scheduleAutoHide()
-                        } label: {
-                            Image(systemName: coordinator.state.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 30, height: 30)
+                        iconButton(isPlaying ? "pause.fill" : "play.fill") {
+                            if isPlaying {
+                                coordinator.playerLayer?.pause()
+                                isPlaying = false
+                            } else {
+                                coordinator.playerLayer?.play()
+                                isPlaying = true
+                            }
                         }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            fav.toggle(username)
-                            scheduleAutoHide()
-                        } label: {
-                            Image(systemName: fav.isFollowing(username) ? "heart.fill" : "heart")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(fav.isFollowing(username) ? .pink : .white)
-                                .frame(width: 30, height: 30)
+                        iconButton("arrow.counterclockwise") {
+                            Task { await resolve() }
                         }
-                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.leading, inset)
                     Spacer()
                 }
-                Spacer()
             }
-            .padding(.bottom, 16)
+            .padding(.bottom, 12)
 
-            // 右下：清晰度 + 倍速
+            // 右下：清晰度 + 全屏
             VStack {
                 Spacer()
                 HStack {
                     Spacer()
-                    HStack(spacing: 14) {
-                        Menu {
-                            Button("原画") { scheduleAutoHide() }
-                        } label: {
-                            Text("原画")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.white)
-                        }
+                    HStack(spacing: 16) {
+                        Text("原画")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
 
-                        Menu {
-                            Button("0.75x") { }
-                            Button("1.0x") { }
-                            Button("1.25x") { }
-                            Button("1.5x") { }
-                            Button("2.0x") { }
-                        } label: {
-                            Text("倍速")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.white)
+                        if !isVerticalLive {
+                            Button {
+                                toggleOrientation()
+                            } label: {
+                                Image(systemName: isLandscape
+                                      ? "arrow.down.right.and.arrow.up.left"
+                                      : "arrow.up.left.and.arrow.down.right")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 30, height: 30)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                     .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.trailing, inset)
                 }
-                Spacer()
             }
-            .padding(.bottom, 16)
+            .padding(.bottom, 12)
         }
     }
+
+    private func iconButton(_ systemName: String, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            scheduleAutoHide()
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var landscapeStatusBar: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 4) {
+                Text(Self.timeFormatter.string(from: context.date))
+                    .font(.system(size: 12, weight: .semibold))
+                Image(systemName: batteryIconName)
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(.white)
+        }
+    }
+
+    private var batteryIconName: String {
+        let level = UIDevice.current.batteryLevel
+        if level < 0 { return "battery.100" }
+        switch level {
+        case 0..<0.2: return "battery.0"
+        case 0.2..<0.45: return "battery.25"
+        case 0.45..<0.7: return "battery.50"
+        case 0.7..<0.95: return "battery.75"
+        default: return "battery.100"
+        }
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
 
     // MARK: - 播放器选项
 
@@ -362,8 +519,28 @@ struct PlayerView: View {
 
     // MARK: - 交互
 
+    private func wireCoordinator() {
+        coordinator.isMaskShow = false
+        coordinator.onStateChanged = { layer, state in
+            isPlaying = state.isPlaying
+            isBuffering = state == .buffering || state == .preparing
+            if state == .readyToPlay {
+                let size = layer.player.naturalSize
+                if size.width > 1, size.height > 1 {
+                    isVerticalLive = (size.width / size.height) < 1.0
+                    if isVerticalLive {
+                        OrientationLock.set(.portrait, keepLocked: true)
+                    }
+                }
+            }
+        }
+    }
+
     private func toggleMask() {
-        guard !isLocked else { return }
+        if isLocked {
+            withAnimation(.easeInOut(duration: 0.25)) { isMaskVisible.toggle() }
+            return
+        }
         withAnimation(.easeInOut(duration: 0.25)) { isMaskVisible.toggle() }
         if isMaskVisible { scheduleAutoHide() }
     }
@@ -371,29 +548,43 @@ struct PlayerView: View {
     private func scheduleAutoHide() {
         autoHideTask?.cancel()
         autoHideTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.25)) { isMaskVisible = false }
         }
     }
 
+    private func handleBack(isLandscape: Bool) {
+        if isLandscape {
+            OrientationLock.set(.portrait)
+        } else {
+            OrientationLock.set(.portrait, keepLocked: true)
+            dismiss()
+        }
+    }
+
     private func toggleOrientation() {
+        if isVerticalLive {
+            // 竖屏直播锁竖屏，不允许横屏全屏
+            return
+        }
         OrientationLock.toggle()
-        isLandscape.toggle()
         scheduleAutoHide()
     }
 
     private func startSystemPiP() {
         coordinator.playerLayer?.isPipActive.toggle()
+        scheduleAutoHide()
     }
 
     private func resolve() async {
         loading = true
         errorText = nil
-        coordinator.isMaskShow = false  // 关闭 KSPlayer 自带控制层
+        coordinator.isMaskShow = false
         do { stream = try await StreamSource.resolve(username: username) }
         catch { errorText = error.localizedDescription; stream = nil }
         loading = false
+        wireCoordinator()
         scheduleAutoHide()
     }
 
@@ -404,8 +595,7 @@ struct PlayerView: View {
 }
 
 enum OrientationLock {
-    /// 切换到指定方向（portrait / landscape）
-    static func set(_ mask: UIInterfaceOrientationMask) {
+    static func set(_ mask: UIInterfaceOrientationMask, keepLocked: Bool = false) {
         KSOptions.supportedInterfaceOrientations = mask
 
         guard let windowScene = UIApplication.shared.connectedScenes
@@ -420,6 +610,7 @@ enum OrientationLock {
             let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: mask)
             windowScene.requestGeometryUpdate(preferences) { _ in }
 
+            guard !keepLocked else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 KSOptions.supportedInterfaceOrientations = .allButUpsideDown
                 if let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
@@ -429,13 +620,20 @@ enum OrientationLock {
         }
     }
 
-    /// 切换 iPhone 横竖屏
-    static func toggle() {
-        let isCurrentlyLandscape = Self.isLandscape
-        set(isCurrentlyLandscape ? .portrait : .landscape)
+    static func unlock() {
+        KSOptions.supportedInterfaceOrientations = .allButUpsideDown
+        if let windowScene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first,
+           let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
+            rootVC.setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
     }
 
-    /// 当前是否横屏
+    static func toggle() {
+        set(isLandscape ? .portrait : .landscapeRight)
+    }
+
     static var isLandscape: Bool {
         let orientation = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }

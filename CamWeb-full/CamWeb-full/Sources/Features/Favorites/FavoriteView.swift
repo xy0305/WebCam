@@ -24,7 +24,8 @@ struct FavoriteView: View {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(names, id: \.self) { name in
                                 Button {
-                                    appState.openPlayer(username: name)
+                                    let room = remote.first(where: { $0.username == name }) ?? Room(username: name)
+                                    appState.openPlayer(username: name, room: room)
                                 } label: {
                                     ChannelCard(room: remote.first(where: { $0.username == name }) ?? Room(username: name))
                                 }
