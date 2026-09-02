@@ -97,7 +97,6 @@ final class RecordingSession: ObservableObject, Identifiable {
     init(username: String, masterURL: URL) {
         self.username = username
         self.masterURL = masterURL
-        super.init()
     }
 
     func start() {
