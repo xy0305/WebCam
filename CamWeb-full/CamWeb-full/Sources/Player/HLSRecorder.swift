@@ -1,6 +1,10 @@
 import Foundation
 import UIKit
 import AVFoundation
+import FFmpegKit
+import Libavformat
+import Libavcodec
+import Libavutil
 
 @MainActor
 final class RecordingManager: ObservableObject {
@@ -28,10 +32,10 @@ final class RecordingManager: ObservableObject {
         sessions[username.lowercased()]
     }
 
-    func start(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
+    func start(username: String, hlsURL: URL, masterURL: URL) {
         let name = username.lowercased()
         guard sessions[name] == nil else { return }
-        let session = RecordingSession(username: name, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist)
+        let session = RecordingSession(username: name, hlsURL: hlsURL, masterURL: masterURL)
         session.onFinished = { [weak self] name, message in
             self?.sessions[name] = nil
             self?.banner = message
@@ -47,11 +51,11 @@ final class RecordingManager: ObservableObject {
         sessions[username.lowercased()]?.stop(userInitiated: true)
     }
 
-    func toggle(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
+    func toggle(username: String, hlsURL: URL, masterURL: URL) {
         if isRecording(username) {
             stop(username)
         } else {
-            start(username: username, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist)
+            start(username: username, hlsURL: hlsURL, masterURL: masterURL)
         }
     }
 
@@ -119,13 +123,14 @@ final class RecordingManager: ObservableObject {
     }
 }
 
-/// 把直播媒体 playlist 存成本地 HLS VOD。
+/// 电脑端成熟方案：ffmpeg -c copy 录 HLS。
+/// 这里用同一套 libavformat：打开迷你 master / 官方 master，按 packet copy 进 mp4。
 @MainActor
 final class RecordingSession: ObservableObject, Identifiable {
     var id: String { username }
     let username: String
-    let videoPlaylist: URL
-    let audioPlaylist: URL?
+    let hlsURL: URL
+    let masterURL: URL
 
     @Published var elapsedText = "00:00"
     @Published var bytesText = "0 MB"
@@ -137,55 +142,46 @@ final class RecordingSession: ObservableObject, Identifiable {
     private var workTask: Task<Void, Never>?
     private let progress = RecProgress()
 
-    init(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
+    init(username: String, hlsURL: URL, masterURL: URL) {
         self.username = username
-        self.videoPlaylist = videoPlaylist
-        self.audioPlaylist = audioPlaylist
+        self.hlsURL = hlsURL
+        self.masterURL = masterURL
     }
 
     func start() {
-        let dir = RecordingStore.directory.appendingPathComponent("\(username)_\(Self.stamp())", isDirectory: true)
+        let dir = RecordingStore.directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent("\(username)_\(Self.stamp()).mp4")
 
         isRunning = true
         startTimer()
 
-        let videoPL = videoPlaylist
-        let audioPL = audioPlaylist
+        let hls = hlsURL
+        let master = masterURL
         let name = username
         let progress = self.progress
         workTask = Task.detached(priority: .utility) { [weak self] in
-            let result = await HLSPackager.run(
-                videoPlaylist: videoPL,
-                audioPlaylist: audioPL,
-                dir: dir,
-                progress: progress
-            )
+            let result = FFmpegCopyRecorder.run(primary: hls, fallback: master, dest: dest, progress: progress)
             await MainActor.run {
-                self?.finish(result: result, name: name, dir: dir)
+                self?.finish(result: result, name: name, dest: dest)
             }
         }
     }
 
     func stop(userInitiated: Bool) {
         isRunning = false
-        // 先停轮询，把已经出现的分片下完，再收尾。不要立刻 cancel。
         progress.requestStop()
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
-            self?.workTask?.cancel()
-        }
     }
 
-    private func finish(result: HLSPackager.Result, name: String, dir: URL) {
+    private func finish(result: FFmpegCopyRecorder.Result, name: String, dest: URL) {
         stopTimer()
         isRunning = false
         tick()
         let msg: String
-        if result.success, let url = result.indexURL, FileManager.default.fileExists(atPath: url.path) {
+        if result.success, FileManager.default.fileExists(atPath: dest.path) {
             msg = "\(name) 已保存 \(elapsedText) · \(bytesText)"
         } else {
-            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: dest)
             msg = "\(name) 录制失败：\(result.error ?? "未知")"
         }
         onFinished?(name, msg)
@@ -261,407 +257,172 @@ final class RecProgress: @unchecked Sendable {
     }
 }
 
-enum RecHLS {
-    static let session: URLSession = {
-        let c = URLSessionConfiguration.ephemeral
-        c.httpMaximumConnectionsPerHost = 8
-        c.timeoutIntervalForRequest = 6
-        c.timeoutIntervalForResource = 10
-        c.requestCachePolicy = .reloadIgnoringLocalCacheData
-        c.urlCache = nil
-        c.waitsForConnectivity = false
-        c.httpAdditionalHeaders = APIClient.hlsHeaders
-        return URLSession(configuration: c)
-    }()
-
-    static func data(for url: URL) async throws -> (Data, HTTPURLResponse) {
-        var req = URLRequest(url: url)
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        req.timeoutInterval = 6
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        return (data, http)
-    }
-
-    static func bytes(_ url: URL) async -> Data? {
-        for attempt in 0..<5 {
-            if Task.isCancelled { return nil }
-            do {
-                let (data, http) = try await data(for: url)
-                if http.statusCode == 404 || http.statusCode == 410 { return nil }
-                if (200..<300).contains(http.statusCode), !data.isEmpty { return data }
-            } catch {
-                if error is CancellationError { return nil }
-            }
-            try? await Task.sleep(nanoseconds: UInt64((attempt + 1) * 80_000_000))
-        }
-        return nil
-    }
-}
-
-enum HLSPackager {
+enum FFmpegCopyRecorder {
     struct Result {
         let success: Bool
-        let indexURL: URL?
         let error: String?
     }
 
-    struct Segment {
-        let duration: Double
-        let url: URL
-        let sequence: Int
+    static func run(primary: URL, fallback: URL, dest: URL, progress: RecProgress) -> Result {
+        if let ok = copy(url: primary, dest: dest, progress: progress), ok.success {
+            return ok
+        }
+        if fallback != primary, let ok = copy(url: fallback, dest: dest, progress: progress) {
+            return ok
+        }
+        return Result(success: false, error: "打不开直播流")
     }
 
-    struct Parsed {
-        var map: URL?
-        var target: Int = 4
-        var mediaSequence: Int = 0
-        var segments: [Segment] = []
-    }
+    private static func copy(url: URL, dest: URL, progress: RecProgress) -> Result? {
+        avformat_network_init()
 
-    static func run(
-        videoPlaylist: URL,
-        audioPlaylist: URL?,
-        dir: URL,
-        progress: RecProgress
-    ) async -> Result {
-        let writer = DiskWriter(dir: dir)
-        let video = Track(playlist: videoPlaylist, isAudio: false, writer: writer)
-        let audio = audioPlaylist.map { Track(playlist: $0, isAudio: true, writer: writer) }
-
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await pollLoop(video, progress: progress) }
-            group.addTask { await downloadLoop(video, progress: progress) }
-            if let audio {
-                group.addTask { await pollLoop(audio, progress: progress) }
-                group.addTask { await downloadLoop(audio, progress: progress) }
-            }
-            group.addTask {
-                while !Task.isCancelled {
-                    progress.set(seconds: writer.videoDuration, bytes: writer.bytes)
-                    writer.rewrite(ended: false)
-                    if progress.stopping, video.isIdle, audio?.isIdle ?? true { break }
-                    try? await Task.sleep(nanoseconds: 300_000_000)
-                }
-            }
+        var inCtx: UnsafeMutablePointer<AVFormatContext>?
+        var interruptOpaque = Unmanaged.passUnretained(progress).toOpaque()
+        var interruptCB = AVIOInterruptCB()
+        interruptCB.opaque = interruptOpaque
+        interruptCB.callback = { ctx in
+            guard let ctx else { return 0 }
+            let p = Unmanaged<RecProgress>.fromOpaque(ctx).takeUnretainedValue()
+            return p.stopping ? 1 : 0
         }
 
-        video.flushGaps()
-        audio?.flushGaps()
-        writer.rewrite(ended: true)
-        progress.set(seconds: writer.videoDuration, bytes: writer.bytes)
-        guard writer.videoDuration > 0.5, writer.bytes > 1024 else {
-            return Result(success: false, indexURL: nil, error: "没有收到视频分片")
+        var opts = formatOptions()
+        let urlString: String
+        if url.isFileURL || url.scheme == "data" {
+            urlString = url.absoluteString
+        } else {
+            urlString = url.absoluteString
         }
-        return Result(success: true, indexURL: writer.indexURL, error: nil)
-    }
-
-    private static func pollLoop(_ track: Track, progress: RecProgress) async {
-        while !Task.isCancelled {
-            await track.poll()
-            if progress.stopping { break }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+        var ret = avformat_open_input(&inCtx, urlString, nil, &opts)
+        av_dict_free(&opts)
+        guard ret == 0, let inCtx else {
+            return nil
         }
-        await track.poll()
-    }
-
-    private static func downloadLoop(_ track: Track, progress: RecProgress) async {
-        await withTaskGroup(of: Void.self) { group in
-            var inflight = 0
-            while !Task.isCancelled {
-                while inflight < 6, let seg = track.dequeue() {
-                    inflight += 1
-                    group.addTask {
-                        let data = await RecHLS.bytes(seg.url)
-                        track.complete(seq: seg.sequence, data: data, duration: seg.duration)
-                    }
-                }
-                if progress.stopping, track.isIdle, inflight == 0 { break }
-                if inflight == 0 {
-                    try? await Task.sleep(nanoseconds: 40_000_000)
-                    continue
-                }
-                await group.next()
-                inflight -= 1
-            }
-        }
-    }
-
-    final class Track: @unchecked Sendable {
-        let playlist: URL
-        let isAudio: Bool
-        let writer: DiskWriter
-        private let lock = NSLock()
-        private var seen = Set<String>()
-        private var queue: [Segment] = []
-        private var ready: [Int: (Data, Double)] = [:]
-        private var nextWrite: Int?
-        private var lastQueued = -1
-        private var mapDone = false
-        private var queuedCount = 0
-        private var inflightCount = 0
-
-        init(playlist: URL, isAudio: Bool, writer: DiskWriter) {
-            self.playlist = playlist
-            self.isAudio = isAudio
-            self.writer = writer
+        inCtx.pointee.interrupt_callback = interruptCB
+        inCtx.pointee.flags |= AVFMT_FLAG_GENPTS
+        ret = avformat_find_stream_info(inCtx, nil)
+        guard ret >= 0 else {
+            avformat_close_input(&inCtx)
+            return nil
         }
 
-        var isIdle: Bool {
-            lock.lock(); defer { lock.unlock() }
-            return queue.isEmpty && inflightCount == 0 && ready.isEmpty
+        try? FileManager.default.removeItem(at: dest)
+        let filename = dest.path
+        var outCtx: UnsafeMutablePointer<AVFormatContext>?
+        ret = avformat_alloc_output_context2(&outCtx, nil, "mp4", filename)
+        guard ret >= 0, let outCtx else {
+            avformat_close_input(&inCtx)
+            return Result(success: false, error: "无法创建 mp4")
         }
 
-        func poll() async {
-            do {
-                let (data, http) = try await RecHLS.data(for: playlist)
-                guard (200..<300).contains(http.statusCode),
-                      let text = String(data: data, encoding: .utf8) else { return }
-                let parsed = HLSPackager.parse(text, base: playlist)
-                if !mapDone, let map = parsed.map {
-                    if let chunk = await RecHLS.bytes(map), !chunk.isEmpty {
-                        writer.writeInit(chunk, isAudio: isAudio)
-                        mapDone = true
-                    }
-                }
-                enqueue(parsed.segments)
-            } catch {
-            }
-        }
-
-        func dequeue() -> Segment? {
-            lock.lock(); defer { lock.unlock() }
-            guard !queue.isEmpty else { return nil }
-            let seg = queue.removeFirst()
-            inflightCount += 1
-            return seg
-        }
-
-        func complete(seq: Int, data: Data?, duration: Double) {
-            lock.lock()
-            inflightCount = max(0, inflightCount - 1)
-            if let data, !data.isEmpty {
-                ready[seq] = (data, duration)
+        var mapping = [Int: Int]()
+        var outIndex = 0
+        var audioTaken = false
+        var videoTaken = false
+        let nb = Int(inCtx.pointee.nb_streams)
+        for i in 0..<nb {
+            guard let inStream = inCtx.pointee.streams[i],
+                  let codecpar = inStream.pointee.codecpar else { continue }
+            let type = codecpar.pointee.codec_type
+            if type == AVMEDIA_TYPE_AUDIO {
+                if audioTaken { continue }
+                audioTaken = true
+            } else if type == AVMEDIA_TYPE_VIDEO {
+                if videoTaken { continue }
+                videoTaken = true
             } else {
-                ready[seq] = (Data(), duration)
+                continue
             }
-            flushLocked()
-            lock.unlock()
+            guard let outStream = avformat_new_stream(outCtx, nil) else { continue }
+            avcodec_parameters_copy(outStream.pointee.codecpar, codecpar)
+            outStream.pointee.codecpar.pointee.codec_tag = 0
+            mapping[i] = outIndex
+            outIndex += 1
+        }
+        guard outIndex > 0 else {
+            avformat_free_context(outCtx)
+            avformat_close_input(&inCtx)
+            return nil
         }
 
-        func flushGaps() {
-            lock.lock()
-            while let next = nextWrite, ready[next] == nil, ready.keys.contains(where: { $0 > next }) {
-                writer.markDiscontinuity(isAudio: isAudio)
-                nextWrite = next + 1
-            }
-            flushLocked()
-            lock.unlock()
+        ret = avio_open(&outCtx.pointee.pb, filename, AVIO_FLAG_WRITE)
+        guard ret >= 0 else {
+            avformat_free_context(outCtx)
+            avformat_close_input(&inCtx)
+            return Result(success: false, error: "无法写入文件")
+        }
+        ret = avformat_write_header(outCtx, nil)
+        guard ret >= 0 else {
+            avio_closep(&outCtx.pointee.pb)
+            avformat_free_context(outCtx)
+            avformat_close_input(&inCtx)
+            return Result(success: false, error: "写文件头失败")
         }
 
-        private func enqueue(_ segs: [Segment]) {
-            lock.lock()
-            for seg in segs {
-                let key = seg.url.absoluteString
-                if seen.contains(key) { continue }
-                seen.insert(key)
-                if lastQueued >= 0, seg.sequence > lastQueued + 1 {
-                    writer.markDiscontinuity(isAudio: isAudio)
+        var packet = av_packet_alloc()
+        defer { av_packet_free(&packet) }
+
+        var firstPts: Int64?
+        var lastBytes: Int64 = 0
+        while !progress.stopping {
+            ret = av_read_frame(inCtx, packet)
+            if ret < 0 { break }
+            defer { av_packet_unref(packet) }
+            guard let pkt = packet else { continue }
+            let inIndex = Int(pkt.pointee.stream_index)
+            guard let mapped = mapping[inIndex],
+                  let inStream = inCtx.pointee.streams[inIndex],
+                  let outStream = outCtx.pointee.streams[mapped] else { continue }
+
+            if firstPts == nil, pkt.pointee.pts != AV_NOPTS_VALUE {
+                firstPts = pkt.pointee.pts
+            }
+            pkt.pointee.stream_index = Int32(mapped)
+            av_packet_rescale_ts(pkt, inStream.pointee.time_base, outStream.pointee.time_base)
+            pkt.pointee.pos = -1
+            let w = av_interleaved_write_frame(outCtx, pkt)
+            if w < 0 { break }
+
+            let tb = inStream.pointee.time_base
+            if let first = firstPts, pkt.pointee.dts != AV_NOPTS_VALUE {
+                let pts = pkt.pointee.dts - first
+                let sec = Double(pts) * Double(tb.num) / Double(max(tb.den, 1))
+                if sec >= 0 {
+                    let size = (try? FileManager.default.attributesOfItem(atPath: filename)[.size] as? Int64) ?? lastBytes
+                    lastBytes = size
+                    progress.set(seconds: sec, bytes: size)
                 }
-                queue.append(seg)
-                lastQueued = seg.sequence
-                if nextWrite == nil { nextWrite = seg.sequence }
             }
-            lock.unlock()
         }
 
-        private func flushLocked() {
-            while let next = nextWrite, let item = ready.removeValue(forKey: next) {
-                if item.0.isEmpty {
-                    writer.markDiscontinuity(isAudio: isAudio)
-                } else {
-                    writer.append(item.0, duration: item.1, isAudio: isAudio)
-                }
-                nextWrite = next + 1
-            }
+        av_write_trailer(outCtx)
+        avio_closep(&outCtx.pointee.pb)
+        avformat_free_context(outCtx)
+        avformat_close_input(&inCtx)
+
+        let size = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? 0
+        progress.set(seconds: progress.seconds, bytes: size)
+        guard size > 1024 else {
+            return Result(success: false, error: "没有收到数据")
         }
+        return Result(success: true, error: nil)
     }
 
-    static func parse(_ doc: String, base: URL) -> Parsed {
-        var out = Parsed()
-        var expectURI = false
-        var pendingDuration: Double = 2
-        var seq = 0
-        let lines = doc.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        for line in lines {
-            if line.hasPrefix("#EXT-X-TARGETDURATION:") {
-                out.target = Int(line.split(separator: ":").last ?? "4") ?? 4
-            } else if line.hasPrefix("#EXT-X-MEDIA-SEQUENCE:") {
-                seq = Int(line.split(separator: ":").last ?? "0") ?? 0
-                out.mediaSequence = seq
-            } else if line.hasPrefix("#EXT-X-MAP:") {
-                out.map = extractURI(line, base: base)
-            } else if line.hasPrefix("#EXTINF:") {
-                let raw = line.dropFirst("#EXTINF:".count)
-                let num = raw.split(separator: ",").first.map(String.init) ?? "2"
-                pendingDuration = Double(num) ?? 2
-                expectURI = true
-            } else if expectURI && !line.isEmpty && !line.hasPrefix("#") {
-                if let url = resolve(line, base: base) {
-                    out.segments.append(Segment(duration: pendingDuration, url: url, sequence: seq))
-                    seq += 1
-                }
-                expectURI = false
-            }
-        }
-        if out.target < 1 { out.target = 4 }
-        return out
-    }
-
-    private static func extractURI(_ line: String, base: URL) -> URL? {
-        if let r = line.range(of: "URI=\"") {
-            let after = line[r.upperBound...]
-            if let end = after.firstIndex(of: "\"") {
-                return resolve(String(after[..<end]), base: base)
-            }
-        }
-        if let r = line.range(of: "URI=") {
-            let after = line[r.upperBound...]
-            let raw = after.split(separator: ",").first.map(String.init) ?? String(after)
-            return resolve(raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"")), base: base)
-        }
-        return nil
-    }
-
-    private static func resolve(_ str: String, base: URL) -> URL? {
-        if str.hasPrefix("http://") || str.hasPrefix("https://") { return URL(string: str) }
-        return URL(string: str, relativeTo: base)?.absoluteURL
-    }
-
-    final class DiskWriter: @unchecked Sendable {
-        let dir: URL
-        let indexURL: URL
-        private let lock = NSLock()
-        private var vInit: String?
-        private var aInit: String?
-        private var vItems: [Item] = []
-        private var aItems: [Item] = []
-        private var pendingVDisc = false
-        private var pendingADisc = false
-        private var vIndex = 0
-        private var aIndex = 0
-        private var _bytes: Int64 = 0
-        private var _vDuration: Double = 0
-        private var vTarget = 4
-        private var aTarget = 4
-
-        struct Item {
-            var discontinuity: Bool
-            var duration: Double
-            var name: String
-        }
-
-        init(dir: URL) {
-            self.dir = dir
-            self.indexURL = dir.appendingPathComponent("index.m3u8")
-        }
-
-        var bytes: Int64 {
-            lock.lock(); defer { lock.unlock() }
-            return _bytes
-        }
-
-        var videoDuration: Double {
-            lock.lock(); defer { lock.unlock() }
-            return _vDuration
-        }
-
-        func writeInit(_ data: Data, isAudio: Bool) {
-            lock.lock()
-            let name = isAudio ? "a-init.mp4" : "v-init.mp4"
-            writeFile(name, data: data)
-            if isAudio { aInit = name } else { vInit = name }
-            lock.unlock()
-        }
-
-        func markDiscontinuity(isAudio: Bool) {
-            lock.lock()
-            if isAudio { pendingADisc = true } else { pendingVDisc = true }
-            lock.unlock()
-        }
-
-        func append(_ data: Data, duration: Double, isAudio: Bool) {
-            lock.lock()
-            let ext = data.first == 0x47 ? "ts" : "m4s"
-            if isAudio {
-                aIndex += 1
-                let name = String(format: "a-%05d.%@", aIndex, ext)
-                writeFile(name, data: data)
-                aItems.append(Item(discontinuity: pendingADisc, duration: duration, name: name))
-                pendingADisc = false
-                aTarget = max(aTarget, Int(duration.rounded(.up)))
-            } else {
-                vIndex += 1
-                let name = String(format: "v-%05d.%@", vIndex, ext)
-                writeFile(name, data: data)
-                vItems.append(Item(discontinuity: pendingVDisc, duration: duration, name: name))
-                pendingVDisc = false
-                _vDuration += duration
-                vTarget = max(vTarget, Int(duration.rounded(.up)))
-            }
-            lock.unlock()
-        }
-
-        func rewrite(ended: Bool) {
-            lock.lock()
-            let vBody = playlist(initName: vInit, items: vItems, target: vTarget, ended: ended)
-            writeText("video.m3u8", vBody)
-            if !aItems.isEmpty || aInit != nil {
-                let aBody = playlist(initName: aInit, items: aItems, target: aTarget, ended: ended)
-                writeText("audio.m3u8", aBody)
-                writeText("index.m3u8", """
-                #EXTM3U
-                #EXT-X-INDEPENDENT-SEGMENTS
-                #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio",DEFAULT=YES,AUTOSELECT=YES,URI="audio.m3u8"
-                #EXT-X-STREAM-INF:BANDWIDTH=5000000,AUDIO="aud"
-                video.m3u8
-
-                """)
-            } else {
-                writeText("index.m3u8", """
-                #EXTM3U
-                #EXT-X-STREAM-INF:BANDWIDTH=5000000
-                video.m3u8
-
-                """)
-            }
-            lock.unlock()
-        }
-
-        private func playlist(initName: String?, items: [Item], target: Int, ended: Bool) -> String {
-            let version = initName == nil ? 3 : 7
-            var s = "#EXTM3U\n#EXT-X-VERSION:\(version)\n#EXT-X-TARGETDURATION:\(max(target, 1))\n"
-            s += "#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:\(ended ? "VOD" : "EVENT")\n"
-            if let initName {
-                s += "#EXT-X-MAP:URI=\"\(initName)\"\n"
-            }
-            for item in items {
-                if item.discontinuity { s += "#EXT-X-DISCONTINUITY\n" }
-                s += String(format: "#EXTINF:%.3f,\n%@\n", item.duration, item.name)
-            }
-            if ended { s += "#EXT-X-ENDLIST\n" }
-            return s
-        }
-
-        private func writeFile(_ name: String, data: Data) {
-            let url = dir.appendingPathComponent(name)
-            try? data.write(to: url, options: .atomic)
-            _bytes += Int64(data.count)
-        }
-
-        private func writeText(_ name: String, _ text: String) {
-            try? text.data(using: .utf8)?.write(to: dir.appendingPathComponent(name), options: .atomic)
-        }
+    private static func formatOptions() -> OpaquePointer? {
+        var opts: OpaquePointer?
+        let ua = APIClient.userAgent
+        av_dict_set(&opts, "user_agent", ua, 0)
+        av_dict_set(&opts, "referer", "Referer: https://chaturbate.com/", 0)
+        av_dict_set(&opts, "headers", "Referer: https://chaturbate.com/\r\nUser-Agent: \(ua)\r\n", 0)
+        av_dict_set_int(&opts, "reconnect", 1, 0)
+        av_dict_set_int(&opts, "reconnect_streamed", 1, 0)
+        av_dict_set_int(&opts, "reconnect_delay_max", 4, 0)
+        av_dict_set_int(&opts, "rw_timeout", 15_000_000, 0)
+        av_dict_set_int(&opts, "timeout", 15_000_000, 0)
+        av_dict_set_int(&opts, "http_persistent", 1, 0)
+        av_dict_set_int(&opts, "seekable", 0, 0)
+        av_dict_set(&opts, "allowed_extensions", "ALL", 0)
+        av_dict_set(&opts, "protocol_whitelist", "file,http,https,tcp,tls,crypto,data", 0)
+        return opts
     }
 }

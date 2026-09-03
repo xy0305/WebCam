@@ -9,6 +9,9 @@ packages:
   KSPlayer:
     url: https://github.com/kingslay/KSPlayer.git
     branch: main
+  FFmpegKit:
+    url: https://github.com/kingslay/FFmpegKit.git
+    from: "6.1.4"
 
 settings:
   base:
@@ -34,6 +37,14 @@ targets:
     dependencies:
       - package: KSPlayer
         product: KSPlayer
+      - package: FFmpegKit
+        product: FFmpegKit
+      - package: FFmpegKit
+        product: Libavformat
+      - package: FFmpegKit
+        product: Libavcodec
+      - package: FFmpegKit
+        product: Libavutil
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.personal.camweb
