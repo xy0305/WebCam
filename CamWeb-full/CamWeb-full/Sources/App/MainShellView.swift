@@ -23,6 +23,7 @@ struct MainShellView: View {
     private var coverPage: some View {
         if let name = appState.playingUsername {
             PlayerView(username: name, room: appState.playingRoom)
+                .id(name)
                 .environmentObject(appState)
         } else if let url = appState.playingRecordingURL {
             RecordingPlayerView(url: url)

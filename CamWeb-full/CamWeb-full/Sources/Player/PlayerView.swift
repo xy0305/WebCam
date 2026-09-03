@@ -139,10 +139,38 @@ struct PlayerView: View {
     private var infoPanel: some View {
         ZStack(alignment: .bottomTrailing) {
             VStack(alignment: .leading, spacing: 16) {
-                Text(displayRoom.username)
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
+                HStack(alignment: .center) {
+                    Text(displayRoom.username)
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Spacer()
+                    Menu {
+                        Button {
+                            special.toggle(username)
+                        } label: {
+                            Label(special.contains(username) ? "取消非常关注" : "非常关注",
+                                  systemImage: special.contains(username) ? "star.slash.fill" : "star")
+                        }
+                        Button {
+                            fav.toggle(username)
+                        } label: {
+                            Label(fav.isFollowing(username) ? "取消收藏" : "收藏",
+                                  systemImage: fav.isFollowing(username) ? "heart.slash" : "heart")
+                        }
+                        if let url = URL(string: "https://chaturbate.com/\(username)/") {
+                            ShareLink(item: url) {
+                                Label("分享", systemImage: "square.and.arrow.up")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                }
 
                 HStack(spacing: 12) {
                     AsyncImage(url: displayRoom.thumb) { phase in
@@ -257,6 +285,7 @@ struct PlayerView: View {
                                                 .foregroundStyle(Color(white: 0.55))
                                         }
                                         .frame(width: 132, alignment: .leading)
+                                        .contentShape(Rectangle())
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -266,39 +295,11 @@ struct PlayerView: View {
                     .padding(.top, 8)
                 }
 
-                Spacer()
+                Spacer(minLength: 24)
             }
             .padding(.horizontal, 20)
             .padding(.top, 16)
             .padding(.bottom, 24)
-
-            Menu {
-                Button {
-                    special.toggle(username)
-                } label: {
-                    Label(special.contains(username) ? "取消非常关注" : "非常关注",
-                          systemImage: special.contains(username) ? "star.slash.fill" : "star")
-                }
-                Button {
-                    fav.toggle(username)
-                } label: {
-                    Label(fav.isFollowing(username) ? "取消收藏" : "收藏",
-                          systemImage: fav.isFollowing(username) ? "heart.slash" : "heart")
-                }
-                if let url = URL(string: "https://chaturbate.com/\(username)/") {
-                    ShareLink(item: url) {
-                        Label("分享", systemImage: "square.and.arrow.up")
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .padding(.trailing, 16)
-            .padding(.bottom, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(

@@ -39,6 +39,10 @@ struct NativeSwipeStack<Root: View, Cover: View>: UIViewControllerRepresentable 
             page.view.backgroundColor = .black
             page.hidesBottomBarWhenPushed = true
             nav.pushViewController(page, animated: true)
+        } else if isPresented, count > 1, !context.coordinator.isTransitioning {
+            if let page = nav.topViewController as? UIHostingController<AnyView> {
+                page.rootView = wrappedCover(nav: nav)
+            }
         } else if !isPresented, count > 1, !context.coordinator.isTransitioning {
             context.coordinator.isTransitioning = true
             nav.popToRootViewController(animated: true)
