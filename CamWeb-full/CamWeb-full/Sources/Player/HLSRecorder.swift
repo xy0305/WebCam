@@ -277,9 +277,8 @@ enum FFmpegCopyRecorder {
         avformat_network_init()
 
         var inCtx: UnsafeMutablePointer<AVFormatContext>?
-        var interruptOpaque = Unmanaged.passUnretained(progress).toOpaque()
         var interruptCB = AVIOInterruptCB()
-        interruptCB.opaque = interruptOpaque
+        interruptCB.opaque = Unmanaged.passUnretained(progress).toOpaque()
         interruptCB.callback = { ctx in
             guard let ctx else { return 0 }
             let p = Unmanaged<RecProgress>.fromOpaque(ctx).takeUnretainedValue()
@@ -287,21 +286,16 @@ enum FFmpegCopyRecorder {
         }
 
         var opts = formatOptions()
-        let urlString: String
-        if url.isFileURL || url.scheme == "data" {
-            urlString = url.absoluteString
-        } else {
-            urlString = url.absoluteString
-        }
+        let urlString = url.absoluteString
         var ret = avformat_open_input(&inCtx, urlString, nil, &opts)
         av_dict_free(&opts)
-        guard ret == 0, let inCtx else {
+        guard ret == 0, inCtx != nil else {
             return nil
         }
-        inCtx.pointee.interrupt_callback = interruptCB
-        inCtx.pointee.flags |= AVFMT_FLAG_GENPTS
+        inCtx?.pointee.interrupt_callback = interruptCB
+        inCtx?.pointee.flags |= AVFMT_FLAG_GENPTS
         ret = avformat_find_stream_info(inCtx, nil)
-        guard ret >= 0 else {
+        guard ret >= 0, let input = inCtx else {
             avformat_close_input(&inCtx)
             return nil
         }
@@ -310,7 +304,7 @@ enum FFmpegCopyRecorder {
         let filename = dest.path
         var outCtx: UnsafeMutablePointer<AVFormatContext>?
         ret = avformat_alloc_output_context2(&outCtx, nil, "mp4", filename)
-        guard ret >= 0, let outCtx else {
+        guard ret >= 0, let output = outCtx else {
             avformat_close_input(&inCtx)
             return Result(success: false, error: "无法创建 mp4")
         }
@@ -319,9 +313,9 @@ enum FFmpegCopyRecorder {
         var outIndex = 0
         var audioTaken = false
         var videoTaken = false
-        let nb = Int(inCtx.pointee.nb_streams)
+        let nb = Int(input.pointee.nb_streams)
         for i in 0..<nb {
-            guard let inStream = inCtx.pointee.streams[i],
+            guard let inStream = input.pointee.streams[i],
                   let codecpar = inStream.pointee.codecpar else { continue }
             let type = codecpar.pointee.codec_type
             if type == AVMEDIA_TYPE_AUDIO {
@@ -333,28 +327,31 @@ enum FFmpegCopyRecorder {
             } else {
                 continue
             }
-            guard let outStream = avformat_new_stream(outCtx, nil) else { continue }
+            guard let outStream = avformat_new_stream(output, nil) else { continue }
             avcodec_parameters_copy(outStream.pointee.codecpar, codecpar)
             outStream.pointee.codecpar.pointee.codec_tag = 0
             mapping[i] = outIndex
             outIndex += 1
         }
         guard outIndex > 0 else {
-            avformat_free_context(outCtx)
+            avformat_free_context(output)
+            outCtx = nil
             avformat_close_input(&inCtx)
             return nil
         }
 
-        ret = avio_open(&outCtx.pointee.pb, filename, AVIO_FLAG_WRITE)
+        ret = avio_open(&(output.pointee.pb), filename, AVIO_FLAG_WRITE)
         guard ret >= 0 else {
-            avformat_free_context(outCtx)
+            avformat_free_context(output)
+            outCtx = nil
             avformat_close_input(&inCtx)
             return Result(success: false, error: "无法写入文件")
         }
-        ret = avformat_write_header(outCtx, nil)
+        ret = avformat_write_header(output, nil)
         guard ret >= 0 else {
-            avio_closep(&outCtx.pointee.pb)
-            avformat_free_context(outCtx)
+            avio_closep(&(output.pointee.pb))
+            avformat_free_context(output)
+            outCtx = nil
             avformat_close_input(&inCtx)
             return Result(success: false, error: "写文件头失败")
         }
@@ -364,27 +361,28 @@ enum FFmpegCopyRecorder {
 
         var firstPts: Int64?
         var lastBytes: Int64 = 0
+        let nopts = Int64.min
         while !progress.stopping {
-            ret = av_read_frame(inCtx, packet)
+            ret = av_read_frame(input, packet)
             if ret < 0 { break }
             defer { av_packet_unref(packet) }
             guard let pkt = packet else { continue }
             let inIndex = Int(pkt.pointee.stream_index)
             guard let mapped = mapping[inIndex],
-                  let inStream = inCtx.pointee.streams[inIndex],
-                  let outStream = outCtx.pointee.streams[mapped] else { continue }
+                  let inStream = input.pointee.streams[inIndex],
+                  let outStream = output.pointee.streams[mapped] else { continue }
 
-            if firstPts == nil, pkt.pointee.pts != AV_NOPTS_VALUE {
+            if firstPts == nil, pkt.pointee.pts != nopts {
                 firstPts = pkt.pointee.pts
             }
             pkt.pointee.stream_index = Int32(mapped)
             av_packet_rescale_ts(pkt, inStream.pointee.time_base, outStream.pointee.time_base)
             pkt.pointee.pos = -1
-            let w = av_interleaved_write_frame(outCtx, pkt)
+            let w = av_interleaved_write_frame(output, pkt)
             if w < 0 { break }
 
             let tb = inStream.pointee.time_base
-            if let first = firstPts, pkt.pointee.dts != AV_NOPTS_VALUE {
+            if let first = firstPts, pkt.pointee.dts != nopts {
                 let pts = pkt.pointee.dts - first
                 let sec = Double(pts) * Double(tb.num) / Double(max(tb.den, 1))
                 if sec >= 0 {
@@ -395,9 +393,10 @@ enum FFmpegCopyRecorder {
             }
         }
 
-        av_write_trailer(outCtx)
-        avio_closep(&outCtx.pointee.pb)
-        avformat_free_context(outCtx)
+        av_write_trailer(output)
+        avio_closep(&(output.pointee.pb))
+        avformat_free_context(output)
+        outCtx = nil
         avformat_close_input(&inCtx)
 
         let size = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? 0
