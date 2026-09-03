@@ -1,4 +1,5 @@
 import KSPlayer
+import MediaPlayer
 import SwiftUI
 import UIKit
 
@@ -20,8 +21,14 @@ struct PlayerView: View {
     @State private var hasStarted = false
     @State private var isVerticalLive = false
     @State private var autoHideTask: Task<Void, Never>?
+    @State private var exportCopied = false
+    @State private var swipeKind: EdgeSwipeKind?
+    @State private var swipeValue: CGFloat = 0
+    @State private var swipeBase: CGFloat = 0
     @ObservedObject private var recs = RecordingManager.shared
     @ObservedObject private var fav = FollowingStore.shared
+    @ObservedObject private var special = SpecialFollowStore.shared
+    @State private var recommended: [Room] = []
 
     private var displayRoom: Room {
         room ?? appState.playingRoom ?? Room(username: username)
@@ -52,7 +59,11 @@ struct PlayerView: View {
         }
         .background(Color.black)
         .navigationBarHidden(true)
-        .task { await resolve() }
+        .task(id: username) {
+            recommended = []
+            await resolve()
+            recommended = await RoomAPI.fetchRecommended(username: username)
+        }
         .onAppear {
             coordinator.isMaskShow = false
             wireCoordinator()
@@ -70,6 +81,11 @@ struct PlayerView: View {
             Button("好", role: .cancel) { recs.banner = nil }
         } message: {
             Text(recs.banner ?? "")
+        }
+        .alert("已复制最高画质地址", isPresented: $exportCopied) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(stream.map { StreamExport.highestURL(from: $0).absoluteString } ?? "")
         }
     }
 
@@ -92,7 +108,11 @@ struct PlayerView: View {
                 errorView
             }
 
-            gestureLayer
+            gestureLayer(isLandscape: isLandscape)
+
+            if let swipeKind {
+                EdgeSwipeHud(kind: swipeKind, value: swipeValue)
+            }
 
             if hasStarted && isMaskVisible && !isLocked {
                 topShadowGradient
@@ -159,6 +179,17 @@ struct PlayerView: View {
                     Spacer()
 
                     Button {
+                        special.toggle(username)
+                    } label: {
+                        Image(systemName: special.contains(username) ? "star.fill" : "star")
+                            .font(.title3)
+                            .foregroundStyle(special.contains(username) ? .yellow : Color(white: 0.7))
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(.white.opacity(0.1)))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
                         fav.toggle(username)
                     } label: {
                         Image(systemName: fav.isFollowing(username) ? "heart.fill" : "heart")
@@ -194,6 +225,47 @@ struct PlayerView: View {
                     }
                 }
 
+                if !recommended.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("推荐主播")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(recommended) { room in
+                                    Button {
+                                        appState.openPlayer(username: room.username, room: room)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            AsyncImage(url: room.thumb) { phase in
+                                                switch phase {
+                                                case .success(let img):
+                                                    img.resizable().scaledToFill()
+                                                default:
+                                                    Color.gray.opacity(0.25)
+                                                }
+                                            }
+                                            .frame(width: 132, height: 74)
+                                            .clipped()
+                                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                            Text(room.username)
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(.white)
+                                                .lineLimit(1)
+                                            Text(room.viewersText)
+                                                .font(.caption2)
+                                                .foregroundStyle(Color(white: 0.55))
+                                        }
+                                        .frame(width: 132, alignment: .leading)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 8)
+                }
+
                 Spacer()
             }
             .padding(.horizontal, 20)
@@ -201,6 +273,12 @@ struct PlayerView: View {
             .padding(.bottom, 24)
 
             Menu {
+                Button {
+                    special.toggle(username)
+                } label: {
+                    Label(special.contains(username) ? "取消非常关注" : "非常关注",
+                          systemImage: special.contains(username) ? "star.slash.fill" : "star")
+                }
                 Button {
                     fav.toggle(username)
                 } label: {
@@ -280,9 +358,9 @@ struct PlayerView: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: - 手势：单击显隐、双击切横竖屏
+    // MARK: - 手势：单击显隐、双击切横竖屏；横屏左亮度右音量
 
-    private var gestureLayer: some View {
+    private func gestureLayer(isLandscape: Bool) -> some View {
         Color.black.opacity(0.001)
             .contentShape(Rectangle())
             .gesture(
@@ -298,6 +376,38 @@ struct PlayerView: View {
                         }
                     }
             )
+            .simultaneousGesture(isLandscape && !isLocked ? landscapeSwipe : nil)
+    }
+
+    private var landscapeSwipe: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+            .onChanged { value in
+                let height = max(UIScreen.main.bounds.height, 1)
+                if swipeKind == nil {
+                    let dx = abs(value.translation.width)
+                    let dy = abs(value.translation.height)
+                    guard dy > dx, dy > 10 else { return }
+                    if value.startLocation.x < UIScreen.main.bounds.width / 2 {
+                        swipeKind = .brightness
+                        swipeBase = ScreenBrightness.current
+                    } else {
+                        swipeKind = .volume
+                        swipeBase = CGFloat(SystemVolume.current)
+                    }
+                    swipeValue = swipeBase
+                }
+                let delta = -value.translation.height / (height * 0.55)
+                let next = min(1, max(0, swipeBase + delta))
+                swipeValue = next
+                switch swipeKind {
+                case .brightness: ScreenBrightness.set(next)
+                case .volume: SystemVolume.set(Float(next))
+                case nil: break
+                }
+            }
+            .onEnded { _ in
+                swipeKind = nil
+            }
     }
 
     private func loadingBackButton(isLandscape: Bool) -> some View {
@@ -404,6 +514,16 @@ struct PlayerView: View {
                                 .frame(width: 30, height: 30)
                         }
                         .buttonStyle(.plain)
+                        Menu {
+                            Button("复制最高画质 m3u8") { exportCopy() }
+                            Button("用 iPlayer 打开") { exportIPlayer() }
+                            Button("系统分享…") { exportShare() }
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 30, height: 30)
+                        }
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -629,6 +749,40 @@ struct PlayerView: View {
             audioPlaylist: stream.audioPlaylist,
             masterURL: stream.masterURL
         )
+    }
+
+    private func exportCopy() {
+        guard let stream else { return }
+        StreamExport.copyHighest(stream)
+        exportCopied = true
+        scheduleAutoHide()
+    }
+
+    private func exportIPlayer() {
+        guard let stream, let url = StreamExport.iplayer2URL(stream: stream, room: displayRoom) else { return }
+        UIApplication.shared.open(url, options: [:]) { ok in
+            if !ok {
+                StreamExport.copyHighest(stream)
+                DispatchQueue.main.async { exportCopied = true }
+            }
+        }
+        scheduleAutoHide()
+    }
+
+    private func exportShare() {
+        guard let stream else { return }
+        let items = StreamExport.shareItems(stream: stream, room: displayRoom)
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let root = scene.keyWindow?.rootViewController ?? scene.windows.first?.rootViewController else { return }
+        var presenter = root
+        while let shown = presenter.presentedViewController { presenter = shown }
+        if let pop = vc.popoverPresentationController {
+            pop.sourceView = presenter.view
+            pop.sourceRect = CGRect(x: presenter.view.bounds.midX, y: 80, width: 1, height: 1)
+        }
+        presenter.present(vc, animated: true)
+        scheduleAutoHide()
     }
 }
 
