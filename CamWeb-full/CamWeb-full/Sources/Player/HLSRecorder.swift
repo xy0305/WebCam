@@ -80,7 +80,6 @@ final class RecordingManager: ObservableObject {
         }
     }
 
-    /// iOS 后台网络会被掐，靠 UIBackgroundModes=audio + 静音循环把进程保住。
     private func startKeepAliveAudio() {
         guard keepAlivePlayer == nil else { return }
         let session = AVAudioSession.sharedInstance()
@@ -120,8 +119,7 @@ final class RecordingManager: ObservableObject {
     }
 }
 
-/// 把直播媒体 playlist 存成本地 HLS VOD（init + 分片 + m3u8）。
-/// 不再把 fMP4 碎片拼成一个 mp4：AVPlayer 只会播到时间戳断掉的地方，十几分钟会变成几分钟。
+/// 把直播媒体 playlist 存成本地 HLS VOD。
 @MainActor
 final class RecordingSession: ObservableObject, Identifiable {
     var id: String { username }
@@ -171,7 +169,12 @@ final class RecordingSession: ObservableObject, Identifiable {
 
     func stop(userInitiated: Bool) {
         isRunning = false
-        workTask?.cancel()
+        // 先停轮询，把已经出现的分片下完，再收尾。不要立刻 cancel。
+        progress.requestStop()
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            self?.workTask?.cancel()
+        }
     }
 
     private func finish(result: HLSPackager.Result, name: String, dir: URL) {
@@ -227,6 +230,7 @@ final class RecProgress: @unchecked Sendable {
     private let lock = NSLock()
     private var _seconds: Double = 0
     private var _bytes: Int64 = 0
+    private var _stopping = false
 
     var seconds: Double {
         lock.lock(); defer { lock.unlock() }
@@ -238,11 +242,60 @@ final class RecProgress: @unchecked Sendable {
         return _bytes
     }
 
+    var stopping: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _stopping
+    }
+
     func set(seconds: Double, bytes: Int64) {
         lock.lock()
         _seconds = seconds
         _bytes = bytes
         lock.unlock()
+    }
+
+    func requestStop() {
+        lock.lock()
+        _stopping = true
+        lock.unlock()
+    }
+}
+
+enum RecHLS {
+    static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.httpMaximumConnectionsPerHost = 8
+        c.timeoutIntervalForRequest = 6
+        c.timeoutIntervalForResource = 10
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        c.urlCache = nil
+        c.waitsForConnectivity = false
+        c.httpAdditionalHeaders = APIClient.hlsHeaders
+        return URLSession(configuration: c)
+    }()
+
+    static func data(for url: URL) async throws -> (Data, HTTPURLResponse) {
+        var req = URLRequest(url: url)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.timeoutInterval = 6
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        return (data, http)
+    }
+
+    static func bytes(_ url: URL) async -> Data? {
+        for attempt in 0..<5 {
+            if Task.isCancelled { return nil }
+            do {
+                let (data, http) = try await data(for: url)
+                if http.statusCode == 404 || http.statusCode == 410 { return nil }
+                if (200..<300).contains(http.statusCode), !data.isEmpty { return data }
+            } catch {
+                if error is CancellationError { return nil }
+            }
+            try? await Task.sleep(nanoseconds: UInt64((attempt + 1) * 80_000_000))
+        }
+        return nil
     }
 }
 
@@ -253,13 +306,13 @@ enum HLSPackager {
         let error: String?
     }
 
-    private struct Segment {
+    struct Segment {
         let duration: Double
         let url: URL
         let sequence: Int
     }
 
-    private struct Parsed {
+    struct Parsed {
         var map: URL?
         var target: Int = 4
         var mediaSequence: Int = 0
@@ -273,44 +326,28 @@ enum HLSPackager {
         progress: RecProgress
     ) async -> Result {
         let writer = DiskWriter(dir: dir)
-        var videoSeen = Set<String>()
-        var audioSeen = Set<String>()
-        var videoMapDone = false
-        var audioMapDone = false
-        var nextVideoSeq = 0
-        var nextAudioSeq = 0
+        let video = Track(playlist: videoPlaylist, isAudio: false, writer: writer)
+        let audio = audioPlaylist.map { Track(playlist: $0, isAudio: true, writer: writer) }
 
-        while !Task.isCancelled {
-            do {
-                try await pull(
-                    playlist: videoPlaylist,
-                    seen: &videoSeen,
-                    mapDone: &videoMapDone,
-                    nextSeq: &nextVideoSeq,
-                    isAudio: false,
-                    writer: writer
-                )
-                if let audio = audioPlaylist {
-                    try await pull(
-                        playlist: audio,
-                        seen: &audioSeen,
-                        mapDone: &audioMapDone,
-                        nextSeq: &nextAudioSeq,
-                        isAudio: true,
-                        writer: writer
-                    )
-                }
-                progress.set(seconds: writer.videoDuration, bytes: writer.bytes)
-                writer.rewrite(ended: false)
-            } catch is CancellationError {
-                break
-            } catch {
-                // 单次失败不中断
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await pollLoop(video, progress: progress) }
+            group.addTask { await downloadLoop(video, progress: progress) }
+            if let audio {
+                group.addTask { await pollLoop(audio, progress: progress) }
+                group.addTask { await downloadLoop(audio, progress: progress) }
             }
-            if Task.isCancelled { break }
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            group.addTask {
+                while !Task.isCancelled {
+                    progress.set(seconds: writer.videoDuration, bytes: writer.bytes)
+                    writer.rewrite(ended: false)
+                    if progress.stopping, video.isIdle, audio?.isIdle ?? true { break }
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+            }
         }
 
+        video.flushGaps()
+        audio?.flushGaps()
         writer.rewrite(ended: true)
         progress.set(seconds: writer.videoDuration, bytes: writer.bytes)
         guard writer.videoDuration > 0.5, writer.bytes > 1024 else {
@@ -319,47 +356,138 @@ enum HLSPackager {
         return Result(success: true, indexURL: writer.indexURL, error: nil)
     }
 
-    private static func pull(
-        playlist: URL,
-        seen: inout Set<String>,
-        mapDone: inout Bool,
-        nextSeq: inout Int,
-        isAudio: Bool,
-        writer: DiskWriter
-    ) async throws {
-        let (data, http) = try await APIClient.hlsData(for: playlist, retry: 0)
-        guard (200..<300).contains(http.statusCode),
-              let text = String(data: data, encoding: .utf8) else { return }
-        let parsed = parse(text, base: playlist)
-
-        if !mapDone, let map = parsed.map {
-            let chunk = try await fetchBytes(map)
-            writer.writeInit(chunk, isAudio: isAudio)
-            mapDone = true
+    private static func pollLoop(_ track: Track, progress: RecProgress) async {
+        while !Task.isCancelled {
+            await track.poll()
+            if progress.stopping { break }
+            try? await Task.sleep(nanoseconds: 200_000_000)
         }
+        await track.poll()
+    }
 
-        for seg in parsed.segments {
-            let key = seg.url.absoluteString
-            if seen.contains(key) { continue }
-            if nextSeq > 0, seg.sequence > nextSeq {
-                writer.markDiscontinuity(isAudio: isAudio)
-            }
-            do {
-                let chunk = try await fetchBytes(seg.url)
-                guard !chunk.isEmpty else { continue }
-                writer.append(chunk, duration: seg.duration, isAudio: isAudio)
-                seen.insert(key)
-                nextSeq = seg.sequence + 1
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // 这一片下次再试，避免窗口滑走后永远缺一段
-                break
+    private static func downloadLoop(_ track: Track, progress: RecProgress) async {
+        await withTaskGroup(of: Void.self) { group in
+            var inflight = 0
+            while !Task.isCancelled {
+                while inflight < 6, let seg = track.dequeue() {
+                    inflight += 1
+                    group.addTask {
+                        let data = await RecHLS.bytes(seg.url)
+                        track.complete(seq: seg.sequence, data: data, duration: seg.duration)
+                    }
+                }
+                if progress.stopping, track.isIdle, inflight == 0 { break }
+                if inflight == 0 {
+                    try? await Task.sleep(nanoseconds: 40_000_000)
+                    continue
+                }
+                await group.next()
+                inflight -= 1
             }
         }
     }
 
-    private static func parse(_ doc: String, base: URL) -> Parsed {
+    final class Track: @unchecked Sendable {
+        let playlist: URL
+        let isAudio: Bool
+        let writer: DiskWriter
+        private let lock = NSLock()
+        private var seen = Set<String>()
+        private var queue: [Segment] = []
+        private var ready: [Int: (Data, Double)] = [:]
+        private var nextWrite: Int?
+        private var lastQueued = -1
+        private var mapDone = false
+        private var queuedCount = 0
+        private var inflightCount = 0
+
+        init(playlist: URL, isAudio: Bool, writer: DiskWriter) {
+            self.playlist = playlist
+            self.isAudio = isAudio
+            self.writer = writer
+        }
+
+        var isIdle: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return queue.isEmpty && inflightCount == 0 && ready.isEmpty
+        }
+
+        func poll() async {
+            do {
+                let (data, http) = try await RecHLS.data(for: playlist)
+                guard (200..<300).contains(http.statusCode),
+                      let text = String(data: data, encoding: .utf8) else { return }
+                let parsed = HLSPackager.parse(text, base: playlist)
+                if !mapDone, let map = parsed.map {
+                    if let chunk = await RecHLS.bytes(map), !chunk.isEmpty {
+                        writer.writeInit(chunk, isAudio: isAudio)
+                        mapDone = true
+                    }
+                }
+                enqueue(parsed.segments)
+            } catch {
+            }
+        }
+
+        func dequeue() -> Segment? {
+            lock.lock(); defer { lock.unlock() }
+            guard !queue.isEmpty else { return nil }
+            let seg = queue.removeFirst()
+            inflightCount += 1
+            return seg
+        }
+
+        func complete(seq: Int, data: Data?, duration: Double) {
+            lock.lock()
+            inflightCount = max(0, inflightCount - 1)
+            if let data, !data.isEmpty {
+                ready[seq] = (data, duration)
+            } else {
+                ready[seq] = (Data(), duration)
+            }
+            flushLocked()
+            lock.unlock()
+        }
+
+        func flushGaps() {
+            lock.lock()
+            while let next = nextWrite, ready[next] == nil, ready.keys.contains(where: { $0 > next }) {
+                writer.markDiscontinuity(isAudio: isAudio)
+                nextWrite = next + 1
+            }
+            flushLocked()
+            lock.unlock()
+        }
+
+        private func enqueue(_ segs: [Segment]) {
+            lock.lock()
+            for seg in segs {
+                let key = seg.url.absoluteString
+                if seen.contains(key) { continue }
+                seen.insert(key)
+                if lastQueued >= 0, seg.sequence > lastQueued + 1 {
+                    writer.markDiscontinuity(isAudio: isAudio)
+                }
+                queue.append(seg)
+                lastQueued = seg.sequence
+                if nextWrite == nil { nextWrite = seg.sequence }
+            }
+            lock.unlock()
+        }
+
+        private func flushLocked() {
+            while let next = nextWrite, let item = ready.removeValue(forKey: next) {
+                if item.0.isEmpty {
+                    writer.markDiscontinuity(isAudio: isAudio)
+                } else {
+                    writer.append(item.0, duration: item.1, isAudio: isAudio)
+                }
+                nextWrite = next + 1
+            }
+        }
+    }
+
+    static func parse(_ doc: String, base: URL) -> Parsed {
         var out = Parsed()
         var expectURI = false
         var pendingDuration: Double = 2
@@ -409,14 +537,6 @@ enum HLSPackager {
     private static func resolve(_ str: String, base: URL) -> URL? {
         if str.hasPrefix("http://") || str.hasPrefix("https://") { return URL(string: str) }
         return URL(string: str, relativeTo: base)?.absoluteURL
-    }
-
-    private static func fetchBytes(_ url: URL) async throws -> Data {
-        let (data, http) = try await APIClient.hlsData(for: url, retry: 1)
-        guard (200..<300).contains(http.statusCode) else {
-            throw StreamSourceError.httpStatus(http.statusCode)
-        }
-        return data
     }
 
     final class DiskWriter: @unchecked Sendable {
