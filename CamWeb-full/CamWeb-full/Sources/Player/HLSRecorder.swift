@@ -32,10 +32,15 @@ final class RecordingManager: ObservableObject {
         sessions[username.lowercased()]
     }
 
-    func start(username: String, hlsURL: URL, masterURL: URL) {
+    func start(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         let name = username.lowercased()
         guard sessions[name] == nil else { return }
-        let session = RecordingSession(username: name, hlsURL: hlsURL, masterURL: masterURL)
+        let session = RecordingSession(
+            username: name,
+            videoPlaylist: videoPlaylist,
+            audioPlaylist: audioPlaylist,
+            masterURL: masterURL
+        )
         session.onFinished = { [weak self] name, message in
             self?.sessions[name] = nil
             self?.banner = message
@@ -51,11 +56,11 @@ final class RecordingManager: ObservableObject {
         sessions[username.lowercased()]?.stop(userInitiated: true)
     }
 
-    func toggle(username: String, hlsURL: URL, masterURL: URL) {
+    func toggle(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         if isRecording(username) {
             stop(username)
         } else {
-            start(username: username, hlsURL: hlsURL, masterURL: masterURL)
+            start(username: username, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist, masterURL: masterURL)
         }
     }
 
@@ -123,13 +128,13 @@ final class RecordingManager: ObservableObject {
     }
 }
 
-/// 电脑端成熟方案：ffmpeg -c copy 录 HLS。
-/// 这里用同一套 libavformat：打开迷你 master / 官方 master，按 packet copy 进 mp4。
+/// ffmpeg -c copy：先写本地迷你 master（电脑端 streamlink 同款），再打开 copy 进 mp4。
 @MainActor
 final class RecordingSession: ObservableObject, Identifiable {
     var id: String { username }
     let username: String
-    let hlsURL: URL
+    let videoPlaylist: URL
+    let audioPlaylist: URL?
     let masterURL: URL
 
     @Published var elapsedText = "00:00"
@@ -142,9 +147,10 @@ final class RecordingSession: ObservableObject, Identifiable {
     private var workTask: Task<Void, Never>?
     private let progress = RecProgress()
 
-    init(username: String, hlsURL: URL, masterURL: URL) {
+    init(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         self.username = username
-        self.hlsURL = hlsURL
+        self.videoPlaylist = videoPlaylist
+        self.audioPlaylist = audioPlaylist
         self.masterURL = masterURL
     }
 
@@ -152,16 +158,19 @@ final class RecordingSession: ObservableObject, Identifiable {
         let dir = RecordingStore.directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dest = dir.appendingPathComponent("\(username)_\(Self.stamp()).mp4")
+        let local = MiniMasterFile.write(video: videoPlaylist, audio: audioPlaylist)
 
         isRunning = true
         startTimer()
 
-        let hls = hlsURL
-        let master = masterURL
+        var urls = [local, videoPlaylist, masterURL]
+        var seen = Set<String>()
+        urls = urls.filter { seen.insert($0.absoluteString).inserted }
+
         let name = username
         let progress = self.progress
         workTask = Task.detached(priority: .utility) { [weak self] in
-            let result = FFmpegCopyRecorder.run(primary: hls, fallback: master, dest: dest, progress: progress)
+            let result = FFmpegCopyRecorder.run(urls: urls, dest: dest, progress: progress)
             await MainActor.run {
                 self?.finish(result: result, name: name, dest: dest)
             }
@@ -222,6 +231,35 @@ final class RecordingSession: ObservableObject, Identifiable {
     }
 }
 
+enum MiniMasterFile {
+    static func write(video: URL, audio: URL?) -> URL {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("camweb-\(UUID().uuidString).m3u8")
+        let body: String
+        if let audio {
+            body = """
+            #EXTM3U
+            #EXT-X-VERSION:6
+            #EXT-X-INDEPENDENT-SEGMENTS
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio",DEFAULT=YES,AUTOSELECT=YES,URI="\(audio.absoluteString)"
+            #EXT-X-STREAM-INF:BANDWIDTH=8000000,AUDIO="aud"
+            \(video.absoluteString)
+
+            """
+        } else {
+            body = """
+            #EXTM3U
+            #EXT-X-VERSION:6
+            #EXT-X-STREAM-INF:BANDWIDTH=8000000
+            \(video.absoluteString)
+
+            """
+        }
+        try? body.data(using: .utf8)?.write(to: tmp)
+        return tmp
+    }
+}
+
 final class RecProgress: @unchecked Sendable {
     private let lock = NSLock()
     private var _seconds: Double = 0
@@ -263,20 +301,28 @@ enum FFmpegCopyRecorder {
         let error: String?
     }
 
-    static func run(primary: URL, fallback: URL, dest: URL, progress: RecProgress) -> Result {
-        if let ok = copy(url: primary, dest: dest, progress: progress), ok.success {
-            return ok
+    static func run(urls: [URL], dest: URL, progress: RecProgress) -> Result {
+        var last = "打不开直播流"
+        for url in urls {
+            let r = copy(url: url, dest: dest, progress: progress)
+            if r.success { return r }
+            if let e = r.error, !e.isEmpty { last = e }
+            if progress.stopping { break }
         }
-        if fallback != primary, let ok = copy(url: fallback, dest: dest, progress: progress) {
-            return ok
-        }
-        return Result(success: false, error: "打不开直播流")
+        return Result(success: false, error: last)
     }
 
-    private static func copy(url: URL, dest: URL, progress: RecProgress) -> Result? {
+    private static func avErr(_ code: Int32) -> String {
+        var buf = [CChar](repeating: 0, count: 256)
+        av_strerror(code, &buf, buf.count)
+        let s = String(cString: buf)
+        return s.isEmpty ? "err \(code)" : s
+    }
+
+    private static func copy(url: URL, dest: URL, progress: RecProgress) -> Result {
         avformat_network_init()
 
-        var inCtx: UnsafeMutablePointer<AVFormatContext>?
+        var inCtx = avformat_alloc_context()
         var interruptCB = AVIOInterruptCB()
         interruptCB.opaque = Unmanaged.passUnretained(progress).toOpaque()
         interruptCB.callback = { ctx in
@@ -284,20 +330,22 @@ enum FFmpegCopyRecorder {
             let p = Unmanaged<RecProgress>.fromOpaque(ctx).takeUnretainedValue()
             return p.stopping ? 1 : 0
         }
+        inCtx?.pointee.interrupt_callback = interruptCB
 
         var opts = formatOptions()
-        let urlString = url.absoluteString
+        let urlString = url.isFileURL ? url.path : url.absoluteString
         var ret = avformat_open_input(&inCtx, urlString, nil, &opts)
         av_dict_free(&opts)
         guard ret == 0, inCtx != nil else {
-            return nil
+            return Result(success: false, error: "打开失败 \(avErr(ret))")
         }
-        inCtx?.pointee.interrupt_callback = interruptCB
         inCtx?.pointee.flags |= AVFMT_FLAG_GENPTS
+        inCtx?.pointee.probesize = 5_000_000
+        inCtx?.pointee.max_analyze_duration = 5_000_000
         ret = avformat_find_stream_info(inCtx, nil)
         guard ret >= 0, let input = inCtx else {
             avformat_close_input(&inCtx)
-            return nil
+            return Result(success: false, error: "解析失败 \(avErr(ret))")
         }
 
         try? FileManager.default.removeItem(at: dest)
@@ -337,7 +385,7 @@ enum FFmpegCopyRecorder {
             avformat_free_context(output)
             outCtx = nil
             avformat_close_input(&inCtx)
-            return nil
+            return Result(success: false, error: "没有音视频轨道")
         }
 
         ret = avio_open(&(output.pointee.pb), filename, AVIO_FLAG_WRITE)
@@ -347,13 +395,16 @@ enum FFmpegCopyRecorder {
             avformat_close_input(&inCtx)
             return Result(success: false, error: "无法写入文件")
         }
-        ret = avformat_write_header(output, nil)
+        var muxOpts: OpaquePointer?
+        av_dict_set(&muxOpts, "movflags", "frag_keyframe+empty_moov+faststart", 0)
+        ret = avformat_write_header(output, &muxOpts)
+        av_dict_free(&muxOpts)
         guard ret >= 0 else {
             avio_closep(&(output.pointee.pb))
             avformat_free_context(output)
             outCtx = nil
             avformat_close_input(&inCtx)
-            return Result(success: false, error: "写文件头失败")
+            return Result(success: false, error: "写文件头失败 \(avErr(ret))")
         }
 
         var packet = av_packet_alloc()
@@ -411,17 +462,24 @@ enum FFmpegCopyRecorder {
         var opts: OpaquePointer?
         let ua = APIClient.userAgent
         av_dict_set(&opts, "user_agent", ua, 0)
-        av_dict_set(&opts, "referer", "Referer: https://chaturbate.com/", 0)
-        av_dict_set(&opts, "headers", "Referer: https://chaturbate.com/\r\nUser-Agent: \(ua)\r\n", 0)
+        av_dict_set(&opts, "referer", "https://chaturbate.com/", 0)
+        av_dict_set(
+            &opts,
+            "headers",
+            "Referer: https://chaturbate.com/\r\nUser-Agent: \(ua)\r\nAccept: */*\r\n",
+            0
+        )
         av_dict_set_int(&opts, "reconnect", 1, 0)
         av_dict_set_int(&opts, "reconnect_streamed", 1, 0)
-        av_dict_set_int(&opts, "reconnect_delay_max", 4, 0)
-        av_dict_set_int(&opts, "rw_timeout", 15_000_000, 0)
-        av_dict_set_int(&opts, "timeout", 15_000_000, 0)
-        av_dict_set_int(&opts, "http_persistent", 1, 0)
+        av_dict_set_int(&opts, "reconnect_delay_max", 8, 0)
+        av_dict_set_int(&opts, "reconnect_on_network_error", 1, 0)
+        av_dict_set_int(&opts, "rw_timeout", 20_000_000, 0)
+        av_dict_set_int(&opts, "timeout", 20_000_000, 0)
+        av_dict_set_int(&opts, "http_persistent", 0, 0)
         av_dict_set_int(&opts, "seekable", 0, 0)
+        av_dict_set_int(&opts, "live_start_index", -3, 0)
         av_dict_set(&opts, "allowed_extensions", "ALL", 0)
-        av_dict_set(&opts, "protocol_whitelist", "file,http,https,tcp,tls,crypto,data", 0)
+        av_dict_set(&opts, "protocol_whitelist", "file,http,https,tcp,tls,crypto", 0)
         return opts
     }
 }

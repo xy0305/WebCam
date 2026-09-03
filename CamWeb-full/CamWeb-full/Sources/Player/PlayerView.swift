@@ -625,7 +625,8 @@ struct PlayerView: View {
         guard let stream else { return }
         recs.toggle(
             username: username,
-            hlsURL: stream.hlsURL,
+            videoPlaylist: stream.videoPlaylist,
+            audioPlaylist: stream.audioPlaylist,
             masterURL: stream.masterURL
         )
     }
