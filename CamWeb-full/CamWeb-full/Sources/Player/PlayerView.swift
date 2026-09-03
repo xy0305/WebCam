@@ -747,8 +747,7 @@ struct PlayerView: View {
         recs.toggle(
             username: username,
             videoPlaylist: stream.videoPlaylist,
-            audioPlaylist: stream.audioPlaylist,
-            masterURL: stream.masterURL
+            audioPlaylist: stream.audioPlaylist
         )
     }
 
