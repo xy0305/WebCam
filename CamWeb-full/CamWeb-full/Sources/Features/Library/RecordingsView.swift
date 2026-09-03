@@ -5,24 +5,18 @@ struct RecordingsView: View {
     @ObservedObject private var recs = RecordingManager.shared
     @State private var files: [URL] = []
 
+    private var liveSessions: [RecordingSession] {
+        recs.sessions.values.sorted { $0.username < $1.username }
+    }
+
     var body: some View {
         NavigationStack {
             List {
-                if !recs.activeUsernames.isEmpty {
-                    Section("正在录制 \(recs.activeUsernames.count) 路") {
-                        ForEach(recs.activeUsernames, id: \.self) { name in
-                            HStack {
-                                Circle().fill(Color.red).frame(width: 8, height: 8)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(name).font(.subheadline.weight(.semibold))
-                                    Text("\(recs.session(for: name)?.elapsedText ?? "")  \(recs.session(for: name)?.bytesText ?? "")")
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button("停止") { recs.stop(name) }
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.red)
+                if !liveSessions.isEmpty {
+                    Section("正在录制 \(liveSessions.count) 路") {
+                        ForEach(liveSessions) { session in
+                            LiveRecordingRow(session: session) {
+                                recs.stop(session.username)
                             }
                         }
                     }
@@ -67,6 +61,30 @@ struct RecordingsView: View {
             .onChange(of: recs.banner) { _, _ in
                 files = RecordingStore.list()
             }
+            .onChange(of: recs.libraryRevision) { _, _ in
+                files = RecordingStore.list()
+            }
+        }
+    }
+}
+
+private struct LiveRecordingRow: View {
+    @ObservedObject var session: RecordingSession
+    var onStop: () -> Void
+
+    var body: some View {
+        HStack {
+            Circle().fill(Color.red).frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.username).font(.subheadline.weight(.semibold))
+                Text("\(session.elapsedText)  \(session.bytesText)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("停止", action: onStop)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.red)
         }
     }
 }

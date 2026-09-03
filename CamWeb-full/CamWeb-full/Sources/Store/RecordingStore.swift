@@ -13,7 +13,12 @@ enum RecordingStore {
             options: [.skipsHiddenFiles]
         )) ?? []
         return urls
-            .filter { ["mov", "mp4", "ts", "m4s", "m3u8"].contains($0.pathExtension.lowercased()) }
+            .filter {
+                let ext = $0.pathExtension.lowercased()
+                let name = $0.lastPathComponent.lowercased()
+                guard ["mov", "mp4", "ts", "m4s", "m3u8"].contains(ext) else { return false }
+                return !name.contains(".mux.") && !name.hasSuffix(".part") && !name.contains("_v.") && !name.contains("_a.")
+            }
             .sorted { a, b in
                 let da = (try? a.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
                 let db = (try? b.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast

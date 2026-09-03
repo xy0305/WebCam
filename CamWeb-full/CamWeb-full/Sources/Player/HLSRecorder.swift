@@ -8,6 +8,11 @@ final class RecordingManager: ObservableObject {
 
     @Published private(set) var sessions: [String: RecordingSession] = [:]
     @Published var banner: String?
+    @Published var libraryRevision = 0
+
+    func noteLibraryChanged() {
+        libraryRevision += 1
+    }
 
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
     private var keepAlivePlayer: AVAudioPlayer?
@@ -30,6 +35,7 @@ final class RecordingManager: ObservableObject {
         session.onFinished = { [weak self] name, message in
             self?.sessions[name] = nil
             self?.banner = message
+            self?.libraryRevision += 1
             self?.refreshIdle()
         }
         sessions[name] = session
@@ -227,17 +233,33 @@ final class RecordingSession: ObservableObject, Identifiable {
                 return HarvestResult(success: false, outputURL: nil, bytes: 0, error: "没有收到视频分片")
             }
 
-            if wroteAudio > 1024, fileSize(audioPart) > 1024 {
-                if let muxed = await mux(video: videoPart, audio: audioPart, dest: finalURL) {
-                    cleanup([videoPart, audioPart])
-                    return HarvestResult(success: true, outputURL: muxed, bytes: fileSize(muxed), error: nil)
-                }
-            }
-
+            // 停录后立刻落盘，不把用户拦在 AVAssetExportSession 上（大文件要十几秒）。
             let fallback = fallbackURL(from: videoPart, finalURL: finalURL)
+            try? FileManager.default.removeItem(at: fallback)
             try? FileManager.default.moveItem(at: videoPart, to: fallback)
-            cleanup([audioPart, videoPart])
-            return HarvestResult(success: true, outputURL: fallback, bytes: fileSize(fallback), error: nil)
+            let savedBytes = fileSize(fallback)
+            let hasAudio = wroteAudio > 1024 && fileSize(audioPart) > 1024
+            if hasAudio {
+                let audio = audioPart
+                let muxDest = fallback.deletingPathExtension().appendingPathExtension("mux.part")
+                Task.detached(priority: .utility) {
+                    if let muxed = await mux(video: fallback, audio: audio, dest: muxDest) {
+                        let final = fallback.deletingPathExtension().appendingPathExtension("mp4")
+                        if final != fallback {
+                            try? FileManager.default.removeItem(at: fallback)
+                        }
+                        if muxed != final {
+                            try? FileManager.default.removeItem(at: final)
+                            try? FileManager.default.moveItem(at: muxed, to: final)
+                        }
+                        await MainActor.run { RecordingManager.shared.noteLibraryChanged() }
+                    }
+                    cleanup([audio, muxDest])
+                }
+            } else {
+                cleanup([audioPart])
+            }
+            return HarvestResult(success: true, outputURL: fallback, bytes: savedBytes, error: nil)
         } catch {
             cleanup([videoPart, audioPart])
             return HarvestResult(success: false, outputURL: nil, bytes: 0, error: error.localizedDescription)
@@ -420,21 +442,29 @@ final class RecordingSession: ObservableObject, Identifiable {
 
     func stop(userInitiated: Bool) {
         isRunning = false
+        stopTimer()
         workTask?.cancel()
     }
 
     private func startTimer() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        stopTimer()
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, let startedAt = self.startedAt else { return }
-                let s = Int(Date().timeIntervalSince(startedAt))
-                self.elapsedText = String(format: "%02d:%02d", s / 60, s % 60)
-                if let video = self.videoPartURL {
-                    let n = Self.fileSize(video) + (self.audioPartURL.map { Self.fileSize($0) } ?? 0)
-                    self.bytesText = String(format: "%.1f MB", Double(n) / 1_048_576)
-                }
+                self?.tick()
             }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        tick()
+    }
+
+    private func tick() {
+        guard let startedAt else { return }
+        let s = max(0, Int(Date().timeIntervalSince(startedAt)))
+        elapsedText = String(format: "%02d:%02d", s / 60, s % 60)
+        if let video = videoPartURL {
+            let n = Self.fileSize(video) + (audioPartURL.map { Self.fileSize($0) } ?? 0)
+            bytesText = String(format: "%.1f MB", Double(n) / 1_048_576)
         }
     }
 
