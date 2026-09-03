@@ -32,7 +32,7 @@ struct RecordingsView: View {
                                 appState.openRecording(url)
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(url.lastPathComponent)
+                                    Text(RecordingStore.displayName(url))
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(.primary)
                                     Text(RecordingStore.sizeText(url))

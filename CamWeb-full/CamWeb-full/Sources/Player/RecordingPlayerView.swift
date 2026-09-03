@@ -73,7 +73,7 @@ struct RecordingPlayerView: View {
 
             Spacer()
 
-            Text(url.deletingPathExtension().lastPathComponent)
+            Text(RecordingStore.displayName(url))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
