@@ -15,7 +15,9 @@ final class RecordingManager: ObservableObject {
     }
 
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
-    private var keepAlivePlayer: AVAudioPlayer?
+    /// 播放真实直播音轨，利用 iOS Audio background mode 保持网络任务活跃。
+    private var keepAlivePlayer: AVPlayer?
+    private var keepAliveItem: AVPlayerItem?
 
     var activeUsernames: [String] { Array(sessions.keys).sorted() }
     var isAnyRecording: Bool { !sessions.isEmpty }
@@ -28,7 +30,7 @@ final class RecordingManager: ObservableObject {
         sessions[username.lowercased()]
     }
 
-    func start(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
+    func start(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         let name = username.lowercased()
         guard sessions[name] == nil else { return }
         let session = RecordingSession(username: name, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist)
@@ -40,26 +42,27 @@ final class RecordingManager: ObservableObject {
         }
         sessions[name] = session
         session.start()
-        refreshIdle()
+        refreshIdle(masterURL: masterURL)
+
     }
 
     func stop(_ username: String) {
         sessions[username.lowercased()]?.stop(userInitiated: true)
     }
 
-    func toggle(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
+    func toggle(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         if isRecording(username) {
             stop(username)
         } else {
-            start(username: username, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist)
+            start(username: username, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist, masterURL: masterURL)
         }
     }
 
-    private func refreshIdle() {
+    private func refreshIdle(masterURL: URL? = nil) {
         UIApplication.shared.isIdleTimerDisabled = isAnyRecording
         if isAnyRecording {
             extendBackground()
-            startKeepAliveAudio()
+            if let masterURL { startKeepAliveAudio(url: masterURL) }
         } else {
             endBackground()
             stopKeepAliveAudio()
@@ -80,42 +83,29 @@ final class RecordingManager: ObservableObject {
         }
     }
 
-    private func startKeepAliveAudio() {
+    private func startKeepAliveAudio(url: URL) {
         guard keepAlivePlayer == nil else { return }
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-        try? session.setActive(true)
-        if let url = Self.silentWavURL(),
-           let player = try? AVAudioPlayer(contentsOf: url) {
-            player.numberOfLoops = -1
-            player.volume = 0.01
-            player.prepareToPlay()
-            player.play()
-            keepAlivePlayer = player
-        }
+        try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers, .allowAirPlay])
+        try? session.setActive(true, options: [])
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 2
+        let player = AVPlayer(playerItem: item)
+        // 必须让 AVPlayer 真正渲染音频，iOS 才会把应用视为后台音频任务。
+        // 音量设到极低，避免录制时把第二路直播声播放出来；文件仍使用独立音频分片。
+        player.volume = 0.01
+        player.automaticallyWaitsToMinimizeStalling = false
+        keepAliveItem = item
+        keepAlivePlayer = player
+        player.play()
     }
 
     private func stopKeepAliveAudio() {
-        keepAlivePlayer?.stop()
+        keepAlivePlayer?.pause()
+        keepAlivePlayer?.replaceCurrentItem(with: nil)
         keepAlivePlayer = nil
-    }
-
-    private static func silentWavURL() -> URL? {
-        let dir = FileManager.default.temporaryDirectory
-        let url = dir.appendingPathComponent("camweb-keepalive.wav")
-        if FileManager.default.fileExists(atPath: url.path) { return url }
-        var data = Data()
-        func ascii(_ s: String) { data.append(contentsOf: s.utf8) }
-        func le32(_ v: UInt32) { var x = v.littleEndian; Swift.withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
-        func le16(_ v: UInt16) { var x = v.littleEndian; Swift.withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
-        let sampleRate: UInt32 = 8000
-        let samples: UInt32 = 800
-        ascii("RIFF"); le32(36 + samples * 2); ascii("WAVE")
-        ascii("fmt "); le32(16); le16(1); le16(1); le32(sampleRate); le32(sampleRate * 2); le16(2); le16(16)
-        ascii("data"); le32(samples * 2)
-        data.append(Data(count: Int(samples * 2)))
-        try? data.write(to: url)
-        return url
+        keepAliveItem = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }
 
