@@ -170,14 +170,36 @@ final class RecordingSession: ObservableObject, Identifiable {
         stopTimer()
         isRunning = false
         tick()
-        let msg: String
-        if result.success, let url = result.indexURL, FileManager.default.fileExists(atPath: url.path) {
-            msg = "\(name) 已保存 \(elapsedText) · \(bytesText)"
-        } else {
+        guard result.success, let index = result.indexURL,
+              FileManager.default.fileExists(atPath: index.path) else {
             try? FileManager.default.removeItem(at: dir)
-            msg = "\(name) 录制失败：\(result.error ?? "未知")"
+            onFinished?(name, "\(name) 录制失败：\(result.error ?? "未知")")
+            return
         }
-        onFinished?(name, msg)
+
+        // 对外只留下 MP4；HLS 目录作为中间文件，在封装成功后删除。
+        let mp4 = dir.deletingLastPathComponent()
+            .appendingPathComponent(dir.lastPathComponent + ".mp4")
+        try? FileManager.default.removeItem(at: mp4)
+        let asset = AVURLAsset(url: index)
+        guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            onFinished?(name, "\(name) 已保存 HLS · \(bytesText)（MP4 封装不可用）")
+            return
+        }
+        exporter.outputURL = mp4
+        exporter.outputFileType = .mp4
+        exporter.shouldOptimizeForNetworkUse = false
+        exporter.exportAsynchronously { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if exporter.status == .completed, FileManager.default.fileExists(atPath: mp4.path) {
+                    try? FileManager.default.removeItem(at: dir)
+                    self.onFinished?(name, "\(name) 已保存 MP4 · \(self.elapsedText) · \(self.bytesText)")
+                } else {
+                    self.onFinished?(name, "\(name) 已保存 HLS · \(self.bytesText)（MP4 封装失败）")
+                }
+            }
+        }
     }
 
     private func startTimer() {
