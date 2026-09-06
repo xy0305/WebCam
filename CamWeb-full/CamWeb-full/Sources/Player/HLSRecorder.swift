@@ -42,8 +42,8 @@ final class RecordingManager: ObservableObject {
         }
         sessions[name] = session
         session.start()
-        refreshIdle(masterURL: masterURL)
-
+        // 优先播放独立音频 playlist，确保后台音频轨道真实存在。
+        refreshIdle(masterURL: audioPlaylist ?? masterURL)
     }
 
     func stop(_ username: String) {
@@ -158,13 +158,12 @@ final class RecordingSession: ObservableObject, Identifiable {
     }
 
     func stop(userInitiated: Bool) {
+        guard isRunning else { return }
         isRunning = false
-        // 先停轮询，把已经出现的分片下完，再收尾。不要立刻 cancel。
+        // URLSession.data(for:) 会因 Task cancellation 立即取消当前分片请求，
+        // 不再等待 20 秒，随后 packager 写入 ENDLIST 并结束当前文件。
         progress.requestStop()
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
-            self?.workTask?.cancel()
-        }
+        workTask?.cancel()
     }
 
     private func finish(result: HLSPackager.Result, name: String, dir: URL) {
