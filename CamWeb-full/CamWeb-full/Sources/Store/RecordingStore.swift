@@ -18,6 +18,8 @@ enum RecordingStore {
         for url in urls {
             let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             if isDir {
+                // 录制/封装中的目录不提供播放或分享，避免把 m3u8 当文本导出。
+                if url.pathExtension.lowercased() == "part" { continue }
                 let index = url.appendingPathComponent("index.m3u8")
                 if fm.fileExists(atPath: index.path) {
                     out.append(index)

@@ -77,14 +77,15 @@ private struct LiveRecordingRow: View {
             Circle().fill(Color.red).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.username).font(.subheadline.weight(.semibold))
-                Text("\(session.elapsedText)  \(session.bytesText)")
+                Text("\(session.phaseText) · \(session.elapsedText)  \(session.bytesText)")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("停止", action: onStop)
+            Button(session.isRunning ? "停止" : "封装中", action: onStop)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.red)
+                .foregroundStyle(session.isRunning ? .red : .secondary)
+                .disabled(!session.isRunning)
         }
     }
 }

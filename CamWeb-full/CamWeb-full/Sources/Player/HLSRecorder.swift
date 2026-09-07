@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import AVFoundation
+import FFmpegKit
 
 @MainActor
 final class RecordingManager: ObservableObject {
@@ -120,6 +121,7 @@ final class RecordingSession: ObservableObject, Identifiable {
     @Published var elapsedText = "00:00"
     @Published var bytesText = "0 MB"
     @Published var isRunning = false
+    @Published var phaseText = "录制中"
 
     var onFinished: ((String, String) -> Void)?
 
@@ -134,7 +136,8 @@ final class RecordingSession: ObservableObject, Identifiable {
     }
 
     func start() {
-        let dir = RecordingStore.directory.appendingPathComponent("\(username)_\(Self.stamp())", isDirectory: true)
+        // .part 目录只作为中间缓存，不出现在录像列表里。
+        let dir = RecordingStore.directory.appendingPathComponent("\(username)_\(Self.stamp()).part", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         isRunning = true
@@ -178,29 +181,32 @@ final class RecordingSession: ObservableObject, Identifiable {
             return
         }
 
-        // 对外只留下 MP4；HLS 目录作为中间文件，在封装成功后删除。
-        let mp4 = dir.deletingLastPathComponent()
-            .appendingPathComponent(dir.lastPathComponent + ".mp4")
+        let base = dir.lastPathComponent.hasSuffix(".part")
+            ? String(dir.lastPathComponent.dropLast(5)) : dir.lastPathComponent
+        let mp4 = dir.deletingLastPathComponent().appendingPathComponent(base + ".mp4")
         try? FileManager.default.removeItem(at: mp4)
-        let asset = AVURLAsset(url: index)
-        guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
-            onFinished?(name, "\(name) 已保存 HLS · \(bytesText)（MP4 封装不可用）")
-            return
-        }
-        exporter.outputURL = mp4
-        exporter.outputFileType = .mp4
-        exporter.shouldOptimizeForNetworkUse = false
-        exporter.exportAsynchronously { [weak self] in
-            Task { @MainActor in
+        bannerMuxing(name)
+
+        let duration = elapsedText
+        let size = bytesText
+        Task.detached(priority: .utility) { [weak self] in
+            let ok = FFmpegLocalMuxer.mux(input: index, output: mp4)
+            await MainActor.run {
                 guard let self else { return }
-                if exporter.status == .completed, FileManager.default.fileExists(atPath: mp4.path) {
+                if ok, FileManager.default.fileExists(atPath: mp4.path) {
                     try? FileManager.default.removeItem(at: dir)
-                    self.onFinished?(name, "\(name) 已保存 MP4 · \(self.elapsedText) · \(self.bytesText)")
+                    self.onFinished?(name, "\(name) 已保存 MP4 · \(duration) · \(size)")
                 } else {
-                    self.onFinished?(name, "\(name) 已保存 HLS · \(self.bytesText)（MP4 封装失败）")
+                    try? FileManager.default.removeItem(at: mp4)
+                    self.onFinished?(name, "\(name) 封装 MP4 失败，中间文件已保留")
                 }
             }
         }
+    }
+
+    private func bannerMuxing(_ name: String) {
+        phaseText = "正在封装 MP4"
+        RecordingManager.shared.banner = "\(name) 已停止，正在无损封装 MP4…"
     }
 
     private func startTimer() {
@@ -270,6 +276,34 @@ final class RecProgress: @unchecked Sendable {
         lock.lock()
         _stopping = true
         lock.unlock()
+    }
+}
+
+enum FFmpegLocalMuxer {
+    private static let lock = NSLock()
+
+    static func mux(input: URL, output: URL) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let args = [
+            "ffmpeg", "-y",
+            "-protocol_whitelist", "file,crypto,data,http,https,tcp,tls",
+            "-allowed_extensions", "ALL",
+            "-i", input.path,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c", "copy",
+            "-movflags", "+faststart",
+            "-avoid_negative_ts", "make_zero",
+            output.path
+        ]
+        var argv = args.map {
+            UnsafeMutablePointer(mutating: ($0 as NSString).utf8String)
+        }
+        let code = ffmpeg_execute(Int32(args.count), &argv)
+        guard code == 0 else { return false }
+        let size = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return size > 1024
     }
 }
 
