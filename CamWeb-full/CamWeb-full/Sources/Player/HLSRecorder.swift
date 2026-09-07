@@ -1,7 +1,9 @@
 import Foundation
 import UIKit
 import AVFoundation
-import FFmpegKit
+import Libavformat
+import Libavcodec
+import Libavutil
 
 @MainActor
 final class RecordingManager: ObservableObject {
@@ -283,25 +285,65 @@ enum FFmpegLocalMuxer {
     private static let lock = NSLock()
 
     static func mux(input: URL, output: URL) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        let args = [
-            "ffmpeg", "-y",
-            "-protocol_whitelist", "file,crypto,data,http,https,tcp,tls",
-            "-allowed_extensions", "ALL",
-            "-i", input.path,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c", "copy",
-            "-movflags", "+faststart",
-            "-avoid_negative_ts", "make_zero",
-            output.path
-        ]
-        var argv = args.map {
-            UnsafeMutablePointer(mutating: ($0 as NSString).utf8String)
+        lock.lock(); defer { lock.unlock() }
+        var inputContext: UnsafeMutablePointer<AVFormatContext>?
+        var options: OpaquePointer?
+        av_dict_set(&options, "allowed_extensions", "ALL", 0)
+        av_dict_set(&options, "protocol_whitelist", "file,crypto,data,http,https,tcp,tls", 0)
+        var result = avformat_open_input(&inputContext, input.path, nil, &options)
+        av_dict_free(&options)
+        guard result >= 0, let inputContext else { return false }
+        defer { var p: UnsafeMutablePointer<AVFormatContext>? = inputContext; avformat_close_input(&p) }
+        result = avformat_find_stream_info(inputContext, nil)
+        guard result >= 0 else { return false }
+
+        try? FileManager.default.removeItem(at: output)
+        var outputContext: UnsafeMutablePointer<AVFormatContext>?
+        result = avformat_alloc_output_context2(&outputContext, nil, "mp4", output.path)
+        guard result >= 0, let outputContext else { return false }
+        defer { avformat_free_context(outputContext) }
+
+        var mapping = [Int: Int]()
+        for i in 0..<Int(inputContext.pointee.nb_streams) {
+            guard let source = inputContext.pointee.streams[i],
+                  let codec = source.pointee.codecpar else { continue }
+            let type = codec.pointee.codec_type
+            guard type == AVMEDIA_TYPE_VIDEO || type == AVMEDIA_TYPE_AUDIO,
+                  let target = avformat_new_stream(outputContext, nil) else { continue }
+            guard avcodec_parameters_copy(target.pointee.codecpar, codec) >= 0 else { continue }
+            target.pointee.codecpar.pointee.codec_tag = 0
+            target.pointee.time_base = source.pointee.time_base
+            mapping[i] = Int(target.pointee.index)
         }
-        let code = ffmpeg_execute(Int32(args.count), &argv)
-        guard code == 0 else { return false }
+        guard !mapping.isEmpty else { return false }
+        result = avio_open(&(outputContext.pointee.pb), output.path, AVIO_FLAG_WRITE)
+        guard result >= 0 else { return false }
+        defer { avio_closep(&(outputContext.pointee.pb)) }
+        var muxOptions: OpaquePointer?
+        av_dict_set(&muxOptions, "movflags", "+faststart", 0)
+        result = avformat_write_header(outputContext, &muxOptions)
+        av_dict_free(&muxOptions)
+        guard result >= 0 else { return false }
+
+        var packet = av_packet_alloc()
+        defer { av_packet_free(&packet) }
+        while av_read_frame(inputContext, packet) >= 0 {
+            guard let packet else { break }
+            let sourceIndex = Int(packet.pointee.stream_index)
+            guard let targetIndex = mapping[sourceIndex],
+                  let source = inputContext.pointee.streams[sourceIndex],
+                  let target = outputContext.pointee.streams[targetIndex] else {
+                av_packet_unref(packet); continue
+            }
+            packet.pointee.stream_index = Int32(targetIndex)
+            av_packet_rescale_ts(packet, source.pointee.time_base, target.pointee.time_base)
+            packet.pointee.pos = -1
+            if av_interleaved_write_frame(outputContext, packet) < 0 {
+                av_packet_unref(packet); return false
+            }
+            av_packet_unref(packet)
+        }
+        guard av_write_trailer(outputContext) >= 0 else { return false }
         let size = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         return size > 1024
     }
