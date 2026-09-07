@@ -2,11 +2,11 @@ import Foundation
 import UIKit
 
 enum StreamExport {
-    /// 外部播放器必须使用官方 master，而不是临时 chunklist 视频子流。
-    /// chunklist_* URL 带短期 session，部分 CDN 会直接返回 403；master 可重新选择
-    /// 当前有效的最高档位，并正确关联独立音频轨道。
+    /// iPlayer 的 url 字段使用最高码率视频媒体 playlist。
+    /// 调用方会在导出前重新 resolve，因此这里的 session 是最新的；audio 字段
+    /// 使用同一次 resolve 得到的独立音频 playlist，保证两条流的 session 一致。
     static func highestURL(from stream: ResolvedStream) -> URL {
-        stream.masterURL
+        stream.videoPlaylist
     }
 
     static func payload(stream: ResolvedStream, room: Room) -> [String: String] {
@@ -18,7 +18,11 @@ enum StreamExport {
             "platform": "Chaturbate",
             "remark": "最高画质",
         ]
-        // master 内已经包含 AUDIO group；不要把短期 audio chunklist 另传给外部播放器。
+        // iPlayer 对 LL-HLS master 的兼容性不一致；传媒体 video playlist，
+        // 并显式带上同一 session 的 audio playlist。
+        if let audio = stream.audioPlaylist {
+            body["audio"] = audio.absoluteString
+        }
         return body
     }
 
