@@ -760,14 +760,21 @@ struct PlayerView: View {
     }
 
     private func exportIPlayer() {
-        guard let stream, let url = StreamExport.iplayer2URL(stream: stream, room: displayRoom) else { return }
-        UIApplication.shared.open(url, options: [:]) { ok in
-            if !ok {
-                StreamExport.copyHighest(stream)
-                DispatchQueue.main.async { exportCopied = true }
+        // CDN session 很短，导出时重新解析；不要复用播放页打开时缓存的 chunklist。
+        Task {
+            let fresh = (try? await StreamSource.resolve(username: username)) ?? stream
+            guard let fresh,
+                  let url = StreamExport.iplayer2URL(stream: fresh, room: displayRoom) else { return }
+            await MainActor.run {
+                UIApplication.shared.open(url, options: [:]) { ok in
+                    if !ok {
+                        StreamExport.copyHighest(fresh)
+                        DispatchQueue.main.async { exportCopied = true }
+                    }
+                }
+                scheduleAutoHide()
             }
         }
-        scheduleAutoHide()
     }
 
     private func exportShare() {

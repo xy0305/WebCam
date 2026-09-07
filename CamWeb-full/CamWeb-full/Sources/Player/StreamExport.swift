@@ -2,9 +2,11 @@ import Foundation
 import UIKit
 
 enum StreamExport {
-    /// 给外部播放器的最高画质地址：音视频分离时用本地迷你 master 语义，导出真实 HTTP 媒体 playlist。
+    /// 外部播放器必须使用官方 master，而不是临时 chunklist 视频子流。
+    /// chunklist_* URL 带短期 session，部分 CDN 会直接返回 403；master 可重新选择
+    /// 当前有效的最高档位，并正确关联独立音频轨道。
     static func highestURL(from stream: ResolvedStream) -> URL {
-        stream.videoPlaylist
+        stream.masterURL
     }
 
     static func payload(stream: ResolvedStream, room: Room) -> [String: String] {
@@ -16,9 +18,7 @@ enum StreamExport {
             "platform": "Chaturbate",
             "remark": "最高画质",
         ]
-        if let audio = stream.audioPlaylist {
-            body["audio"] = audio.absoluteString
-        }
+        // master 内已经包含 AUDIO group；不要把短期 audio chunklist 另传给外部播放器。
         return body
     }
 
@@ -34,11 +34,9 @@ enum StreamExport {
     }
 
     static func shareItems(stream: ResolvedStream, room: Room) -> [Any] {
-        var items: [Any] = [highestURL(from: stream).absoluteString]
-        if let audio = stream.audioPlaylist {
-            items.append("音频: \(audio.absoluteString)")
-        }
-        items.append("\(room.title) · Chaturbate 最高画质")
-        return items
+        [
+            highestURL(from: stream).absoluteString,
+            "\(room.title) · Chaturbate 自动最高画质（含音频）"
+        ]
     }
 }
