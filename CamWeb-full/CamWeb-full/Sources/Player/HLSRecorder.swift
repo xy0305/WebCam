@@ -146,6 +146,7 @@ final class RecordingSession: ObservableObject, Identifiable {
         let progress = self.progress
         workTask = Task.detached(priority: .utility) { [weak self] in
             let result = await HLSPackager.run(
+                username: name,
                 videoPlaylist: videoPL,
                 audioPlaylist: audioPL,
                 dir: dir,
@@ -321,6 +322,7 @@ enum HLSPackager {
         let duration: Double
         let url: URL
         let sequence: Int
+        let generation: Int
     }
 
     struct Parsed {
@@ -331,6 +333,7 @@ enum HLSPackager {
     }
 
     static func run(
+        username: String,
         videoPlaylist: URL,
         audioPlaylist: URL?,
         dir: URL,
@@ -346,6 +349,26 @@ enum HLSPackager {
             if let audio {
                 group.addTask { await pollLoop(audio, progress: progress) }
                 group.addTask { await downloadLoop(audio, progress: progress) }
+            }
+            // playlist/session 失效后，同一次 resolve 同时更新音视频，避免轨道 session 不一致。
+            group.addTask {
+                var delay: UInt64 = 1_000_000_000
+                while !Task.isCancelled, !progress.stopping {
+                    if video.needsReconnect || (audio?.needsReconnect ?? false) {
+                        do {
+                            let fresh = try await StreamSource.resolve(username: username)
+                            video.replacePlaylist(fresh.videoPlaylist)
+                            if let audio, let freshAudio = fresh.audioPlaylist {
+                                audio.replacePlaylist(freshAudio)
+                            }
+                            delay = 1_000_000_000
+                        } catch {
+                            try? await Task.sleep(nanoseconds: delay)
+                            delay = min(delay * 2, 10_000_000_000)
+                        }
+                    }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                }
             }
             group.addTask {
                 while !Task.isCancelled {
@@ -384,7 +407,7 @@ enum HLSPackager {
                     inflight += 1
                     group.addTask {
                         let data = await RecHLS.bytes(seg.url)
-                        track.complete(seq: seg.sequence, data: data, duration: seg.duration)
+                        track.complete(seq: seg.sequence, generation: seg.generation, data: data, duration: seg.duration)
                     }
                 }
                 if progress.stopping, track.isIdle, inflight == 0 { break }
@@ -399,21 +422,24 @@ enum HLSPackager {
     }
 
     final class Track: @unchecked Sendable {
-        let playlist: URL
+        private var _playlist: URL
         let isAudio: Bool
         let writer: DiskWriter
         private let lock = NSLock()
         private var seen = Set<String>()
         private var queue: [Segment] = []
-        private var ready: [Int: (Data, Double)] = [:]
+        private var ready: [Int: (Data, Double, Int)] = [:]
         private var nextWrite: Int?
         private var lastQueued = -1
         private var mapDone = false
         private var queuedCount = 0
         private var inflightCount = 0
+        private var generation = 0
+        private var consecutiveFailures = 0
+        private var reconnectNeeded = false
 
         init(playlist: URL, isAudio: Bool, writer: DiskWriter) {
-            self.playlist = playlist
+            self._playlist = playlist
             self.isAudio = isAudio
             self.writer = writer
         }
@@ -423,21 +449,65 @@ enum HLSPackager {
             return queue.isEmpty && inflightCount == 0 && ready.isEmpty
         }
 
+        var needsReconnect: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return reconnectNeeded || consecutiveFailures >= 3
+        }
+
+        func replacePlaylist(_ url: URL) {
+            lock.lock()
+            generation += 1
+            _playlist = url
+            seen.removeAll()
+            queue.removeAll()
+            ready.removeAll()
+            nextWrite = nil
+            lastQueued = -1
+            mapDone = false
+            consecutiveFailures = 0
+            reconnectNeeded = false
+            lock.unlock()
+            writer.markDiscontinuity(isAudio: isAudio)
+        }
+
         func poll() async {
+            lock.lock()
+            let current = _playlist
+            let gen = generation
+            lock.unlock()
             do {
-                let (data, http) = try await RecHLS.data(for: playlist)
+                let (data, http) = try await RecHLS.data(for: current)
                 guard (200..<300).contains(http.statusCode),
-                      let text = String(data: data, encoding: .utf8) else { return }
-                let parsed = HLSPackager.parse(text, base: playlist)
+                      let text = String(data: data, encoding: .utf8) else {
+                    noteFailure(status: http.statusCode)
+                    return
+                }
+                let parsed = HLSPackager.parse(text, base: current)
+                guard !parsed.segments.isEmpty else { noteFailure(status: nil); return }
+                noteSuccess()
                 if !mapDone, let map = parsed.map {
                     if let chunk = await RecHLS.bytes(map), !chunk.isEmpty {
                         writer.writeInit(chunk, isAudio: isAudio)
-                        mapDone = true
+                        lock.lock(); if generation == gen { mapDone = true }; lock.unlock()
                     }
                 }
-                enqueue(parsed.segments)
+                enqueue(parsed.segments, generation: gen)
             } catch {
+                noteFailure(status: nil)
             }
+        }
+
+        private func noteSuccess() {
+            lock.lock(); consecutiveFailures = 0; lock.unlock()
+        }
+
+        private func noteFailure(status: Int?) {
+            lock.lock()
+            consecutiveFailures += 1
+            if status == 401 || status == 403 || status == 404 || status == 410 {
+                reconnectNeeded = true
+            }
+            lock.unlock()
         }
 
         func dequeue() -> Segment? {
@@ -448,13 +518,15 @@ enum HLSPackager {
             return seg
         }
 
-        func complete(seq: Int, data: Data?, duration: Double) {
+        func complete(seq: Int, generation gen: Int, data: Data?, duration: Double) {
             lock.lock()
             inflightCount = max(0, inflightCount - 1)
+            guard generation == gen else { lock.unlock(); return }
             if let data, !data.isEmpty {
-                ready[seq] = (data, duration)
+                ready[seq] = (data, duration, gen)
             } else {
-                ready[seq] = (Data(), duration)
+                ready[seq] = (Data(), duration, gen)
+                consecutiveFailures += 1
             }
             flushLocked()
             lock.unlock()
@@ -470,9 +542,11 @@ enum HLSPackager {
             lock.unlock()
         }
 
-        private func enqueue(_ segs: [Segment]) {
+        private func enqueue(_ segs: [Segment], generation gen: Int) {
             lock.lock()
-            for seg in segs {
+            guard generation == gen else { lock.unlock(); return }
+            for raw in segs {
+                let seg = Segment(duration: raw.duration, url: raw.url, sequence: raw.sequence, generation: gen)
                 let key = seg.url.absoluteString
                 if seen.contains(key) { continue }
                 seen.insert(key)
@@ -520,7 +594,7 @@ enum HLSPackager {
                 expectURI = true
             } else if expectURI && !line.isEmpty && !line.hasPrefix("#") {
                 if let url = resolve(line, base: base) {
-                    out.segments.append(Segment(duration: pendingDuration, url: url, sequence: seq))
+                    out.segments.append(Segment(duration: pendingDuration, url: url, sequence: seq, generation: 0))
                     seq += 1
                 }
                 expectURI = false
