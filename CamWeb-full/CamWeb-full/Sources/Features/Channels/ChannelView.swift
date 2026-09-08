@@ -97,7 +97,6 @@ struct ChannelListPage: View {
                 Menu {
                     Button("全部") { applyGender("") }
                     Button("Female") { applyGender("f") }
-                    Button("Male") { applyGender("m") }
                     Button("Couple") { applyGender("c") }
                     Button("Trans") { applyGender("t") }
                 } label: {
