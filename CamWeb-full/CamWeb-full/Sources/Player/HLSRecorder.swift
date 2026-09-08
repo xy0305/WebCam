@@ -284,6 +284,13 @@ final class RecProgress: @unchecked Sendable {
 enum FFmpegLocalMuxer {
     private static let lock = NSLock()
 
+    private struct Timeline {
+        var initialized = false
+        var shift: Int64 = 0
+        var lastDTS: Int64 = 0
+        var lastDuration: Int64 = 1
+    }
+
     static func mux(input: URL, output: URL) -> Bool {
         lock.lock(); defer { lock.unlock() }
         var inputContext: UnsafeMutablePointer<AVFormatContext>?
@@ -327,6 +334,8 @@ enum FFmpegLocalMuxer {
 
         var packet = av_packet_alloc()
         defer { av_packet_free(&packet) }
+        var timelines = [Int: Timeline]()
+        let noPTS = Int64.min
         while av_read_frame(inputContext, packet) >= 0 {
             guard let packet else { break }
             let sourceIndex = Int(packet.pointee.stream_index)
@@ -335,6 +344,36 @@ enum FFmpegLocalMuxer {
                   let target = outputContext.pointee.streams[targetIndex] else {
                 av_packet_unref(packet); continue
             }
+
+            var timeline = timelines[sourceIndex] ?? Timeline()
+            let rawDTS = packet.pointee.dts != noPTS ? packet.pointee.dts : packet.pointee.pts
+            if rawDTS != noPTS {
+                if !timeline.initialized {
+                    timeline.initialized = true
+                    timeline.shift = rawDTS
+                }
+                var normalized = rawDTS - timeline.shift
+                if timeline.lastDTS > 0 {
+                    let expected = timeline.lastDTS + max(timeline.lastDuration, 1)
+                    let gap = normalized - expected
+                    let threeSeconds = Int64(3) * Int64(source.pointee.time_base.den) /
+                        Int64(max(source.pointee.time_base.num, 1))
+                    if normalized < timeline.lastDTS || gap > max(threeSeconds, 1) {
+                        // HLS discontinuity/锁屏恢复后压掉时间戳空洞。
+                        timeline.shift += normalized - expected
+                        normalized = expected
+                    }
+                }
+                let delta = rawDTS - timeline.shift
+                if packet.pointee.dts != noPTS { packet.pointee.dts = delta }
+                if packet.pointee.pts != noPTS {
+                    packet.pointee.pts = max(packet.pointee.pts - timeline.shift, delta)
+                }
+                timeline.lastDTS = delta
+                if packet.pointee.duration > 0 { timeline.lastDuration = packet.pointee.duration }
+                timelines[sourceIndex] = timeline
+            }
+
             packet.pointee.stream_index = Int32(targetIndex)
             av_packet_rescale_ts(packet, source.pointee.time_base, target.pointee.time_base)
             packet.pointee.pos = -1
