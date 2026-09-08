@@ -99,7 +99,6 @@ struct ChannelListPage: View {
                     Button("全部") { applyGender("") }
                     Button("Women") { applyGender("f") }
                     Button("Couples") { applyGender("c") }
-                    Button("Trans") { applyGender("t") }
                 } label: {
                     Label(currentSectionTitle, systemImage: "line.3.horizontal.decrease.circle")
                         .labelStyle(.titleAndIcon)
@@ -118,7 +117,6 @@ struct ChannelListPage: View {
         switch localGender {
         case "f": return "Women"
         case "c": return "Couples"
-        case "t": return "Trans"
         default: return "全部"
         }
     }
