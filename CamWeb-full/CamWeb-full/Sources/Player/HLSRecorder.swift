@@ -18,9 +18,8 @@ final class RecordingManager: ObservableObject {
     }
 
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
-    /// 播放真实直播音轨，利用 iOS Audio background mode 保持网络任务活跃。
-    private var keepAlivePlayer: AVPlayer?
-    private var keepAliveItem: AVPlayerItem?
+    /// 真实音频后台播放守护。录制下载与它处于同一进程生命周期。
+    private let audioKeeper = BackgroundAudioKeeper()
 
     var activeUsernames: [String] { Array(sessions.keys).sorted() }
     var isAnyRecording: Bool { !sessions.isEmpty }
@@ -53,6 +52,11 @@ final class RecordingManager: ObservableObject {
         sessions[username.lowercased()]?.stop(userInitiated: true)
     }
 
+    func updateBackgroundAudio(url: URL) {
+        guard isAnyRecording else { return }
+        audioKeeper.update(url: url)
+    }
+
     func toggle(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         if isRecording(username) {
             stop(username)
@@ -65,10 +69,10 @@ final class RecordingManager: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = isAnyRecording
         if isAnyRecording {
             extendBackground()
-            if let masterURL { startKeepAliveAudio(url: masterURL) }
+            if let masterURL { audioKeeper.start(url: masterURL) }
         } else {
             endBackground()
-            stopKeepAliveAudio()
+            audioKeeper.stop()
         }
     }
 
@@ -86,29 +90,100 @@ final class RecordingManager: ObservableObject {
         }
     }
 
-    private func startKeepAliveAudio(url: URL) {
-        guard keepAlivePlayer == nil else { return }
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers, .allowAirPlay])
-        try? session.setActive(true, options: [])
-        let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = 2
-        let player = AVPlayer(playerItem: item)
-        // 必须让 AVPlayer 真正渲染音频，iOS 才会把应用视为后台音频任务。
-        // 音量设到极低，避免录制时把第二路直播声播放出来；文件仍使用独立音频分片。
-        player.volume = 0.01
-        player.automaticallyWaitsToMinimizeStalling = false
-        keepAliveItem = item
-        keepAlivePlayer = player
-        player.play()
+}
+
+@MainActor
+final class BackgroundAudioKeeper {
+    private var player: AVPlayer?
+    private var item: AVPlayerItem?
+    private var currentURL: URL?
+    private var observers: [NSObjectProtocol] = []
+    private var statusObservation: NSKeyValueObservation?
+    private var watchdog: Timer?
+
+    init() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            Task { @MainActor in
+                guard let self,
+                      let typeValue = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      let type = AVAudioSession.InterruptionType(rawValue: typeValue),
+                      type == .ended else { return }
+                self.recover(forceRebuild: false)
+            }
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.recover(forceRebuild: true) }
+        })
+        observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.recover(forceRebuild: false) }
+        })
     }
 
-    private func stopKeepAliveAudio() {
-        keepAlivePlayer?.pause()
-        keepAlivePlayer?.replaceCurrentItem(with: nil)
-        keepAlivePlayer = nil
-        keepAliveItem = nil
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+
+    func start(url: URL) {
+        if currentURL == url, player != nil { recover(forceRebuild: false); return }
+        currentURL = url
+        build(url: url)
+        startWatchdog()
+    }
+
+    func update(url: URL) {
+        guard currentURL != url else { return }
+        currentURL = url
+        build(url: url)
+    }
+
+    func stop() {
+        watchdog?.invalidate(); watchdog = nil
+        statusObservation = nil
+        player?.pause(); player?.replaceCurrentItem(with: nil)
+        player = nil; item = nil; currentURL = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func activateSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers, .allowAirPlay, .allowBluetoothA2DP])
+        try? session.setActive(true)
+    }
+
+    private func build(url: URL) {
+        activateSession()
+        statusObservation = nil
+        player?.pause()
+        let newItem = AVPlayerItem(url: url)
+        newItem.preferredForwardBufferDuration = 3
+        let newPlayer = AVPlayer(playerItem: newItem)
+        newPlayer.volume = 0.01 // 非 0 才是有效后台音频渲染
+        newPlayer.automaticallyWaitsToMinimizeStalling = true
+        item = newItem
+        player = newPlayer
+        statusObservation = newItem.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            Task { @MainActor in self?.recover(forceRebuild: true) }
+        }
+        newPlayer.play()
+    }
+
+    private func recover(forceRebuild: Bool) {
+        guard let url = currentURL else { return }
+        activateSession()
+        if forceRebuild || item?.status == .failed {
+            build(url: url)
+        } else if player?.timeControlStatus != .playing {
+            player?.play()
+        }
+    }
+
+    private func startWatchdog() {
+        watchdog?.invalidate()
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.recover(forceRebuild: false) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
     }
 }
 
@@ -475,6 +550,11 @@ enum HLSPackager {
                             video.replacePlaylist(fresh.videoPlaylist)
                             if let audio, let freshAudio = fresh.audioPlaylist {
                                 audio.replacePlaylist(freshAudio)
+                            }
+                            await MainActor.run {
+                                RecordingManager.shared.updateBackgroundAudio(
+                                    url: fresh.audioPlaylist ?? fresh.masterURL
+                                )
                             }
                             delay = 1_000_000_000
                         } catch {
