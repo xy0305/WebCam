@@ -48,6 +48,7 @@ struct ChannelListPage: View {
     @State private var reachedEnd = false
     @State private var searchText = ""
     @State private var localGender: String = ""
+    @State private var requestGeneration = 0
 
     private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
 
@@ -96,11 +97,12 @@ struct ChannelListPage: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("全部") { applyGender("") }
-                    Button("Female") { applyGender("f") }
-                    Button("Couple") { applyGender("c") }
+                    Button("Women") { applyGender("f") }
+                    Button("Couples") { applyGender("c") }
                     Button("Trans") { applyGender("t") }
                 } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Label(currentSectionTitle, systemImage: "line.3.horizontal.decrease.circle")
+                        .labelStyle(.titleAndIcon)
                 }
             }
         }
@@ -112,44 +114,67 @@ struct ChannelListPage: View {
         .overlay { if loading && rooms.isEmpty { ProgressView() } }
     }
 
+    private var currentSectionTitle: String {
+        switch localGender {
+        case "f": return "Women"
+        case "c": return "Couples"
+        case "t": return "Trans"
+        default: return "全部"
+        }
+    }
+
     private func applyGender(_ g: String) {
+        guard localGender != g else { return }
+        requestGeneration += 1
         localGender = g
+        rooms = []
+        offset = 0
+        reachedEnd = false
         Task { await reload() }
     }
 
     private func reload() async {
+        let generation = requestGeneration
+        let requestedGender = localGender
         loading = true
         errorText = nil
         offset = 0
         reachedEnd = false
-        defer { loading = false }
+        defer { if generation == requestGeneration { loading = false } }
         do {
-            rooms = try await RoomAPI.fetchRooms(
+            let fetched = try await RoomAPI.fetchRooms(
                 offset: 0,
-                gender: emptyNil(localGender),
+                gender: emptyNil(requestedGender),
                 keywords: emptyNil(keyword)
             )
-            offset = rooms.count
-            reachedEnd = rooms.isEmpty
+            guard generation == requestGeneration, requestedGender == localGender else { return }
+            rooms = fetched
+            offset = fetched.count
+            reachedEnd = fetched.isEmpty
         } catch {
+            guard generation == requestGeneration else { return }
             errorText = error.localizedDescription
         }
     }
 
     private func loadMore() async {
         guard !loadingMore, !reachedEnd, searchText.isEmpty else { return }
+        let generation = requestGeneration
+        let requestedGender = localGender
+        let requestedOffset = offset
         loadingMore = true
-        defer { loadingMore = false }
+        defer { if generation == requestGeneration { loadingMore = false } }
         do {
             let more = try await RoomAPI.fetchRooms(
-                offset: offset,
-                gender: emptyNil(localGender),
+                offset: requestedOffset,
+                gender: emptyNil(requestedGender),
                 keywords: emptyNil(keyword)
             )
+            guard generation == requestGeneration, requestedGender == localGender else { return }
             if more.isEmpty { reachedEnd = true }
             let exist = Set(rooms.map(\.username))
             rooms.append(contentsOf: more.filter { !exist.contains($0.username) })
-            offset = rooms.count
+            offset = requestedOffset + more.count
         } catch {
         }
     }

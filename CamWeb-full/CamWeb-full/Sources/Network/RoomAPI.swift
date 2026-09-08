@@ -18,7 +18,12 @@ enum RoomAPI {
         let (data, http) = try await APIClient.data(for: req)
         guard (200..<300).contains(http.statusCode) else { throw StreamSourceError.badResponse }
         let decoded = try JSONDecoder().decode(RoomListResponse.self, from: data)
-        return decoded.rooms ?? []
+        let rooms = decoded.rooms ?? []
+        // API 偶尔会混入推广房间，客户端再按网页栏目做一次严格过滤。
+        if let gender, !gender.isEmpty {
+            return rooms.filter { $0.gender == gender }
+        }
+        return rooms
     }
 
     static func fetchFollowed() async throws -> [Room] {
