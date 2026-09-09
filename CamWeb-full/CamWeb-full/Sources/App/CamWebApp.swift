@@ -25,9 +25,42 @@ struct CamWebApp: App {
 /// AppDelegate：管理整 App 支持的界面方向，让播放器能真正切换横竖屏
 /// 方向由 KSPlayer 的 KSOptions.supportedInterfaceOrientations 统一控制
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    private var didFillScreenOnLaunch = false
+    private var sceneObservers: [NSObjectProtocol] = []
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        let center = NotificationCenter.default
+        let handler: (Notification) -> Void = { [weak self] note in
+            guard let scene = note.object as? UIWindowScene else { return }
+            self?.preferFullScreenOnLaunch(scene)
+        }
+        sceneObservers.append(center.addObserver(forName: UIScene.willConnectNotification, object: nil, queue: .main, using: handler))
+        sceneObservers.append(center.addObserver(forName: UIScene.didActivateNotification, object: nil, queue: .main, using: handler))
+        return true
+    }
+
     func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         return KSOptions.supportedInterfaceOrientations
+    }
+
+    /// 点图标冷启动：铺满全屏。用户上滑进入台前调度后不再改窗口。
+    private func preferFullScreenOnLaunch(_ scene: UIWindowScene) {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        scene.sizeRestrictions?.allowsFullScreen = true
+        scene.sizeRestrictions?.minimumSize = CGSize(width: 320, height: 400)
+        scene.sizeRestrictions?.maximumSize = CGSize(width: 10_000, height: 10_000)
+
+        guard !didFillScreenOnLaunch else { return }
+        guard !scene.windows.isEmpty else { return }
+        didFillScreenOnLaunch = true
+
+        let bounds = scene.screen.bounds
+        if #available(iOS 16.0, *) {
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .all)) { _ in }
+        }
+        scene.windows.forEach { $0.frame = bounds }
     }
 }
 
