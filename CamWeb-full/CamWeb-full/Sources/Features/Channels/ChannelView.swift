@@ -51,7 +51,10 @@ struct ChannelListPage: View {
     @State private var localGender: String = ""
     @State private var requestGeneration = 0
 
-    private let columns = [GridItem(.adaptive(minimum: 220, maximum: 360), spacing: 16)]
+    private var columns: [GridItem] {
+        let minWidth: CGFloat = horizontalSizeClass == .regular ? 220 : 150
+        return [GridItem(.adaptive(minimum: minWidth), spacing: 12)]
+    }
 
     var filtered: [Room] {
         let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
