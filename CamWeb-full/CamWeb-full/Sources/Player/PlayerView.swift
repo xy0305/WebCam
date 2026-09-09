@@ -51,6 +51,11 @@ struct PlayerView: View {
 
                 videoArea(height: videoHeight, isLandscape: isLandscape)
                     .frame(width: geo.size.width, height: videoHeight)
+
+                if !isLocked && (isMaskVisible || !hasStarted) {
+                    backButtonOverlay(isLandscape: isLandscape)
+                        .zIndex(80)
+                }
             }
             .statusBarHidden(isLandscape)
             .onChange(of: isLandscape) { _, land in
@@ -126,8 +131,6 @@ struct PlayerView: View {
             if hasStarted && isMaskVisible && !isLocked {
                 controlsLayer(isLandscape: isLandscape)
                     .transition(.opacity)
-            } else if !hasStarted {
-                loadingBackButton(isLandscape: isLandscape)
             }
         }
         .frame(height: height)
@@ -411,24 +414,28 @@ struct PlayerView: View {
             }
     }
 
-    private func loadingBackButton(isLandscape: Bool) -> some View {
+    private func backButtonOverlay(isLandscape: Bool) -> some View {
         VStack {
             HStack {
                 Button { handleBack(isLandscape: isLandscape) } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
-                        .padding(10)
-                        .contentShape(Rectangle())
+                        .frame(width: 44, height: 44)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .padding(.leading, 16)
                 Spacer()
             }
             Spacer()
         }
-        .padding(.top, 4)
-        .padding(.leading, isLandscape ? 25 : 0)
+        .padding(.top, 12)
+        .padding(.leading, isLandscape ? 8 : 0)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .safeAreaPadding(.top)
+        .safeAreaPadding(.leading)
     }
 
     // MARK: - 锁屏（左侧中部，始终可点）
@@ -477,25 +484,6 @@ struct PlayerView: View {
                 }
                 .allowsHitTesting(false)
             }
-
-            // 左上：返回
-            VStack {
-                HStack {
-                    Button { handleBack(isLandscape: isLandscape) } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 30, height: 30)
-                            .padding(10)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.leading, inset)
-                    Spacer()
-                }
-                Spacer()
-            }
-            .padding(.top, 4)
 
             // 右上：PiP + 录制
             VStack {

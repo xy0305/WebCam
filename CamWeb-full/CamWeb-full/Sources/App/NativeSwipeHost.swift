@@ -97,14 +97,18 @@ final class SwipeNavController: UINavigationController, UIGestureRecognizerDeleg
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        viewControllers.count > 1
+        guard viewControllers.count > 1 else { return false }
+        // 全屏左上角返回按钮附近不抢手势，避免点不到返回。
+        let point = gestureRecognizer.location(in: view)
+        if point.y < 96 { return false }
+        return true
     }
 
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
-        true
+        otherGestureRecognizer is UIPanGestureRecognizer
     }
 
     func navigationController(
