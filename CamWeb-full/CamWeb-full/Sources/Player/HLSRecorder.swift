@@ -57,6 +57,12 @@ final class RecordingManager: ObservableObject {
         audioKeeper.update(url: url)
     }
 
+    func keepBackgroundAlive() {
+        guard isAnyRecording else { return }
+        extendBackground()
+        audioKeeper.recover(forceRebuild: false)
+    }
+
     func toggle(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         if isRecording(username) {
             stop(username)
@@ -167,7 +173,7 @@ final class BackgroundAudioKeeper {
         newPlayer.play()
     }
 
-    private func recover(forceRebuild: Bool) {
+    func recover(forceRebuild: Bool) {
         guard let url = currentURL else { return }
         activateSession()
         if forceRebuild || item?.status == .failed {
@@ -326,6 +332,7 @@ final class RecProgress: @unchecked Sendable {
     private var _seconds: Double = 0
     private var _bytes: Int64 = 0
     private var _stopping = false
+    private var _lastChange = Date()
 
     var seconds: Double {
         lock.lock(); defer { lock.unlock() }
@@ -342,8 +349,16 @@ final class RecProgress: @unchecked Sendable {
         return _stopping
     }
 
+    var stalled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(_lastChange) > 8
+    }
+
     func set(seconds: Double, bytes: Int64) {
         lock.lock()
+        if seconds > _seconds + 0.2 || bytes > _bytes + 4096 {
+            _lastChange = Date()
+        }
         _seconds = seconds
         _bytes = bytes
         lock.unlock()
@@ -480,9 +495,20 @@ enum RecHLS {
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         req.timeoutInterval = 6
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        return (data, http)
+        return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
+            group.addTask {
+                let (data, resp) = try await session.data(for: req)
+                guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+                return (data, http)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 7_000_000_000)
+                throw URLError(.timedOut)
+            }
+            guard let first = try await group.next() else { throw URLError(.timedOut) }
+            group.cancelAll()
+            return first
+        }
     }
 
     static func bytes(_ url: URL) async -> Data? {
@@ -543,8 +569,10 @@ enum HLSPackager {
             // playlist/session 失效后，同一次 resolve 同时更新音视频，避免轨道 session 不一致。
             group.addTask {
                 var delay: UInt64 = 1_000_000_000
+                var lastRefresh = Date()
                 while !Task.isCancelled, !progress.stopping {
-                    if video.needsReconnect || (audio?.needsReconnect ?? false) {
+                    let dueRefresh = Date().timeIntervalSince(lastRefresh) > 480
+                    if video.needsReconnect || (audio?.needsReconnect ?? false) || progress.stalled || dueRefresh {
                         do {
                             let fresh = try await StreamSource.resolve(username: username)
                             video.replacePlaylist(fresh.videoPlaylist)
@@ -557,6 +585,7 @@ enum HLSPackager {
                                 )
                             }
                             delay = 1_000_000_000
+                            lastRefresh = Date()
                         } catch {
                             try? await Task.sleep(nanoseconds: delay)
                             delay = min(delay * 2, 10_000_000_000)
@@ -566,9 +595,14 @@ enum HLSPackager {
                 }
             }
             group.addTask {
+                var lastKeepAlive = Date.distantPast
                 while !Task.isCancelled {
                     progress.set(seconds: writer.videoDuration, bytes: writer.bytes)
                     writer.rewrite(ended: false)
+                    if Date().timeIntervalSince(lastKeepAlive) > 20 {
+                        lastKeepAlive = Date()
+                        await MainActor.run { RecordingManager.shared.keepBackgroundAlive() }
+                    }
                     if progress.stopping, video.isIdle, audio?.isIdle ?? true { break }
                     try? await Task.sleep(nanoseconds: 300_000_000)
                 }
@@ -589,7 +623,7 @@ enum HLSPackager {
         while !Task.isCancelled {
             await track.poll()
             if progress.stopping { break }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(nanoseconds: 800_000_000)
         }
         await track.poll()
     }
@@ -632,6 +666,7 @@ enum HLSPackager {
         private var generation = 0
         private var consecutiveFailures = 0
         private var reconnectNeeded = false
+        private var lastNewAt = Date()
 
         init(playlist: URL, isAudio: Bool, writer: DiskWriter) {
             self._playlist = playlist
@@ -646,7 +681,9 @@ enum HLSPackager {
 
         var needsReconnect: Bool {
             lock.lock(); defer { lock.unlock() }
-            return reconnectNeeded || consecutiveFailures >= 3
+            return reconnectNeeded
+                || consecutiveFailures >= 3
+                || Date().timeIntervalSince(lastNewAt) > 8
         }
 
         func replacePlaylist(_ url: URL) {
@@ -661,6 +698,7 @@ enum HLSPackager {
             mapDone = false
             consecutiveFailures = 0
             reconnectNeeded = false
+            lastNewAt = Date()
             lock.unlock()
             writer.markDiscontinuity(isAudio: isAudio)
         }
@@ -740,6 +778,7 @@ enum HLSPackager {
         private func enqueue(_ segs: [Segment], generation gen: Int) {
             lock.lock()
             guard generation == gen else { lock.unlock(); return }
+            var added = 0
             for raw in segs {
                 let seg = Segment(duration: raw.duration, url: raw.url, sequence: raw.sequence, generation: gen)
                 let key = seg.url.absoluteString
@@ -751,7 +790,9 @@ enum HLSPackager {
                 queue.append(seg)
                 lastQueued = seg.sequence
                 if nextWrite == nil { nextWrite = seg.sequence }
+                added += 1
             }
+            if added > 0 { lastNewAt = Date() }
             lock.unlock()
         }
 
