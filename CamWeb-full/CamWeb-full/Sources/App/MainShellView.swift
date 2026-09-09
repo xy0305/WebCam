@@ -94,12 +94,14 @@ struct MainShellView: View {
 }
 
 private struct LiquidGlassTabChrome: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *), sizeClass != .regular {
             content
-                .tabViewStyle(.sidebarAdaptable)
                 .tabBarMinimizeBehavior(.onScrollDown)
         } else {
+            // iPad 使用底部 Tab，铺满全屏，不要变成侧边栏分栏。
             content
         }
     }

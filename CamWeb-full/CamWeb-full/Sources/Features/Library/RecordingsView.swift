@@ -4,6 +4,7 @@ struct RecordingsView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var recs = RecordingManager.shared
     @State private var files: [URL] = []
+    @State private var exportBanner: String?
 
     private var liveSessions: [RecordingSession] {
         recs.sessions.values.sorted { $0.username < $1.username }
@@ -40,12 +41,35 @@ struct RecordingsView: View {
                                         .foregroundStyle(.secondary)
                                 }
                             }
-                            .swipeActions {
+                            .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     RecordingStore.delete(url)
                                     files = RecordingStore.list()
                                 } label: { Label("删除", systemImage: "trash") }
-                                ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
+                            }
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    exportToAlbum(url)
+                                } label: {
+                                    Label("相册", systemImage: "photo.on.rectangle.angled")
+                                }
+                                .tint(.blue)
+                            }
+                            .contextMenu {
+                                Button {
+                                    exportToAlbum(url)
+                                } label: {
+                                    Label("导出到相册", systemImage: "square.and.arrow.down")
+                                }
+                                ShareLink(item: url) {
+                                    Label("分享", systemImage: "square.and.arrow.up")
+                                }
+                                Button(role: .destructive) {
+                                    RecordingStore.delete(url)
+                                    files = RecordingStore.list()
+                                } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
                             }
                         }
                     }
@@ -54,6 +78,14 @@ struct RecordingsView: View {
                 }
             }
             .navigationTitle("录像")
+            .alert("导出", isPresented: Binding(
+                get: { exportBanner != nil },
+                set: { if !$0 { exportBanner = nil } }
+            )) {
+                Button("好", role: .cancel) { exportBanner = nil }
+            } message: {
+                Text(exportBanner ?? "")
+            }
             .onAppear { files = RecordingStore.list() }
             .onChange(of: recs.activeUsernames.count) { _, _ in
                 files = RecordingStore.list()
@@ -63,6 +95,20 @@ struct RecordingsView: View {
             }
             .onChange(of: recs.libraryRevision) { _, _ in
                 files = RecordingStore.list()
+            }
+        }
+    }
+
+    private func exportToAlbum(_ url: URL) {
+        PhotoLibraryExporter.hapticStart()
+        Task {
+            do {
+                try await PhotoLibraryExporter.saveVideo(url)
+                PhotoLibraryExporter.hapticSuccess()
+                await MainActor.run { exportBanner = "已保存到相册" }
+            } catch {
+                PhotoLibraryExporter.hapticError()
+                await MainActor.run { exportBanner = error.localizedDescription }
             }
         }
     }

@@ -24,7 +24,7 @@ struct ChannelCard: View {
                         }
                     }
                 }
-                .frame(height: 148)
+                .aspectRatio(16.0 / 9.0, contentMode: .fill)
                 .frame(maxWidth: .infinity)
                 .clipped()
 

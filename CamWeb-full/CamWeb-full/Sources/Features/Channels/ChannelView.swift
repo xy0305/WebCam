@@ -36,6 +36,7 @@ struct ChannelView: View {
 
 struct ChannelListPage: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let gender: String
     let keyword: String
     let title: String
@@ -50,7 +51,7 @@ struct ChannelListPage: View {
     @State private var localGender: String = ""
     @State private var requestGeneration = 0
 
-    private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 220, maximum: 360), spacing: 16)]
 
     var filtered: [Room] {
         let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
@@ -84,8 +85,8 @@ struct ChannelListPage: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
+                    .padding(.vertical, 12)
 
                     if loadingMore { ProgressView().padding(.vertical, 16) }
                 }

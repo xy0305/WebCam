@@ -9,7 +9,7 @@ struct FavoriteView: View {
     @State private var remote: [Room] = []
     @State private var loading = false
 
-    private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 220, maximum: 360), spacing: 16)]
 
     var body: some View {
         NavigationStack {

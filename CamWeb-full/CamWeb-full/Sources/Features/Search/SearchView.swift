@@ -12,7 +12,7 @@ struct SearchView: View {
     @State private var historyExpanded = false
     @FocusState private var searchFocused: Bool
 
-    private let columns = [GridItem(.adaptive(minimum: 170), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 220, maximum: 360), spacing: 16)]
     private var visibleHistory: [String] {
         editingHistory || historyExpanded ? history.items : Array(history.items.prefix(5))
     }
