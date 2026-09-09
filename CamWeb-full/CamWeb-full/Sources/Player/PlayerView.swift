@@ -53,8 +53,14 @@ struct PlayerView: View {
                     .frame(width: geo.size.width, height: videoHeight)
 
                 if !isLocked && (isMaskVisible || !hasStarted) {
-                    backButtonOverlay(isLandscape: isLandscape)
-                        .zIndex(80)
+                    PlayerBackButton {
+                        handleBack(isLandscape: isLandscape)
+                    }
+                    .frame(width: 56, height: 56)
+                    .padding(.top, 12)
+                    .padding(.leading, isLandscape ? 24 : 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .zIndex(200)
                 }
             }
             .statusBarHidden(isLandscape)
@@ -367,6 +373,8 @@ struct PlayerView: View {
     private func gestureLayer(isLandscape: Bool) -> some View {
         Color.black.opacity(0.001)
             .contentShape(Rectangle())
+            .padding(.top, 88)
+            .padding(.leading, 72)
             .gesture(
                 TapGesture(count: 2)
                     .exclusively(before: TapGesture(count: 1))
@@ -412,30 +420,6 @@ struct PlayerView: View {
             .onEnded { _ in
                 swipeKind = nil
             }
-    }
-
-    private func backButtonOverlay(isLandscape: Bool) -> some View {
-        VStack {
-            HStack {
-                Button { handleBack(isLandscape: isLandscape) } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, 16)
-                Spacer()
-            }
-            Spacer()
-        }
-        .padding(.top, 12)
-        .padding(.leading, isLandscape ? 8 : 0)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .safeAreaPadding(.top)
-        .safeAreaPadding(.leading)
     }
 
     // MARK: - 锁屏（左侧中部，始终可点）
@@ -696,12 +680,9 @@ struct PlayerView: View {
     }
 
     private func handleBack(isLandscape: Bool) {
-        if isLandscape {
-            OrientationLock.set(.portrait)
-        } else {
-            OrientationLock.set(.portrait, keepLocked: true)
-            nativeDismiss()
-        }
+        OrientationLock.set(.portrait, keepLocked: true)
+        appState.closePlayer()
+        nativeDismiss()
     }
 
     private func toggleOrientation() {
@@ -779,6 +760,35 @@ struct PlayerView: View {
         }
         presenter.present(vc, animated: true)
         scheduleAutoHide()
+    }
+}
+
+/// UIKit 返回按钮，避开 SwiftUI 手势层和系统左上角手势。
+private struct PlayerBackButton: UIViewRepresentable {
+    var action: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        let image = UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
+        button.setImage(image, for: .normal)
+        button.tintColor = .white
+        button.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        button.layer.cornerRadius = 22
+        button.clipsToBounds = true
+        button.addTarget(context.coordinator, action: #selector(Coordinator.tapped), for: .touchUpInside)
+        return button
+    }
+
+    func updateUIView(_ uiView: UIButton, context: Context) {
+        context.coordinator.action = action
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func tapped() { action() }
     }
 }
 

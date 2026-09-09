@@ -71,7 +71,10 @@ struct NativeSwipeStack<Root: View, Cover: View>: UIViewControllerRepresentable 
     private func wrappedCover(nav: UINavigationController) -> AnyView {
         AnyView(
             cover()
-                .environment(\.nativeDismiss) { nav.popViewController(animated: true) }
+                .environment(\.nativeDismiss) {
+                    AppState.shared.closePlayer()
+                    nav.popViewController(animated: true)
+                }
                 .environmentObject(AppState.shared)
                 .environmentObject(AuthManager.shared)
         )
