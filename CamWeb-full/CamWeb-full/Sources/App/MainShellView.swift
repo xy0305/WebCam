@@ -25,8 +25,12 @@ struct MainShellView: View {
             PlayerView(username: name, room: appState.playingRoom)
                 .id(name)
                 .environmentObject(appState)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
         } else if let url = appState.playingRecordingURL {
             RecordingPlayerView(url: url)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
         }
     }
 

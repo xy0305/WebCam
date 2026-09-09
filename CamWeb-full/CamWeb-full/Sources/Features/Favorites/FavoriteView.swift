@@ -9,9 +9,8 @@ struct FavoriteView: View {
     @State private var remote: [Room] = []
     @State private var loading = false
 
-    @Environment(\.horizontalSizeClass) private var sizeClass
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: sizeClass == .regular ? 220 : 150), spacing: 12)]
+        [GridItem(.adaptive(minimum: 160), spacing: 14)]
     }
 
     var body: some View {

@@ -52,8 +52,7 @@ struct ChannelListPage: View {
     @State private var requestGeneration = 0
 
     private var columns: [GridItem] {
-        let minWidth: CGFloat = horizontalSizeClass == .regular ? 220 : 150
-        return [GridItem(.adaptive(minimum: minWidth), spacing: 12)]
+        [GridItem(.adaptive(minimum: 160), spacing: 14)]
     }
 
     var filtered: [Room] {
