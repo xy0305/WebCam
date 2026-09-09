@@ -6,27 +6,23 @@ struct ChannelCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topTrailing) {
-                AsyncImage(url: room.thumb) { phase in
-                    switch phase {
-                    case .success(let img):
-                        img.resizable().scaledToFill()
-                    case .failure:
-                        ZStack {
-                            Color(.secondarySystemBackground)
-                            Image(systemName: "photo")
-                                .font(.title2)
-                                .foregroundStyle(.secondary)
-                        }
-                    default:
-                        ZStack {
-                            Color(.secondarySystemBackground)
-                            ProgressView().tint(.accentColor)
+                Color(.secondarySystemBackground)
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .overlay {
+                        AsyncImage(url: room.thumb) { phase in
+                            switch phase {
+                            case .success(let img):
+                                img.resizable().scaledToFill()
+                            case .failure:
+                                Image(systemName: "photo")
+                                    .font(.title2)
+                                    .foregroundStyle(.secondary)
+                            default:
+                                ProgressView().tint(.accentColor)
+                            }
                         }
                     }
-                }
-                .aspectRatio(16.0 / 9.0, contentMode: .fill)
-                .frame(maxWidth: .infinity)
-                .clipped()
+                    .clipped()
 
                 Text(room.loadState == .timeout ? "超时" : "LIVE")
                     .font(.system(size: 10, weight: .bold))
@@ -50,8 +46,7 @@ struct ChannelCard: View {
                     }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             Text(room.title)
                 .font(.subheadline.weight(.semibold))
@@ -64,5 +59,6 @@ struct ChannelCard: View {
                 Text(room.username).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+        .contentShape(Rectangle())
     }
 }

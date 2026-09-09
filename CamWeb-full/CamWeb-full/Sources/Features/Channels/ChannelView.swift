@@ -75,7 +75,7 @@ struct ChannelListPage: View {
                 }
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 14) {
+                    LazyVGrid(columns: columns, spacing: 16) {
                         ForEach(filtered) { room in
                             Button {
                                 appState.openPlayer(username: room.username, room: room)
