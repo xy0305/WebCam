@@ -49,16 +49,21 @@ struct PlayerView: View {
                         .padding(.top, videoHeight)
                 }
 
-                videoArea(height: videoHeight, isLandscape: isLandscape)
-                    .frame(width: geo.size.width, height: videoHeight)
+                videoArea(
+                    height: videoHeight,
+                    isLandscape: isLandscape,
+                    topSafeInset: geo.safeAreaInsets.top
+                )
+                .frame(width: geo.size.width, height: videoHeight)
 
                 if !isLocked && (isMaskVisible || !hasStarted) {
+                    // 与右上控制条共用安全区基线，既避开状态岛，也不留下大块空白。
                     PlayerBackButton {
                         handleBack(isLandscape: isLandscape)
                     }
-                    .frame(width: 56, height: 56)
-                    .padding(.top, 12)
-                    .padding(.leading, isLandscape ? 24 : 16)
+                    .frame(width: 48, height: 48)
+                    .padding(.top, playerTopInset(isLandscape: isLandscape, safeTop: geo.safeAreaInsets.top))
+                    .padding(.leading, isLandscape ? 24 : 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .zIndex(200)
                 }
@@ -103,7 +108,7 @@ struct PlayerView: View {
     // MARK: - 视频区域（含叠加控制）
 
     @ViewBuilder
-    private func videoArea(height: CGFloat, isLandscape: Bool) -> some View {
+    private func videoArea(height: CGFloat, isLandscape: Bool, topSafeInset: CGFloat) -> some View {
         ZStack {
             Color.black
 
@@ -135,7 +140,7 @@ struct PlayerView: View {
             }
 
             if hasStarted && isMaskVisible && !isLocked {
-                controlsLayer(isLandscape: isLandscape)
+                controlsLayer(isLandscape: isLandscape, topSafeInset: topSafeInset)
                     .transition(.opacity)
             }
         }
@@ -455,13 +460,17 @@ struct PlayerView: View {
         .allowsHitTesting(isMaskVisible || isLocked)
     }
 
-    // MARK: - 四角控制（对齐 AngelLive）
+    // MARK: - 四角控制（参考 StripCam：共用安全区基线）
 
-    private func controlsLayer(isLandscape: Bool) -> some View {
-        let inset: CGFloat = isLandscape ? 25 : 0
-        // 竖屏的视频从屏幕最顶端开始，iOS 的状态岛/通话/PiP 浮层会盖住 y=0 的控制条。
-        // 保留横屏原位置；竖屏只将右上控制组落到系统浮层下方。
-        let topControlsInset: CGFloat = isLandscape ? 4 : 104
+    private func playerTopInset(isLandscape: Bool, safeTop: CGFloat) -> CGFloat {
+        if isLandscape { return 8 }
+        // 常规状态栏约 59pt；通话、录屏或热点状态栏更高时跟随系统实际值。
+        return max(safeTop + 8, 52)
+    }
+
+    private func controlsLayer(isLandscape: Bool, topSafeInset: CGFloat) -> some View {
+        let inset: CGFloat = isLandscape ? 25 : 12
+        let topInset = playerTopInset(isLandscape: isLandscape, safeTop: topSafeInset)
         return ZStack {
             if isLandscape {
                 VStack {
@@ -509,7 +518,7 @@ struct PlayerView: View {
                 }
                 Spacer()
             }
-            .padding(.top, topControlsInset)
+            .padding(.top, topInset)
 
             // 中央暂停大按钮（首帧出来后、用户暂停时才显示）
             if !isPlaying && !isBuffering && stream != nil {
