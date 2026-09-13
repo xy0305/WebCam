@@ -459,6 +459,9 @@ struct PlayerView: View {
 
     private func controlsLayer(isLandscape: Bool) -> some View {
         let inset: CGFloat = isLandscape ? 25 : 0
+        // 竖屏的视频从屏幕最顶端开始，iOS 的状态岛/通话/PiP 浮层会盖住 y=0 的控制条。
+        // 保留横屏原位置；竖屏只将右上控制组落到系统浮层下方。
+        let topControlsInset: CGFloat = isLandscape ? 4 : 104
         return ZStack {
             if isLandscape {
                 VStack {
@@ -506,7 +509,7 @@ struct PlayerView: View {
                 }
                 Spacer()
             }
-            .padding(.top, 4)
+            .padding(.top, topControlsInset)
 
             // 中央暂停大按钮（首帧出来后、用户暂停时才显示）
             if !isPlaying && !isBuffering && stream != nil {
