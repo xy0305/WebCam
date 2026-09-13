@@ -8,6 +8,10 @@ struct RecordingsView: View {
     @State private var exportBanner: String?
     @State private var showAdd = false
     @State private var newUsername = ""
+    @State private var showStopAllConfirm = false
+    @State private var showExportAllConfirm = false
+    @State private var isExportingAll = false
+    @State private var exportProgress = ""
 
     private var liveSessions: [RecordingSession] {
         recs.sessions.values.sorted { $0.username < $1.username }
@@ -132,10 +136,41 @@ struct RecordingsView: View {
                     Button { Task { await monitor.checkAll() } } label: {
                         Image(systemName: "arrow.clockwise")
                     }.disabled(monitor.isChecking || monitor.entries.isEmpty)
+                    Menu {
+                        Button {
+                            showStopAllConfirm = true
+                        } label: {
+                            Label("全部中断", systemImage: "stop.circle")
+                        }
+                        .disabled(liveSessions.isEmpty)
+
+                        Button {
+                            showExportAllConfirm = true
+                        } label: {
+                            Label("全部导出到相册", systemImage: "photo.on.rectangle.angled")
+                        }
+                        .disabled(files.isEmpty || isExportingAll)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                     Button { newUsername = ""; showAdd = true } label: {
                         Image(systemName: "plus")
                     }
                 }
+            }
+            .confirmationDialog("确定中断全部录制？", isPresented: $showStopAllConfirm, titleVisibility: .visible) {
+                Button("全部中断并关闭自动录制", role: .destructive) {
+                    stopAllRecordings()
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("当前录制会停止并封装；相关主播不会在下一轮检测时自动重启。")
+            }
+            .confirmationDialog("导出全部录像到相册？", isPresented: $showExportAllConfirm, titleVisibility: .visible) {
+                Button("开始导出") { exportAllToAlbum() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("将导出所有已完成的 MP4、MOV 或 M4V 文件。")
             }
             .alert("添加自动录制主播", isPresented: $showAdd) {
                 TextField("主播用户名", text: $newUsername)
@@ -146,6 +181,15 @@ struct RecordingsView: View {
             } message: {
                 Text("在线时会自动开始录制最高画质和声音。")
             }
+            .overlay {
+                if isExportingAll {
+                    ProgressView(exportProgress)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 14)
+                        .background(.regularMaterial, in: Capsule())
+                        .shadow(radius: 12)
+                }
+            }
             .alert("导出", isPresented: Binding(
                 get: { exportBanner != nil }, set: { if !$0 { exportBanner = nil } }
             )) {
@@ -155,6 +199,53 @@ struct RecordingsView: View {
             .onChange(of: recs.activeUsernames.count) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }
+        }
+    }
+
+    private func stopAllRecordings() {
+        let names = recs.activeUsernames
+        names.forEach { username in
+            if monitor.entries.contains(where: { $0.username == username }) {
+                monitor.manualStop(username)
+            } else {
+                recs.stop(username)
+            }
+        }
+        exportBanner = names.isEmpty ? "当前没有正在录制的主播" : "已中断全部录制（共 \(names.count) 路）"
+    }
+
+    private func exportAllToAlbum() {
+        let candidates = files.filter { ["mp4", "mov", "m4v"].contains($0.pathExtension.lowercased()) }
+        guard !candidates.isEmpty else {
+            exportBanner = "没有可导出的录像文件"
+            return
+        }
+        isExportingAll = true
+        exportProgress = "准备导出 0/\(candidates.count)"
+        PhotoLibraryExporter.hapticStart()
+        Task {
+            var success = 0
+            var failed = 0
+            for (index, url) in candidates.enumerated() {
+                await MainActor.run { exportProgress = "正在导出 \(index + 1)/\(candidates.count)" }
+                do {
+                    try await PhotoLibraryExporter.saveVideo(url)
+                    success += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            await MainActor.run {
+                isExportingAll = false
+                exportProgress = ""
+                if failed == 0 {
+                    PhotoLibraryExporter.hapticSuccess()
+                    exportBanner = "已全部导出到相册（共 \(success) 个）"
+                } else {
+                    PhotoLibraryExporter.hapticError()
+                    exportBanner = "导出完成：成功 \(success) 个，失败 \(failed) 个"
+                }
+            }
         }
     }
 
