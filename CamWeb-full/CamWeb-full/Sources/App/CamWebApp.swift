@@ -78,7 +78,10 @@ struct RootFlow: View {
                 MainShellView()
             }
         }
-        .task { await auth.restore() }
+        .task {
+            await auth.restore()
+            AutoRecordMonitor.shared.startMonitoring()
+        }
     }
 }
 
