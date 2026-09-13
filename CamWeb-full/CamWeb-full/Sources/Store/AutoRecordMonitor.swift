@@ -104,7 +104,8 @@ final class AutoRecordMonitor: ObservableObject {
     func checkAll() async {
         guard !isChecking, !entries.isEmpty else { return }
         isChecking = true
-        let snapshot = entries
+        // 正在录制说明已经确认在线；不再重复解析直播源，避免浪费请求和时间。
+        let snapshot = entries.filter { !RecordingManager.shared.isRecording($0.username) }
         snapshot.forEach { states[$0.username] = .checking }
 
         await withTaskGroup(of: Probe.self) { group in
@@ -140,6 +141,11 @@ final class AutoRecordMonitor: ObservableObject {
     }
 
     private func check(_ username: String, autoStart: Bool) async {
+        // 手动重复点击开始时也不重新解析，已有录制任务直接复用。
+        if RecordingManager.shared.isRecording(username) {
+            states[username] = .recording
+            return
+        }
         states[username] = .checking
         do {
             let stream = try await StreamSource.resolve(username: username)
