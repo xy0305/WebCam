@@ -263,12 +263,9 @@ struct RecordingsView: View {
                 do {
                     let prepared = try await RecordingStore.prepareForAlbumExport(url)
                     try await PhotoLibraryExporter.saveVideo(prepared.file)
-                    // 相册已成功落盘后移除 App 副本；恢复录像会同时删除分片目录。
-                    if prepared.cleanup {
-                        RecordingStore.finishAlbumExport(source: url, exportedFile: prepared.file, cleanup: true)
-                    } else {
-                        RecordingStore.delete(url)
-                    }
+                    // 相册导入确认后仍保留 App 原件，避免 Photos 索引/同步延迟时误删唯一副本。
+                    // 用户在确认相册里可见后可手动删除，或用“删除全部录像”释放空间。
+                    if prepared.cleanup { try? FileManager.default.removeItem(at: prepared.file) }
                     success += 1
                 } catch {
                     failed += 1
@@ -303,19 +300,15 @@ struct RecordingsView: View {
                 await MainActor.run { exportProgress = "正在生成相册兼容视频…" }
                 await MainActor.run { exportProgress = "正在保存到相册…" }
                 try await PhotoLibraryExporter.saveVideo(prepared.file)
-                // 相册确认写入后删除 App 副本；恢复录像会同时删掉巨大的分片目录。
-                if prepared.cleanup {
-                    RecordingStore.finishAlbumExport(source: url, exportedFile: prepared.file, cleanup: true)
-                } else {
-                    RecordingStore.delete(url)
-                }
+                // 相册导入完成后保留 App 原件；确认相册可见后再手动删除，绝不冒险删唯一副本。
+                if prepared.cleanup { try? FileManager.default.removeItem(at: prepared.file) }
                 PhotoLibraryExporter.hapticSuccess()
                 await MainActor.run {
                     isExportingOne = false
                     exportProgress = ""
                     files = RecordingStore.list()
                     recs.noteLibraryChanged()
-                    exportBanner = "已保存到相册，并已删除本地副本"
+                    exportBanner = "已提交到相册，App 本地原件已保留，请确认后手动删除"
                 }
             } catch {
                 PhotoLibraryExporter.hapticError()
