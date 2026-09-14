@@ -1,5 +1,10 @@
 import Foundation
 
+enum CamPlatform: String, Codable, Hashable, CaseIterable {
+    case chaturbate, stripchat
+    var title: String { self == .chaturbate ? "Chaturbate" : "Stripchat" }
+}
+
 struct RoomListResponse: Decodable {
     let rooms: [Room]?
     let count: Int?
@@ -7,7 +12,10 @@ struct RoomListResponse: Decodable {
 }
 
 struct Room: Decodable, Identifiable, Hashable {
-    var id: String { username }
+    var id: String { "\(platform.rawValue):\(platformRoomID ?? username)" }
+    let platform: CamPlatform
+    let platformRoomID: String?
+    let presets: [String]?
     let username: String
     let displayName: String?
     let roomSubject: String?
@@ -83,6 +91,9 @@ struct Room: Decodable, Identifiable, Hashable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        platform = .chaturbate
+        platformRoomID = nil
+        presets = nil
         username = try c.decode(String.self, forKey: .username)
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
         roomSubject = try c.decodeIfPresent(String.self, forKey: .roomSubject)
@@ -100,18 +111,25 @@ struct Room: Decodable, Identifiable, Hashable {
     }
 
     init(
+        platform: CamPlatform = .chaturbate,
+        platformRoomID: String? = nil,
         username: String,
         displayName: String? = nil,
         roomSubject: String? = nil,
         numUsers: Int? = nil,
+        imageURL: String? = nil,
         tags: [String]? = nil,
+        presets: [String]? = nil,
         loadState: CardLoadState = .live
     ) {
+        self.platform = platform
+        self.platformRoomID = platformRoomID
+        self.presets = presets
         self.username = username.lowercased()
         self.displayName = displayName ?? username
         self.roomSubject = roomSubject
         self.numUsers = numUsers
-        imageURL = nil
+        self.imageURL = imageURL
         currentShow = nil
         isHD = nil
         gender = nil

@@ -9,10 +9,20 @@ struct ChannelFilter: Hashable {
 struct ChannelView: View {
     @EnvironmentObject var appState: AppState
     @State private var path: [ChannelFilter] = []
+    @State private var platform: CamPlatform = .chaturbate
 
     var body: some View {
         NavigationStack(path: $path) {
-            ChannelListPage(gender: "", keyword: "", title: "频道")
+            ChannelListPage(gender: "", keyword: "", title: "频道", platform: platform)
+                .id(platform)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Picker("平台", selection: $platform) {
+                            ForEach(CamPlatform.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                }
                 .navigationDestination(for: ChannelFilter.self) { filter in
                     ChannelListPage(gender: filter.gender, keyword: filter.keyword, title: filter.title)
                 }
@@ -41,6 +51,7 @@ struct ChannelListPage: View {
     let gender: String
     let keyword: String
     let title: String
+    var platform: CamPlatform = .chaturbate
 
     @State private var rooms: [Room] = []
     @State private var loading = false
@@ -180,11 +191,17 @@ struct ChannelListPage: View {
         reachedEnd = false
         defer { if generation == requestGeneration { loading = false } }
         do {
-            let fetched = try await RoomAPI.fetchRooms(
-                offset: 0,
-                gender: emptyNil(requestedGender),
-                keywords: emptyNil(keyword)
-            )
+            let fetched: [Room]
+            if platform == .stripchat {
+                let primary = requestedGender == "c" ? "couples" : (requestedGender == "m" ? "men" : "girls")
+                fetched = try await StripchatAPI.fetch(offset: 0, primary: primary)
+            } else {
+                fetched = try await RoomAPI.fetchRooms(
+                    offset: 0,
+                    gender: emptyNil(requestedGender),
+                    keywords: emptyNil(keyword)
+                )
+            }
             guard generation == requestGeneration, requestedGender == localGender else { return }
             rooms = fetched
             offset = fetched.count

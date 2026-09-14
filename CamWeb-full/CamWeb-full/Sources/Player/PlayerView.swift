@@ -749,7 +749,13 @@ struct PlayerView: View {
         errorText = nil
         coordinator.isMaskShow = false
         hasStarted = false
-        do { stream = try await StreamSource.resolve(username: username) }
+        do {
+            if displayRoom.platform == .stripchat {
+                stream = try await StripchatStreamSource.resolve(room: displayRoom)
+            } else {
+                stream = try await StreamSource.resolve(username: username)
+            }
+        }
         catch { errorText = error.localizedDescription; stream = nil }
         loading = false
         wireCoordinator()
