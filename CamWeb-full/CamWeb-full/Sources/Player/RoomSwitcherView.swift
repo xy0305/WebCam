@@ -24,9 +24,9 @@ struct RoomSwitcherView: View {
         let sourceRooms: [Room]
         switch selected {
         case .recommended: sourceRooms = recommended
-        case .favorites: sourceRooms = favorites.map(Room.init(username:))
-        case .recent: sourceRooms = recent.map(Room.init(username:))
-        case .following: sourceRooms = following.map(Room.init(username:))
+        case .favorites: sourceRooms = favorites.map { Room(username: $0) }
+        case .recent: sourceRooms = recent.map { Room(username: $0) }
+        case .following: sourceRooms = following.map { Room(username: $0) }
         }
         var seen = Set<String>()
         return sourceRooms.filter { room in
