@@ -38,10 +38,7 @@ struct PlayerView: View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
             let fillVideo = isLandscape || isVerticalLive
-            // 横屏完全保持原尺寸；竖屏设备上的横向直播画面加大显示，避免只有顶部一小块。
-            // 竖屏直播流仍然铺满高度，不改变其原有行为。
-            let portraitVideoHeight = min(geo.size.height * 0.72, geo.size.width * 1.70)
-            let videoHeight = fillVideo ? geo.size.height : portraitVideoHeight
+            let videoHeight = fillVideo ? geo.size.height : (geo.size.width * 9 / 16)
 
             ZStack(alignment: .top) {
                 Color.black.ignoresSafeArea()
