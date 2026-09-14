@@ -164,8 +164,28 @@ final class AutoRecordMonitor: ObservableObject {
         }
     }
 
+    /// 接受用户名或 Chaturbate 房间链接；中文站、各语言子域名统一提取 URL 的首个路径段。
     private func normalize(_ raw: String) -> String {
-        raw.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let urlText: String
+        if trimmed.localizedCaseInsensitiveContains("chaturbate.com"), !trimmed.contains("://") {
+            urlText = "https://\(trimmed)"
+        } else {
+            urlText = trimmed
+        }
+
+        if let url = URLComponents(string: urlText),
+           let host = url.host?.lowercased(),
+           host == "chaturbate.com" || host.hasSuffix(".chaturbate.com"),
+           let room = url.path.split(separator: "/").first {
+            return String(room).removingPercentEncoding?.lowercased()
+                .filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" } ?? ""
+        }
+
+        // 非链接时视为直接输入的用户名。
+        return trimmed.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
     }
 
     private func persist() {

@@ -10,6 +10,7 @@ struct RecordingsView: View {
     @State private var newUsername = ""
     @State private var showStopAllConfirm = false
     @State private var showExportAllConfirm = false
+    @State private var showDeleteAllConfirm = false
     @State private var isExportingAll = false
     @State private var exportProgress = ""
 
@@ -150,6 +151,13 @@ struct RecordingsView: View {
                             Label("全部导出到相册", systemImage: "photo.on.rectangle.angled")
                         }
                         .disabled(files.isEmpty || isExportingAll)
+
+                        Button(role: .destructive) {
+                            showDeleteAllConfirm = true
+                        } label: {
+                            Label("删除全部录像", systemImage: "trash")
+                        }
+                        .disabled(files.isEmpty || isExportingAll)
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -172,14 +180,22 @@ struct RecordingsView: View {
             } message: {
                 Text("将导出所有已完成的 MP4、MOV 或 M4V 文件。")
             }
+            .confirmationDialog("确定删除全部录像？", isPresented: $showDeleteAllConfirm, titleVisibility: .visible) {
+                Button("删除全部录像", role: .destructive) {
+                    deleteAllRecordings()
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("将永久删除 \(files.count) 个已保存录像，无法恢复；不会影响当前正在录制的内容。")
+            }
             .alert("添加自动录制主播", isPresented: $showAdd) {
-                TextField("主播用户名", text: $newUsername)
+                TextField("主播用户名或 Chaturbate 链接", text: $newUsername)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Button("取消", role: .cancel) {}
                 Button("添加") { _ = monitor.add(newUsername) }
             } message: {
-                Text("在线时会自动开始录制最高画质和声音。")
+                Text("可粘贴用户名、英文站或中文站房间链接；在线时会自动开始录制最高画质和声音。")
             }
             .overlay {
                 if isExportingAll {
@@ -200,6 +216,14 @@ struct RecordingsView: View {
             .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }
         }
+    }
+
+    private func deleteAllRecordings() {
+        let count = files.count
+        files.forEach(RecordingStore.delete)
+        files = RecordingStore.list()
+        recs.noteLibraryChanged()
+        exportBanner = "已删除全部录像（共 \(count) 个）"
     }
 
     private func stopAllRecordings() {
