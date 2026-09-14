@@ -112,16 +112,44 @@ enum RecordingStore {
             return (url, false)
         }
         let folder = url.deletingLastPathComponent()
+        finalizeRecoveredPlaylists(in: folder)
         let output = folder.deletingLastPathComponent()
             .appendingPathComponent(folder.lastPathComponent + ".album-export.mp4")
         try? FileManager.default.removeItem(at: output)
-        let ok = await Task.detached(priority: .utility) {
+        var ok = await Task.detached(priority: .utility) {
             FFmpegLocalMuxer.mux(input: url, output: output)
         }.value
+        // 少数旧恢复目录的主清单含有不完整音频轨；至少导出完整视频而不是直接失败。
+        if !ok {
+            try? FileManager.default.removeItem(at: output)
+            let video = folder.appendingPathComponent("video.m3u8")
+            ok = await Task.detached(priority: .utility) {
+                FFmpegLocalMuxer.mux(input: video, output: output)
+            }.value
+        }
         guard ok, FileManager.default.fileExists(atPath: output.path) else {
             throw AlbumPreparationError.muxFailed
         }
         return (output, true)
+    }
+
+    /// 系统中断时清单可能是 EVENT 且没有 ENDLIST；导出前将已有分片封口为 VOD。
+    private static func finalizeRecoveredPlaylists(in folder: URL) {
+        for name in ["video.m3u8", "audio.m3u8"] {
+            let url = folder.appendingPathComponent(name)
+            guard var text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty else { continue }
+            text = text.replacingOccurrences(of: "#EXT-X-PLAYLIST-TYPE:EVENT", with: "#EXT-X-PLAYLIST-TYPE:VOD")
+            if !text.contains("#EXT-X-ENDLIST") {
+                text = text.trimmingCharacters(in: .whitespacesAndNewlines) + "\n#EXT-X-ENDLIST\n"
+            }
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        // 主清单本身也补 ENDLIST，兼容更严格的 HLS 解复用器。
+        let index = folder.appendingPathComponent("index.m3u8")
+        if var text = try? String(contentsOf: index, encoding: .utf8), !text.contains("#EXT-X-ENDLIST") {
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines) + "\n#EXT-X-ENDLIST\n"
+            try? text.write(to: index, atomically: true, encoding: .utf8)
+        }
     }
 
     /// 在恢复录像已保存到相册后删除原始分片和临时 MP4。
