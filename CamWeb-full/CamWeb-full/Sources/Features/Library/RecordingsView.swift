@@ -12,6 +12,7 @@ struct RecordingsView: View {
     @State private var showExportAllConfirm = false
     @State private var showDeleteAllConfirm = false
     @State private var isExportingAll = false
+    @State private var isExportingOne = false
     @State private var exportProgress = ""
 
     private var liveSessions: [RecordingSession] {
@@ -198,12 +199,15 @@ struct RecordingsView: View {
                 Text("可粘贴用户名、英文站或中文站房间链接；在线时会自动开始录制最高画质和声音。")
             }
             .overlay {
-                if isExportingAll {
-                    ProgressView(exportProgress)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 14)
-                        .background(.regularMaterial, in: Capsule())
-                        .shadow(radius: 12)
+                if isExportingAll || isExportingOne {
+                    VStack(spacing: 12) {
+                        ProgressView().controlSize(.large)
+                        Text(exportProgress).font(.subheadline.weight(.medium))
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 18)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .shadow(radius: 12)
                 }
             }
             .alert("导出", isPresented: Binding(
@@ -289,11 +293,15 @@ struct RecordingsView: View {
     }
 
     private func exportToAlbum(_ url: URL) {
+        guard !isExportingOne && !isExportingAll else { return }
+        isExportingOne = true
+        exportProgress = url.lastPathComponent.lowercased() == "index.m3u8" ? "正在封装恢复录像…" : "正在准备录像…"
         PhotoLibraryExporter.hapticStart()
         Task {
             do {
-                await MainActor.run { exportBanner = url.lastPathComponent == "index.m3u8" ? "正在封装恢复录像…" : nil }
                 let prepared = try await RecordingStore.prepareForAlbumExport(url)
+                await MainActor.run { exportProgress = "正在生成相册兼容视频…" }
+                await MainActor.run { exportProgress = "正在保存到相册…" }
                 try await PhotoLibraryExporter.saveVideo(prepared.file)
                 // 相册确认写入后删除 App 副本；恢复录像会同时删掉巨大的分片目录。
                 if prepared.cleanup {
@@ -303,13 +311,19 @@ struct RecordingsView: View {
                 }
                 PhotoLibraryExporter.hapticSuccess()
                 await MainActor.run {
+                    isExportingOne = false
+                    exportProgress = ""
                     files = RecordingStore.list()
                     recs.noteLibraryChanged()
                     exportBanner = "已保存到相册，并已删除本地副本"
                 }
             } catch {
                 PhotoLibraryExporter.hapticError()
-                await MainActor.run { exportBanner = error.localizedDescription }
+                await MainActor.run {
+                    isExportingOne = false
+                    exportProgress = ""
+                    exportBanner = error.localizedDescription
+                }
             }
         }
     }
