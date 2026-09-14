@@ -17,7 +17,8 @@ enum StripchatAPI {
         let avatarUrl: String?
         let previewUrlThumbSmall: String?
         let snapshotTimestamp: String?
-        let popularSnapshotTimestamp: String?
+        // Stripchat 同一响应中该字段为 JSON number，不是字符串；类型不符会让整页解码失败。
+        let popularSnapshotTimestamp: Int?
         let presets: [String]?
 
         func room() -> Room {
