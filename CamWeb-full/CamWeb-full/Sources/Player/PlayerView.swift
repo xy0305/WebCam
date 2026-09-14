@@ -22,6 +22,7 @@ struct PlayerView: View {
     @State private var isVerticalLive = false
     @State private var autoHideTask: Task<Void, Never>?
     @State private var exportCopied = false
+    @State private var showRoomSwitcher = false
     @State private var swipeKind: EdgeSwipeKind?
     @State private var swipeValue: CGFloat = 0
     @State private var swipeBase: CGFloat = 0
@@ -90,6 +91,22 @@ struct PlayerView: View {
         .onDisappear {
             autoHideTask?.cancel()
             OrientationLock.set(.portrait, keepLocked: true)
+        }
+        .sheet(isPresented: $showRoomSwitcher) {
+            RoomSwitcherView(
+                currentUsername: username,
+                recommended: recommended,
+                favorites: SpecialFollowStore.shared.usernames,
+                recent: WatchHistoryStore.shared.items.map(\.username),
+                following: FollowingStore.shared.usernames,
+                onSelect: { room in
+                    showRoomSwitcher = false
+                    appState.openPlayer(username: room.username, room: room)
+                },
+                onClose: { showRoomSwitcher = false }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         .alert("录制", isPresented: Binding(
             get: { recs.banner != nil },
@@ -291,7 +308,7 @@ struct PlayerView: View {
                                                     Color.gray.opacity(0.25)
                                                 }
                                             }
-                                            .frame(width: 132, height: 74)
+                                            .frame(width: 168, height: 94)
                                             .clipped()
                                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                             Text(room.username)
@@ -302,7 +319,7 @@ struct PlayerView: View {
                                                 .font(.caption2)
                                                 .foregroundStyle(Color(white: 0.55))
                                         }
-                                        .frame(width: 132, alignment: .leading)
+                                        .frame(width: 168, alignment: .leading)
                                         .contentShape(Rectangle())
                                     }
                                     .buttonStyle(.plain)
@@ -573,6 +590,18 @@ struct PlayerView: View {
                 HStack {
                     Spacer()
                     HStack(spacing: 16) {
+                        Button {
+                            showRoomSwitcher = true
+                            autoHideTask?.cancel()
+                        } label: {
+                            Image(systemName: "rectangle.3.group")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("快速换台")
+
                         Text("原画")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.white)
