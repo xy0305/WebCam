@@ -220,10 +220,11 @@ struct RecordingsView: View {
 
     private func deleteAllRecordings() {
         let count = files.count
-        files.forEach(RecordingStore.delete)
+        // 清掉录像列表以外的 .part 分片和封装残留，否则它们会继续占用 App 存储。
+        RecordingStore.clearAll(excludingActiveUsernames: recs.activeUsernames)
         files = RecordingStore.list()
         recs.noteLibraryChanged()
-        exportBanner = "已删除全部录像（共 \(count) 个）"
+        exportBanner = "已删除全部录像与缓存（共 \(count) 个）"
     }
 
     private func stopAllRecordings() {
@@ -254,6 +255,8 @@ struct RecordingsView: View {
                 await MainActor.run { exportProgress = "正在导出 \(index + 1)/\(candidates.count)" }
                 do {
                     try await PhotoLibraryExporter.saveVideo(url)
+                    // 相册已成功落盘后移除 App 副本，避免双份录像长期占满存储。
+                    RecordingStore.delete(url)
                     success += 1
                 } catch {
                     failed += 1
@@ -262,6 +265,10 @@ struct RecordingsView: View {
             await MainActor.run {
                 isExportingAll = false
                 exportProgress = ""
+                // 所有成功导出的 App 副本都已删除，同时清理旧分片/封装残留。
+                RecordingStore.purgeTemporary(excludingActiveUsernames: recs.activeUsernames)
+                files = RecordingStore.list()
+                recs.noteLibraryChanged()
                 if failed == 0 {
                     PhotoLibraryExporter.hapticSuccess()
                     exportBanner = "已全部导出到相册（共 \(success) 个）"
@@ -278,8 +285,14 @@ struct RecordingsView: View {
         Task {
             do {
                 try await PhotoLibraryExporter.saveVideo(url)
+                // 相册确认写入后删除 App 副本，避免同一个视频占用两份空间。
+                RecordingStore.delete(url)
                 PhotoLibraryExporter.hapticSuccess()
-                await MainActor.run { exportBanner = "已保存到相册" }
+                await MainActor.run {
+                    files = RecordingStore.list()
+                    recs.noteLibraryChanged()
+                    exportBanner = "已保存到相册，并已删除本地副本"
+                }
             } catch {
                 PhotoLibraryExporter.hapticError()
                 await MainActor.run { exportBanner = error.localizedDescription }

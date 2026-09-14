@@ -21,6 +21,11 @@ final class RecordingManager: ObservableObject {
     /// 真实音频后台播放守护。录制下载与它处于同一进程生命周期。
     private let audioKeeper = BackgroundAudioKeeper()
 
+    private init() {
+        // 上次在后台被系统中断时，保留已有 HLS 分片为可查看的恢复录像，不能静默丢弃。
+        RecordingStore.recoverInterruptedRecordings()
+    }
+
     var activeUsernames: [String] { Array(sessions.keys).sorted() }
     var isAnyRecording: Bool { !sessions.isEmpty }
 
@@ -247,10 +252,9 @@ final class RecordingSession: ObservableObject, Identifiable {
     func stop(userInitiated: Bool) {
         guard isRunning else { return }
         isRunning = false
-        // URLSession.data(for:) 会因 Task cancellation 立即取消当前分片请求，
-        // 不再等待 20 秒，随后 packager 写入 ENDLIST 并结束当前文件。
+        // 只请求优雅停止：让下载循环排空已下载分片、写入 ENDLIST 并进入封装。
+        // 这里不能立即 cancel，否则 App 切后台时会丢掉尚未写入 index 的录像。
         progress.requestStop()
-        workTask?.cancel()
     }
 
     private func finish(result: HLSPackager.Result, name: String, dir: URL) {
@@ -259,8 +263,9 @@ final class RecordingSession: ObservableObject, Identifiable {
         tick()
         guard result.success, let index = result.indexURL,
               FileManager.default.fileExists(atPath: index.path) else {
-            try? FileManager.default.removeItem(at: dir)
-            onFinished?(name, "\(name) 录制失败：\(result.error ?? "未知")")
+            // 退出后台或网络被系统中断时保留已写入分片；下次启动会恢复成可播放录像。
+            RecordingStore.recoverInterruptedRecordings()
+            onFinished?(name, "\(name) 录制未完成，已保留恢复文件")
             return
         }
 

@@ -39,6 +39,26 @@ enum RecordingStore {
         }
     }
 
+    /// 将系统中断后遗留的 .part HLS 目录变成可播放、可导出、可删除的恢复录像。
+    /// 不删除任何分片，避免切后台时已经录到的内容凭空消失。
+    static func recoverInterruptedRecordings() {
+        let fm = FileManager.default
+        let dirs = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        for dir in dirs where dir.pathExtension.lowercased() == "part" {
+            let index = dir.appendingPathComponent("index.m3u8")
+            guard fm.fileExists(atPath: index.path),
+                  ((try? index.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 else { continue }
+            let base = String(dir.lastPathComponent.dropLast(5))
+            var destination = dir.deletingLastPathComponent().appendingPathComponent(base + "_恢复录像", isDirectory: true)
+            var suffix = 2
+            while fm.fileExists(atPath: destination.path) {
+                destination = dir.deletingLastPathComponent().appendingPathComponent("\(base)_恢复录像_\(suffix)", isDirectory: true)
+                suffix += 1
+            }
+            try? fm.moveItem(at: dir, to: destination)
+        }
+    }
+
     static func displayName(_ url: URL) -> String {
         if url.lastPathComponent.lowercased() == "index.m3u8" {
             return url.deletingLastPathComponent().lastPathComponent
@@ -51,6 +71,32 @@ enum RecordingStore {
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
         } else {
             try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// 删除全部已保存录像及遗留的录制缓存；仍在录制的 .part 目录会被保留。
+    static func clearAll(excludingActiveUsernames active: [String]) {
+        let fm = FileManager.default
+        let activeNames = Set(active.map { $0.lowercased() })
+        let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        for url in urls {
+            let name = url.lastPathComponent.lowercased()
+            let isActivePart = name.hasSuffix(".part") && activeNames.contains { name.hasPrefix("\($0)_") }
+            if !isActivePart { try? fm.removeItem(at: url) }
+        }
+    }
+
+    /// 导出成功后清理不会出现在录像列表里的原始分片与失败封装残留。
+    /// 活跃任务的 .part 目录绝不触碰。
+    static func purgeTemporary(excludingActiveUsernames active: [String]) {
+        let fm = FileManager.default
+        let activeNames = Set(active.map { $0.lowercased() })
+        let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        for url in urls {
+            let name = url.lastPathComponent.lowercased()
+            let isActivePart = name.hasSuffix(".part") && activeNames.contains { name.hasPrefix("\($0)_") }
+            let isTemporary = name.hasSuffix(".part") || name.contains(".mux.") || name.contains("_v.") || name.contains("_a.")
+            if isTemporary && !isActivePart { try? fm.removeItem(at: url) }
         }
     }
 
