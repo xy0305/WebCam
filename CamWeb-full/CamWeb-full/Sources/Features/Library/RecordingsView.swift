@@ -178,7 +178,7 @@ struct RecordingsView: View {
                 Button("开始导出") { exportAllToAlbum() }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("将导出所有已完成的 MP4、MOV 或 M4V 文件。")
+                Text("恢复录像会先无损封装为 MP4，再保存到相册并删除 App 内分片。")
             }
             .confirmationDialog("确定删除全部录像？", isPresented: $showDeleteAllConfirm, titleVisibility: .visible) {
                 Button("删除全部录像", role: .destructive) {
@@ -240,7 +240,10 @@ struct RecordingsView: View {
     }
 
     private func exportAllToAlbum() {
-        let candidates = files.filter { ["mp4", "mov", "m4v"].contains($0.pathExtension.lowercased()) }
+        let candidates = files.filter {
+            ["mp4", "mov", "m4v"].contains($0.pathExtension.lowercased()) ||
+            $0.lastPathComponent.lowercased() == "index.m3u8"
+        }
         guard !candidates.isEmpty else {
             exportBanner = "没有可导出的录像文件"
             return
@@ -254,9 +257,14 @@ struct RecordingsView: View {
             for (index, url) in candidates.enumerated() {
                 await MainActor.run { exportProgress = "正在导出 \(index + 1)/\(candidates.count)" }
                 do {
-                    try await PhotoLibraryExporter.saveVideo(url)
-                    // 相册已成功落盘后移除 App 副本，避免双份录像长期占满存储。
-                    RecordingStore.delete(url)
+                    let prepared = try await RecordingStore.prepareForAlbumExport(url)
+                    try await PhotoLibraryExporter.saveVideo(prepared.file)
+                    // 相册已成功落盘后移除 App 副本；恢复录像会同时删除分片目录。
+                    if prepared.cleanup {
+                        RecordingStore.finishAlbumExport(source: url, exportedFile: prepared.file, cleanup: true)
+                    } else {
+                        RecordingStore.delete(url)
+                    }
                     success += 1
                 } catch {
                     failed += 1
@@ -284,9 +292,15 @@ struct RecordingsView: View {
         PhotoLibraryExporter.hapticStart()
         Task {
             do {
-                try await PhotoLibraryExporter.saveVideo(url)
-                // 相册确认写入后删除 App 副本，避免同一个视频占用两份空间。
-                RecordingStore.delete(url)
+                await MainActor.run { exportBanner = url.lastPathComponent == "index.m3u8" ? "正在封装恢复录像…" : nil }
+                let prepared = try await RecordingStore.prepareForAlbumExport(url)
+                try await PhotoLibraryExporter.saveVideo(prepared.file)
+                // 相册确认写入后删除 App 副本；恢复录像会同时删掉巨大的分片目录。
+                if prepared.cleanup {
+                    RecordingStore.finishAlbumExport(source: url, exportedFile: prepared.file, cleanup: true)
+                } else {
+                    RecordingStore.delete(url)
+                }
                 PhotoLibraryExporter.hapticSuccess()
                 await MainActor.run {
                     files = RecordingStore.list()

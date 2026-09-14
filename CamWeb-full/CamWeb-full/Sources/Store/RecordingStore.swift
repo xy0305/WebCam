@@ -100,6 +100,37 @@ enum RecordingStore {
         }
     }
 
+    enum AlbumPreparationError: LocalizedError {
+        case muxFailed
+        var errorDescription: String? { "恢复录像封装 MP4 失败，原始分片已保留" }
+    }
+
+    /// 将列表中的恢复 HLS 录像封装为临时 MP4；普通 MP4/MOV 直接返回原文件。
+    /// 返回的 cleanup 为 true 时，相册保存成功后应删除原恢复目录和临时 MP4。
+    static func prepareForAlbumExport(_ url: URL) async throws -> (file: URL, cleanup: Bool) {
+        guard url.lastPathComponent.lowercased() == "index.m3u8" else {
+            return (url, false)
+        }
+        let folder = url.deletingLastPathComponent()
+        let output = folder.deletingLastPathComponent()
+            .appendingPathComponent(folder.lastPathComponent + ".album-export.mp4")
+        try? FileManager.default.removeItem(at: output)
+        let ok = await Task.detached(priority: .utility) {
+            FFmpegLocalMuxer.mux(input: url, output: output)
+        }.value
+        guard ok, FileManager.default.fileExists(atPath: output.path) else {
+            throw AlbumPreparationError.muxFailed
+        }
+        return (output, true)
+    }
+
+    /// 在恢复录像已保存到相册后删除原始分片和临时 MP4。
+    static func finishAlbumExport(source: URL, exportedFile: URL, cleanup: Bool) {
+        guard cleanup else { return }
+        try? FileManager.default.removeItem(at: source.deletingLastPathComponent())
+        try? FileManager.default.removeItem(at: exportedFile)
+    }
+
     static func sizeText(_ url: URL) -> String {
         let n = byteSize(url)
         if n >= 1_073_741_824 {
