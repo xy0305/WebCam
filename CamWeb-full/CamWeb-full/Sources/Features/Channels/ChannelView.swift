@@ -36,6 +36,7 @@ struct ChannelView: View {
 
 struct ChannelListPage: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var favoriteTags = FavoriteTagsStore.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let gender: String
     let keyword: String
@@ -74,6 +75,42 @@ struct ChannelListPage: View {
                 }
             } else {
                 ScrollView {
+                    if gender.isEmpty && keyword.isEmpty && !favoriteTags.tags.isEmpty {
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack {
+                                Label("收藏标签", systemImage: "star.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.yellow)
+                                Spacer()
+                                Text("点击快速切换")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(favoriteTags.tags, id: \.self) { tag in
+                                        Button { appState.openTag(tag) } label: {
+                                            Text("#\(tag)")
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.primary)
+                                                .padding(.horizontal, 12)
+                                                .padding(.vertical, 8)
+                                                .background(.thinMaterial, in: Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .contextMenu {
+                                            Button(role: .destructive) { favoriteTags.remove(tag) } label: {
+                                                Label("取消收藏标签", systemImage: "star.slash")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
+                        .padding(.top, 14)
+                    }
+
                     LazyVGrid(columns: columns, spacing: 16) {
                         ForEach(filtered) { room in
                             Button {

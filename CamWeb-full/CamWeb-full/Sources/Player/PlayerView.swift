@@ -28,6 +28,7 @@ struct PlayerView: View {
     @ObservedObject private var recs = RecordingManager.shared
     @ObservedObject private var fav = FollowingStore.shared
     @ObservedObject private var special = SpecialFollowStore.shared
+    @ObservedObject private var favoriteTags = FavoriteTagsStore.shared
     @State private var recommended: [Room] = []
 
     private var displayRoom: Room {
@@ -262,9 +263,12 @@ struct PlayerView: View {
                 }
 
                 if !displayRoom.hashtags.isEmpty {
-                    FlowTags(tags: displayRoom.hashtags) { tag in
-                        appState.openTag(tag)
-                    }
+                    FlowTags(
+                        tags: displayRoom.hashtags,
+                        isFavorite: { favoriteTags.contains($0) },
+                        onTap: { appState.openTag($0) },
+                        onToggleFavorite: { favoriteTags.toggle($0) }
+                    )
                 }
 
                 if !recommended.isEmpty {
@@ -904,22 +908,34 @@ private func plainSubject(_ text: String) -> String {
 
 private struct FlowTags: View {
     let tags: [String]
+    var isFavorite: (String) -> Bool
     var onTap: (String) -> Void
+    var onToggleFavorite: (String) -> Void
 
     var body: some View {
         TagFlowLayout(spacing: 8) {
             ForEach(tags, id: \.self) { tag in
-                Button {
-                    onTap(tag)
-                } label: {
-                    Text("#\(tag)")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                HStack(spacing: 0) {
+                    Button { onTap(tag) } label: {
+                        Text("#\(tag)")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.leading, 10)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button { onToggleFavorite(tag) } label: {
+                        Image(systemName: isFavorite(tag) ? "star.fill" : "star")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(isFavorite(tag) ? .yellow : .white.opacity(0.65))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isFavorite(tag) ? "取消收藏标签" : "收藏标签")
                 }
-                .buttonStyle(.plain)
+                .background(Capsule().fill(Color.white.opacity(0.12)))
             }
         }
     }
