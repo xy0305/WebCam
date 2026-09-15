@@ -10,6 +10,8 @@ final class RecordingManager: ObservableObject {
     static let shared = RecordingManager()
 
     @Published private(set) var sessions: [String: RecordingSession] = [:]
+    /// Stripchat 独立会话，不与 Chaturbate 的 RecordingSession/HLSPackager 共用。
+    private var stripchatSessions: [String: StripchatRecordingSession] = [:]
     @Published var banner: String?
     @Published var libraryRevision = 0
 
@@ -26,21 +28,45 @@ final class RecordingManager: ObservableObject {
         RecordingStore.recoverInterruptedRecordings()
     }
 
-    var activeUsernames: [String] { Array(sessions.keys).sorted() }
-    var isAnyRecording: Bool { !sessions.isEmpty }
+    var activeUsernames: [String] { Array(Set(sessions.keys).union(stripchatSessions.keys)).sorted() }
+    var stripchatActiveSessions: [StripchatRecordingSession] { stripchatSessions.values.sorted { $0.username < $1.username } }
+    var isAnyRecording: Bool { !sessions.isEmpty || !stripchatSessions.isEmpty }
 
     func isRecording(_ username: String) -> Bool {
-        sessions[username.lowercased()] != nil
+        let name = username.lowercased()
+        return sessions[name] != nil || stripchatSessions[name] != nil
     }
 
-    func session(for username: String) -> RecordingSession? {
-        sessions[username.lowercased()]
+    func session(for username: String) -> RecordingSession? { sessions[username.lowercased()] }
+
+    /// Stripchat 专用入口：独立请求头、独立下载循环、独立会话字典。
+    func startStripchat(username: String, playlist: URL) {
+        let name = username.lowercased()
+        guard !isRecording(name) else { return }
+        let dir = RecordingStore.directory.appendingPathComponent("\(name)_\(Self.recordingStamp()).part", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let session = StripchatRecordingSession(username: name, playlist: playlist, directory: dir, progress: RecProgress())
+        session.onFinished = { [weak self] name, message in
+            self?.stripchatSessions[name] = nil
+            self?.banner = message
+            self?.libraryRevision += 1
+            self?.refreshIdle()
+        }
+        stripchatSessions[name] = session
+        session.start()
+        refreshIdle(masterURL: playlist)
     }
 
+    private static func recordingStamp() -> String {
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd_HHmmss"; return f.string(from: Date())
+    }
+
+    /// Chaturbate 既有录制链路：保持原 RecHLS + HLSPackager 实现不变。
     func start(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         let name = username.lowercased()
         guard sessions[name] == nil else { return }
         let session = RecordingSession(username: name, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist)
+
         session.onFinished = { [weak self] name, message in
             self?.sessions[name] = nil
             self?.banner = message
@@ -54,7 +80,12 @@ final class RecordingManager: ObservableObject {
     }
 
     func stop(_ username: String) {
-        sessions[username.lowercased()]?.stop(userInitiated: true)
+        let name = username.lowercased()
+        if let stripchat = stripchatSessions[name] {
+            stripchat.stop()
+        } else {
+            sessions[name]?.stop(userInitiated: true)
+        }
     }
 
     func updateBackgroundAudio(url: URL) {

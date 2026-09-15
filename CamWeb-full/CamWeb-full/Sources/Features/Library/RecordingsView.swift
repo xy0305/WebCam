@@ -22,8 +22,8 @@ struct RecordingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                if !liveSessions.isEmpty {
-                    Section("正在录制 \(liveSessions.count) 路") {
+                if !liveSessions.isEmpty || !recs.stripchatActiveSessions.isEmpty {
+                    Section("正在录制 \(liveSessions.count + recs.stripchatActiveSessions.count) 路") {
                         ForEach(liveSessions) { session in
                             LiveRecordingRow(session: session) {
                                 appState.openPlayer(username: session.username)
@@ -33,6 +33,13 @@ struct RecordingsView: View {
                                 } else {
                                     recs.stop(session.username)
                                 }
+                            }
+                        }
+                        ForEach(recs.stripchatActiveSessions) { session in
+                            StripchatLiveRecordingRow(session: session) {
+                                appState.openPlayer(username: session.username)
+                            } onStop: {
+                                recs.stop(session.username)
                             }
                         }
                     }
@@ -351,6 +358,33 @@ private struct LiveRecordingRow: View {
                 .buttonStyle(.borderedProminent)
                 .tint(session.isRunning ? .red : .gray)
                 .disabled(!session.isRunning)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct StripchatLiveRecordingRow: View {
+    @ObservedObject var session: StripchatRecordingSession
+    var onOpen: () -> Void
+    var onStop: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onOpen) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle().fill(.purple.opacity(0.13)).frame(width: 42, height: 42)
+                        Image(systemName: "video.fill").foregroundStyle(.purple)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(session.username).font(.headline).foregroundStyle(.primary)
+                        Text("Stripchat · \(session.phaseText)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            Button("停止", action: onStop).buttonStyle(.borderedProminent).tint(.red)
         }
         .padding(.vertical, 4)
     }

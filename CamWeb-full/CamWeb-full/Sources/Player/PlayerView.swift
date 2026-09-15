@@ -764,12 +764,19 @@ struct PlayerView: View {
 
     private func toggleRecord() {
         guard let stream else { return }
-        recs.toggle(
-            username: username,
-            videoPlaylist: stream.videoPlaylist,
-            audioPlaylist: stream.audioPlaylist,
-            masterURL: stream.masterURL
-        )
+        if recs.isRecording(username) {
+            recs.stop(username)
+        } else if displayRoom.platform == .stripchat {
+            // Stripchat 不经过 Chaturbate HLSPackager：使用专用 HLS 会话和请求头。
+            recs.startStripchat(username: username, playlist: stream.masterURL)
+        } else {
+            recs.start(
+                username: username,
+                videoPlaylist: stream.videoPlaylist,
+                audioPlaylist: stream.audioPlaylist,
+                masterURL: stream.masterURL
+            )
+        }
     }
 
     private func exportCopy() {
