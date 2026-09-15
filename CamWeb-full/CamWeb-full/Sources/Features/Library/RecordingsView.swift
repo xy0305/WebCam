@@ -19,31 +19,35 @@ struct RecordingsView: View {
         recs.sessions.values.sorted { $0.username < $1.username }
     }
 
-    var body: some View {
-        NavigationStack {
-            List {
-                if !liveSessions.isEmpty || !recs.stripchatActiveSessions.isEmpty {
-                    Section("正在录制 \(liveSessions.count + recs.stripchatActiveSessions.count) 路") {
-                        ForEach(liveSessions) { session in
-                            LiveRecordingRow(session: session) {
-                                appState.openPlayer(username: session.username)
-                            } onStop: {
-                                if monitor.entries.contains(where: { $0.username == session.username }) {
-                                    monitor.manualStop(session.username)
-                                } else {
-                                    recs.stop(session.username)
-                                }
-                            }
-                        }
-                        ForEach(recs.stripchatActiveSessions) { session in
-                            StripchatLiveRecordingRow(session: session) {
-                                appState.openPlayer(username: session.username)
-                            } onStop: {
-                                recs.stop(session.username)
-                            }
+    @ViewBuilder
+    private var activeRecordingSection: some View {
+        let stripchatSessions = recs.stripchatActiveSessions
+        if !liveSessions.isEmpty || !stripchatSessions.isEmpty {
+            Section("正在录制 \(liveSessions.count + stripchatSessions.count) 路") {
+                ForEach(liveSessions) { session in
+                    LiveRecordingRow(session: session) {
+                        appState.openPlayer(username: session.username)
+                    } onStop: {
+                        if monitor.entries.contains(where: { $0.username == session.username }) {
+                            monitor.manualStop(session.username)
+                        } else {
+                            recs.stop(session.username)
                         }
                     }
                 }
+                ForEach(stripchatSessions) { session in
+                    StripchatLiveRecordingRow(session: session) {
+                        appState.openPlayer(username: session.username)
+                    } onStop: { recs.stop(session.username) }
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                activeRecordingSection
 
                 Section {
                     if monitor.entries.isEmpty {
