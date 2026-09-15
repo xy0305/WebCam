@@ -259,6 +259,8 @@ final class RecordingSession: ObservableObject, Identifiable {
         let audioPL = audioPlaylist
         let name = username
         let progress = self.progress
+        let context = requestContext
+        let refresh = refreshStream
         workTask = Task.detached(priority: .utility) { [weak self] in
             let result = await HLSPackager.run(
                 username: name,
@@ -266,8 +268,8 @@ final class RecordingSession: ObservableObject, Identifiable {
                 audioPlaylist: audioPL,
                 dir: dir,
                 progress: progress,
-                context: self.requestContext,
-                refresh: self.refreshStream
+                context: context,
+                refresh: refresh
             )
             await MainActor.run {
                 self?.finish(result: result, name: name, dir: dir)
