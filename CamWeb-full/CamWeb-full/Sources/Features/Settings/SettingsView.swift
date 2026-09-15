@@ -8,6 +8,10 @@ struct SettingsView: View {
     @State private var showPasteCookie = false
     @State private var pastedCookie = ""
     @State private var cookieError = false
+    @ObservedObject private var pan115 = Pan115Session.shared
+    @State private var show115Cookie = false
+    @State private var pasted115Cookie = ""
+    @State private var cookie115Error = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +32,18 @@ struct SettingsView: View {
                         Button("断开 Stripchat", role: .destructive) { stripchat.clear() }
                     }
                     Text("公开浏览和播放不需要 Cookie；Cookie 仅用于你的 Stripchat 收藏。不会保存密码，也不会解锁私密或付费内容。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+
+                Section("115 网盘上传") {
+                    LabeledContent("登录状态", value: pan115.hasCookie ? "Cookie 已保存" : "未连接")
+                    TextField("目标文件夹 CID（0 为根目录）", text: $pan115.targetCID)
+                        .keyboardType(.numberPad)
+                    Button("粘贴 115 Cookie") { pasted115Cookie = ""; show115Cookie = true }
+                    if pan115.hasCookie {
+                        Button("断开 115 网盘", role: .destructive) { pan115.clear() }
+                    }
+                    Text("录像会固定上传到此 CID，并保留原始文件名。Cookie 仅保存于本机 Keychain；上传可在录像页查看速度、进度并随时取消。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
@@ -78,6 +94,16 @@ struct SettingsView: View {
             .alert("Cookie 格式无效", isPresented: $cookieError) {
                 Button("好", role: .cancel) {}
             } message: { Text("请输入至少一个 name=value 格式的 Cookie。") }
+            .alert("粘贴 115 Cookie", isPresented: $show115Cookie) {
+                TextField("UID=…; CID=…; SEID=…", text: $pasted115Cookie, axis: .vertical)
+                Button("取消", role: .cancel) {}
+                Button("保存") { cookie115Error = !pan115.save(pasted115Cookie) }
+            } message: {
+                Text("从已登录的 115 网页复制完整 Cookie。至少需包含 UID、CID、SEID；不会保存密码。")
+            }
+            .alert("115 Cookie 格式无效", isPresented: $cookie115Error) {
+                Button("好", role: .cancel) {}
+            } message: { Text("请粘贴含 UID、CID、SEID 的完整 Cookie。") }
         }
     }
 }
