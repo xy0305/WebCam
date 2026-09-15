@@ -45,6 +45,7 @@ final class Pan115Session: ObservableObject {
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: account,
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData: Data(value.utf8)
         ] as CFDictionary, nil)
         hasCookie = status == errSecSuccess

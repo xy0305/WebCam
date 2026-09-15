@@ -10,11 +10,12 @@ static int rng(uint8_t *dest, unsigned size) { return SecRandomCopyBytes(kSecRan
 static void xorBytes(uint8_t *out, const uint8_t *a, const uint8_t *b, size_t n) { for(size_t i=0;i<n;i++) out[i]=a[i]^b[i]; }
 static uint32_t crc32Local(uint32_t c, const uint8_t *p, size_t n) { c=~c; while(n--) { c^=*p++; for(int i=0;i<8;i++) c=(c>>1)^((c&1)?0xEDB88320:0); } return ~c; }
 
-@implementation One15Crypto { uint8_t _key[16]; uint8_t _iv[16]; uint8_t _pub[30]; }
+@implementation One15Crypto { uint8_t _key[16]; uint8_t _iv[16]; uint8_t _pub[30]; NSString *_failure; }
+- (NSString *)lastFailure { return _failure; }
 - (nullable instancetype)initWithError:(NSError **)error {
     if (!(self=[super init])) return nil;
     uECC_set_rng(rng); uint8_t pub[56], priv[28], secret[28];
-    if (!uECC_make_key(pub, priv, uECC_secp224r1()) || !uECC_shared_secret(remoteKey, priv, secret, uECC_secp224r1())) { if(error)*error=[NSError errorWithDomain:@"One15" code:1 userInfo:nil]; return nil; }
+    if (!uECC_make_key(pub, priv, uECC_secp224r1()) || !uECC_shared_secret(remoteKey, priv, secret, uECC_secp224r1())) { if(error)*error=[NSError errorWithDomain:@"One15" code:1 userInfo:@{NSLocalizedDescriptionKey:@"115 P-224 密钥协商失败"}]; return nil; }
     memcpy(_key,secret,16); memcpy(_iv,secret+12,16); _pub[0]=29; _pub[1]=(pub[55]&1)?3:2; memcpy(_pub+2,pub,28); return self;
 }
 - (NSString *)tokenForMilliseconds:(int64_t)ms error:(NSError **)error {
@@ -29,6 +30,6 @@ static uint32_t crc32Local(uint32_t c, const uint8_t *p, size_t n) { c=~c; while
     NSMutableData *out=[NSMutableData dataWithLength:n]; uint8_t prev[16];memcpy(prev,_iv,16); for(size_t i=0;i<n;i+=16){uint8_t block[16];xorBytes(block,(uint8_t*)pad.bytes+i,prev,16);size_t moved=0;CCCrypt(kCCEncrypt,kCCAlgorithmAES128,kCCOptionECBMode,_key,16,NULL,block,16,(uint8_t*)out.mutableBytes+i,16,&moved);memcpy(prev,(uint8_t*)out.bytes+i,16);} return out;
 }
 - (NSData *)decryptResponse:(NSData *)cipher error:(NSError **)error {
-    size_t n=cipher.length-cipher.length%16;if(!n)return nil;NSMutableData *raw=[NSMutableData dataWithLength:n];size_t moved=0;CCCrypt(kCCDecrypt,kCCAlgorithmAES128,0,_key,16,_iv,cipher.bytes,n,raw.mutableBytes,n,&moved);if(moved<2)return nil;uint8_t *p=raw.mutableBytes;int len=p[0]|p[1]<<8;if(len<1||len+2>moved)return nil;int cap=65536;NSMutableData *out=[NSMutableData dataWithLength:cap];int got=LZ4_decompress_safe((char*)p+2,out.mutableBytes,len,cap);if(got<0)return nil;out.length=got;return out;
+    size_t n=cipher.length-cipher.length%16;if(!n){_failure=@"115 返回了空的加密响应";return nil;}NSMutableData *raw=[NSMutableData dataWithLength:n];size_t moved=0;CCCryptorStatus cs=CCCrypt(kCCDecrypt,kCCAlgorithmAES128,0,_key,16,_iv,cipher.bytes,n,raw.mutableBytes,n,&moved);if(cs!=kCCSuccess){_failure=[NSString stringWithFormat:@"AES 解密失败：%d",cs];return nil;}if(moved<2){_failure=@"115 加密响应长度不足";return nil;}uint8_t *p=raw.mutableBytes;int len=p[0]|p[1]<<8;if(len<1||len+2>moved){_failure=@"115 压缩数据长度无效";return nil;}int cap=1024*1024;NSMutableData *out=[NSMutableData dataWithLength:cap];int got=LZ4_decompress_safe((char*)p+2,out.mutableBytes,len,cap);if(got<0){_failure=@"115 LZ4 响应解压失败";return nil;}out.length=got;return out;
 }
 @end

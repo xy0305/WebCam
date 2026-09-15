@@ -6,5 +6,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)tokenForMilliseconds:(int64_t)milliseconds error:(NSError **)error;
 - (nullable NSData *)encryptRequest:(NSData *)plainText error:(NSError **)error;
 - (nullable NSData *)decryptResponse:(NSData *)cipherText error:(NSError **)error;
+- (nullable NSString *)lastFailure;
 @end
 NS_ASSUME_NONNULL_END
