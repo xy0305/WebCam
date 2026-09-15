@@ -4,7 +4,18 @@ import CommonCrypto
 @MainActor
 final class Pan115UploadManager: NSObject, ObservableObject, URLSessionTaskDelegate, URLSessionDataDelegate {
     static let shared = Pan115UploadManager()
-    struct Item: Identifiable { let id: UUID; let file: URL; var name: String; var total: Int64; var sent: Int64 = 0; var state = "准备中"; var error: String? }
+    struct Item: Identifiable {
+        let id: UUID
+        let file: URL
+        var name: String
+        var total: Int64
+        var sent: Int64 = 0
+        var state = "准备中"
+        var error: String?
+        var speed: Double = 0
+        var lastSampleBytes: Int64 = 0
+        var lastSampleDate = Date()
+    }
     @Published private(set) var items: [Item] = []
     private lazy var session: URLSession = { let c = URLSessionConfiguration.background(withIdentifier: "com.xy0305.CamWeb.115upload"); c.isDiscretionary = false; c.sessionSendsLaunchEvents = true; return URLSession(configuration: c, delegate: self, delegateQueue: nil) }()
     private var taskMap: [Int: UUID] = [:]
@@ -21,6 +32,12 @@ final class Pan115UploadManager: NSObject, ObservableObject, URLSessionTaskDeleg
         session.getAllTasks { tasks in tasks.filter { taskIDs.contains($0.taskIdentifier) }.forEach { $0.cancel() } }
         items[i].state = "已取消"
     }
+    func retry(_ id: UUID) {
+        guard let item = items.first(where: { $0.id == id }), item.state == "上传失败" else { return }
+        items.removeAll { $0.id == id }
+        enqueue(item.file)
+    }
+    func removeFinished(_ id: UUID) { items.removeAll { $0.id == id } }
     private func set(_ id: UUID, _ state: String, _ error: String? = nil) { if let i=items.firstIndex(where:{$0.id==id}) { items[i].state=state; items[i].error=error } }
 
     private func prepare(id: UUID, cookie: String, cid: String) async {
@@ -40,7 +57,19 @@ final class Pan115UploadManager: NSObject, ObservableObject, URLSessionTaskDeleg
             let task = session.uploadTask(with: request, fromFile: item.file); taskMap[task.taskIdentifier]=id; task.resume()
         } catch { set(id,"上传失败", error.localizedDescription) }
     }
-    nonisolated func urlSession(_ s: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) { Task { @MainActor in if let id=self.taskMap[task.taskIdentifier],let i=self.items.firstIndex(where:{$0.id==id}) { self.items[i].sent=totalBytesSent; self.items[i].total=totalBytesExpectedToSend } } }
+    nonisolated func urlSession(_ s: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        Task { @MainActor in
+            guard let id = self.taskMap[task.taskIdentifier], let i = self.items.firstIndex(where: { $0.id == id }) else { return }
+            let now = Date(), elapsed = now.timeIntervalSince(self.items[i].lastSampleDate)
+            if elapsed >= 0.35 {
+                self.items[i].speed = Double(totalBytesSent - self.items[i].lastSampleBytes) / elapsed
+                self.items[i].lastSampleBytes = totalBytesSent
+                self.items[i].lastSampleDate = now
+            }
+            self.items[i].sent = totalBytesSent
+            self.items[i].total = totalBytesExpectedToSend
+        }
+    }
     nonisolated func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) { Task { @MainActor in guard let id=self.taskMap.removeValue(forKey:task.taskIdentifier) else{return}; self.set(id,error == nil ? "上传完成" : "上传失败",error?.localizedDescription) } }
 }
 

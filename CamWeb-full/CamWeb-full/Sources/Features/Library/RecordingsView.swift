@@ -23,6 +23,7 @@ struct RecordingsView: View {
     @State private var showFileImporter = false
     @State private var showPhotoPicker = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
+    @ObservedObject private var uploads = Pan115UploadManager.shared
 
     private var liveSessions: [RecordingSession] {
         recs.sessions.values.sorted { $0.username < $1.username }
@@ -53,6 +54,7 @@ struct RecordingsView: View {
 
     private var recordingsContent: some View {
         List {
+            uploadSection
             activeRecordingSection
             autoRecordSection
             recordingsSection
@@ -175,6 +177,19 @@ struct RecordingsView: View {
             .onChange(of: recs.activeUsernames.count) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }
+    }
+
+    @ViewBuilder
+    private var uploadSection: some View {
+        if !uploads.items.isEmpty {
+            Section("正在上传 \(uploads.items.count) 项") {
+                ForEach(uploads.items) { item in
+                    Upload115Row(item: item, onCancel: { uploads.cancel(item.id) }, onRetry: { uploads.retry(item.id) }, onRemove: { uploads.removeFinished(item.id) })
+                }
+            } footer: {
+                Text("上传到设置中指定的 115 CID。锁屏时由 iOS 后台传输继续执行；任务可能受系统网络与电量策略延后。")
+            }
+        }
     }
 
     @ViewBuilder
@@ -399,6 +414,38 @@ struct RecordingsView: View {
             }
         }
     }
+}
+
+private struct Upload115Row: View {
+    let item: Pan115UploadManager.Item
+    var onCancel: () -> Void
+    var onRetry: () -> Void
+    var onRemove: () -> Void
+
+    private var progress: Double { item.total > 0 ? min(1, Double(item.sent) / Double(item.total)) : 0 }
+    private var finished: Bool { ["上传完成", "秒传完成", "上传失败", "已取消"].contains(item.state) }
+    private var detail: String {
+        if item.state == "正在上传" { return "\(bytes(item.sent)) / \(bytes(item.total)) · \(speed(item.speed))" }
+        if let error = item.error, !error.isEmpty { return "\(item.state) · \(error)" }
+        return item.state
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Image(systemName: item.state == "上传失败" ? "exclamationmark.triangle.fill" : "arrow.up.circle.fill")
+                    .foregroundStyle(item.state == "上传失败" ? .red : .orange).font(.title3)
+                Text(item.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Spacer()
+                if item.state == "上传失败" { Button("重试", action: onRetry).buttonStyle(.bordered) }
+                else if finished { Button("移除", action: onRemove).buttonStyle(.bordered) }
+                else { Button("取消", role: .destructive, action: onCancel).buttonStyle(.bordered) }
+            }
+            ProgressView(value: progress).tint(item.state == "上传失败" ? .red : .orange)
+            Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(2)
+        }.padding(.vertical, 3)
+    }
+    private func bytes(_ n: Int64) -> String { ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }
+    private func speed(_ n: Double) -> String { n > 0 ? ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .file) + "/s" : "计算速度…" }
 }
 
 private struct RecordingFileRow: View {
