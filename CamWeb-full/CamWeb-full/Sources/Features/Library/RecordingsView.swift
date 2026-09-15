@@ -259,12 +259,13 @@ struct RecordingsView: View {
             let staging = RecordingStore.directory.appendingPathComponent("UploadStaging", isDirectory: true)
             try? fm.createDirectory(at: staging, withIntermediateDirectories: true)
             var prepared = 0
+            var added: [URL] = []
             for item in items {
                 // PHPicker 选取项不一定能映射为本地 PHAsset，因此优先请求文件 URL；
                 // 系统会把 iCloud 原件流式下载到临时位置，不把整段视频读入内存。
                 if let received = try? await item.loadTransferable(type: PickedMediaFile.self) {
                     let destination = uniqueStagingURL(named: received.filename, in: staging)
-                    do { try fm.copyItem(at: received.url, to: destination); prepared += 1 }
+                    do { try fm.copyItem(at: received.url, to: destination); prepared += 1; added.append(destination) }
                     catch { }
                     continue
                 }
@@ -274,11 +275,11 @@ struct RecordingsView: View {
                 guard let asset = result.firstObject,
                       let resource = PHAssetResource.assetResources(for: asset).first else { continue }
                 let destination = uniqueStagingURL(named: resource.originalFilename, in: staging)
-                if await copyPhotoResource(resource, to: destination) { prepared += 1 }
+                if await copyPhotoResource(resource, to: destination) { prepared += 1; added.append(destination) }
             }
             await MainActor.run {
                 if prepared > 0 {
-                    stagingFiles().forEach { Pan115UploadManager.shared.enqueue($0) }
+                    added.forEach { Pan115UploadManager.shared.enqueue($0) }
                     exportBanner = "已加入 \(prepared) 个 115 上传任务"
                 } else {
                     exportBanner = "无法读取所选相册文件；请确认已允许访问该项目，或改用“从文件选择并上传”。"
