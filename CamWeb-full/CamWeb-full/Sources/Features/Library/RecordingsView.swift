@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import Photos
+import CoreTransferable
 
 struct RecordingsView: View {
     @EnvironmentObject var appState: AppState
@@ -241,7 +242,15 @@ struct RecordingsView: View {
             try? fm.createDirectory(at: staging, withIntermediateDirectories: true)
             var prepared = 0
             for item in items {
-                // 不使用 loadTransferable(Data.self)：大视频会被一次性读入内存。
+                // PHPicker 选取项不一定能映射为本地 PHAsset，因此优先请求文件 URL；
+                // 系统会把 iCloud 原件流式下载到临时位置，不把整段视频读入内存。
+                if let received = try? await item.loadTransferable(type: PickedMediaFile.self) {
+                    let destination = uniqueStagingURL(named: received.filename, in: staging)
+                    do { try fm.copyItem(at: received.url, to: destination); prepared += 1 }
+                    catch { }
+                    continue
+                }
+                // 对可取得 PHAsset 的项目使用资源管理器直接落盘。
                 guard let id = item.itemIdentifier else { continue }
                 let result = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
                 guard let asset = result.firstObject,
@@ -250,7 +259,7 @@ struct RecordingsView: View {
                 if await copyPhotoResource(resource, to: destination) { prepared += 1 }
             }
             await MainActor.run {
-                exportBanner = prepared > 0 ? "已准备 \(prepared) 个相册文件，正在加入 115 后台上传队列" : "无法读取所选相册文件"
+                exportBanner = prepared > 0 ? "已准备 \(prepared) 个相册文件，正在加入 115 后台上传队列" : "无法读取所选相册文件；请确认已允许访问该项目，或改用“从文件选择并上传”。"
             }
         }
     }
