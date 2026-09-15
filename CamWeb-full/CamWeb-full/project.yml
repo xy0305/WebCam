@@ -34,6 +34,7 @@ targets:
       - path: Resources
         excludes:
           - "Info.plist"
+      - path: Vendor
     dependencies:
       - package: KSPlayer
         product: KSPlayer
@@ -53,3 +54,5 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
         IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/CamWeb-Bridging-Header.h
+        OTHER_CFLAGS: "-DuECC_SUPPORTS_secp160r1=0 -DuECC_SUPPORTS_secp192r1=0 -DuECC_SUPPORTS_secp224r1=1 -DuECC_SUPPORTS_secp256r1=0 -DuECC_SUPPORTS_secp256k1=0"
