@@ -231,7 +231,7 @@ struct RecordingsView: View {
             do { try fm.copyItem(at: source, to: destination); prepared += 1 }
             catch { exportBanner = "复制文件失败：\(source.lastPathComponent)" }
         }
-        if prepared > 0 { exportBanner = "已准备 \(prepared) 个文件，正在加入 115 后台上传队列" }
+        if prepared > 0 { exportBanner = "已暂存 \(prepared) 个文件；115 实际上传功能尚未完成，文件不会上传" }
     }
 
     private func importPhotos(_ items: [PhotosPickerItem]) {
@@ -259,7 +259,7 @@ struct RecordingsView: View {
                 if await copyPhotoResource(resource, to: destination) { prepared += 1 }
             }
             await MainActor.run {
-                exportBanner = prepared > 0 ? "已准备 \(prepared) 个相册文件，正在加入 115 后台上传队列" : "无法读取所选相册文件；请确认已允许访问该项目，或改用“从文件选择并上传”。"
+                exportBanner = prepared > 0 ? "已暂存 \(prepared) 个相册文件；115 实际上传功能尚未完成，文件不会上传" : "无法读取所选相册文件；请确认已允许访问该项目，或改用“从文件选择并上传”。"
             }
         }
     }
