@@ -358,10 +358,9 @@ private struct LiveRecordingRow: View {
             }
             .buttonStyle(.plain)
 
-            Button(session.isRunning ? "停止" : "封装中", action: onStop)
+            Button(session.isRunning ? "停止" : "保留并结束", action: onStop)
                 .buttonStyle(.borderedProminent)
-                .tint(session.isRunning ? .red : .gray)
-                .disabled(!session.isRunning)
+                .tint(.red)
         }
         .padding(.vertical, 4)
     }

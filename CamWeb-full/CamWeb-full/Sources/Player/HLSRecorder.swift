@@ -246,6 +246,8 @@ final class RecordingSession: ObservableObject, Identifiable {
 
     private var timer: Timer?
     private var workTask: Task<Void, Never>?
+    private var currentDirectory: URL?
+    private var forceFinished = false
     private let progress = RecProgress()
 
     init(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
@@ -260,6 +262,9 @@ final class RecordingSession: ObservableObject, Identifiable {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         isRunning = true
+        forceFinished = false
+        currentDirectory = dir
+        phaseText = "录制中"
         startTimer()
 
         let videoPL = videoPlaylist
@@ -280,12 +285,29 @@ final class RecordingSession: ObservableObject, Identifiable {
         }
     }
 
+    /// 第一次调用优雅停止；封装/排空期间再次调用则立即结束并保留当前分片。
     func stop(userInitiated: Bool) {
-        guard isRunning else { return }
-        isRunning = false
-        // 只请求优雅停止：让下载循环排空已下载分片、写入 ENDLIST 并进入封装。
-        // 这里不能立即 cancel，否则 App 切后台时会丢掉尚未写入 index 的录像。
-        progress.requestStop()
+        if isRunning {
+            isRunning = false
+            phaseText = "正在结束录制"
+            progress.requestStop()
+            return
+        }
+        guard !forceFinished else { return }
+        forceFinished = true
+        workTask?.cancel()
+        stopTimer()
+        if currentDirectory != nil {
+            Task { @MainActor [weak self] in
+                // 等网络任务响应 cancellation 后再移动目录，避免与写分片竞争。
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                guard let self, self.forceFinished else { return }
+                RecordingStore.recoverInterruptedRecordings()
+                self.onFinished?(self.username, "\(self.username) 已结束并保留恢复录像")
+            }
+        } else {
+            onFinished?(username, "\(username) 已结束录制")
+        }
     }
 
     private func finish(result: HLSPackager.Result, name: String, dir: URL) {
@@ -324,6 +346,7 @@ final class RecordingSession: ObservableObject, Identifiable {
     }
 
     private func bannerMuxing(_ name: String) {
+        guard !forceFinished else { return }
         phaseText = "正在封装 MP4"
         RecordingManager.shared.banner = "\(name) 已停止，正在无损封装 MP4…"
     }
