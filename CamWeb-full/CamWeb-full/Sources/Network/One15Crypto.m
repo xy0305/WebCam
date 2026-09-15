@@ -26,7 +26,7 @@ static uint32_t crc32Local(uint32_t c, const uint8_t *p, size_t n) { c=~c; while
 }
 - (NSData *)encryptRequest:(NSData *)plain error:(NSError **)error {
     size_t n=((plain.length/16)+1)*16; NSMutableData *pad=[NSMutableData dataWithLength:n]; memcpy(pad.mutableBytes,plain.bytes,plain.length); memset((uint8_t*)pad.mutableBytes+plain.length,n-plain.length,n-plain.length);
-    NSMutableData *out=[NSMutableData dataWithLength:n]; uint8_t prev[16];memcpy(prev,_iv,16); for(size_t i=0;i<n;i+=16){uint8_t block[16];xorBytes(block,(uint8_t*)pad.bytes+i,prev,16);size_t moved=0;CCCrypt(kCCEncrypt,kCCAlgorithmAES128,kCCOptionECBMode,_key,16,block,16,(uint8_t*)out.mutableBytes+i,16,&moved);memcpy(prev,(uint8_t*)out.bytes+i,16);} return out;
+    NSMutableData *out=[NSMutableData dataWithLength:n]; uint8_t prev[16];memcpy(prev,_iv,16); for(size_t i=0;i<n;i+=16){uint8_t block[16];xorBytes(block,(uint8_t*)pad.bytes+i,prev,16);size_t moved=0;CCCrypt(kCCEncrypt,kCCAlgorithmAES128,kCCOptionECBMode,_key,16,NULL,block,16,(uint8_t*)out.mutableBytes+i,16,&moved);memcpy(prev,(uint8_t*)out.bytes+i,16);} return out;
 }
 - (NSData *)decryptResponse:(NSData *)cipher error:(NSError **)error {
     size_t n=cipher.length-cipher.length%16;if(!n)return nil;NSMutableData *raw=[NSMutableData dataWithLength:n];size_t moved=0;CCCrypt(kCCDecrypt,kCCAlgorithmAES128,0,_key,16,_iv,cipher.bytes,n,raw.mutableBytes,n,&moved);if(moved<2)return nil;uint8_t *p=raw.mutableBytes;int len=p[0]|p[1]<<8;if(len<1||len+2>moved)return nil;int cap=65536;NSMutableData *out=[NSMutableData dataWithLength:cap];int got=LZ4_decompress_safe((char*)p+2,out.mutableBytes,len,cap);if(got<0)return nil;out.length=got;return out;
