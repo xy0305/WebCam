@@ -1,4 +1,7 @@
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
+import Photos
 
 struct RecordingsView: View {
     @EnvironmentObject var appState: AppState
@@ -16,6 +19,9 @@ struct RecordingsView: View {
     @State private var exportProgress = ""
     @ObservedObject private var pan115 = Pan115Session.shared
     @State private var show115Unavailable = false
+    @State private var showFileImporter = false
+    @State private var showPhotoPicker = false
+    @State private var selectedPhotos: [PhotosPickerItem] = []
 
     private var liveSessions: [RecordingSession] {
         recs.sessions.values.sorted { $0.username < $1.username }
@@ -175,10 +181,36 @@ struct RecordingsView: View {
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
+                    Menu {
+                        Button { showPhotoPicker = true } label: {
+                            Label("从相册选择并上传", systemImage: "photo.on.rectangle")
+                        }
+                        Button { showFileImporter = true } label: {
+                            Label("从文件选择并上传", systemImage: "folder")
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.circle")
+                    }
                     Button { newUsername = ""; showAdd = true } label: {
                         Image(systemName: "plus")
                     }
                 }
+            }
+            .fileImporter(
+                isPresented: $showFileImporter,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: true
+            ) { result in
+                switch result {
+                case .success(let urls): enqueueImportedFiles(urls)
+                case .failure(let error): exportBanner = "读取文件失败：\(error.localizedDescription)"
+                }
+            }
+            .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotos, maxSelectionCount: 50, matching: .any(of: [.images, .videos]))
+            .onChange(of: selectedPhotos) { _, items in
+                guard !items.isEmpty else { return }
+                importPhotos(items)
+                selectedPhotos = []
             }
             .confirmationDialog("确定中断全部录制？", isPresented: $showStopAllConfirm, titleVisibility: .visible) {
                 Button("全部中断并关闭自动录制", role: .destructive) {
@@ -237,6 +269,54 @@ struct RecordingsView: View {
             .onChange(of: recs.activeUsernames.count) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }
+        }
+    }
+
+    private func enqueueImportedFiles(_ urls: [URL]) {
+        guard pan115.hasCookie, pan115.validCID != nil else { show115Unavailable = true; return }
+        let fm = FileManager.default
+        let staging = RecordingStore.directory.appendingPathComponent("UploadStaging", isDirectory: true)
+        try? fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        var prepared = 0
+        for source in urls {
+            let accessed = source.startAccessingSecurityScopedResource()
+            defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+            var destination = staging.appendingPathComponent(source.lastPathComponent)
+            var suffix = 2
+            while fm.fileExists(atPath: destination.path) {
+                let base = source.deletingPathExtension().lastPathComponent
+                destination = staging.appendingPathComponent("\(base)_\(suffix).\(source.pathExtension)")
+                suffix += 1
+            }
+            do { try fm.copyItem(at: source, to: destination); prepared += 1 }
+            catch { exportBanner = "复制文件失败：\(source.lastPathComponent)" }
+        }
+        if prepared > 0 { exportBanner = "已准备 \(prepared) 个文件，正在加入 115 后台上传队列" }
+    }
+
+    private func importPhotos(_ items: [PhotosPickerItem]) {
+        guard pan115.hasCookie, pan115.validCID != nil else { show115Unavailable = true; return }
+        Task {
+            let fm = FileManager.default
+            let staging = RecordingStore.directory.appendingPathComponent("UploadStaging", isDirectory: true)
+            try? fm.createDirectory(at: staging, withIntermediateDirectories: true)
+            var prepared = 0
+            for item in items {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+                    let type = item.supportedContentTypes.first
+                let ext = type?.preferredFilenameExtension ?? "bin"
+                let originalName: String? = {
+                    guard let id = item.itemIdentifier else { return nil }
+                    let result = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
+                    guard let asset = result.firstObject else { return nil }
+                    return PHAssetResource.assetResources(for: asset).first?.originalFilename
+                }()
+                let name = originalName ?? "相册文件_\(Int(Date().timeIntervalSince1970))_\(prepared + 1).\(ext)"
+                do { try data.write(to: staging.appendingPathComponent(name), options: .atomic); prepared += 1 } catch {}
+            }
+            await MainActor.run {
+                exportBanner = prepared > 0 ? "已准备 \(prepared) 个相册文件，正在加入 115 后台上传队列" : "无法读取所选相册文件"
+            }
         }
     }
 
