@@ -43,7 +43,7 @@ struct SettingsView: View {
                     if pan115.hasCookie {
                         Button("断开 115 网盘", role: .destructive) { pan115.clear() }
                     }
-                    Text("录像会固定上传到此 CID，并保留原始文件名。Cookie 仅保存于本机 Keychain；上传可在录像页查看速度、进度并随时取消。")
+                    Text("录像会固定上传到此 CID，并保留原始文件名。Cookie 仅保存于本机 Keychain；上传会使用 iOS 后台 URLSession，切到后台或锁屏后仍会继续，系统可能因网络/电量策略延后任务。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
