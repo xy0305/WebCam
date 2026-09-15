@@ -182,10 +182,12 @@ struct RecordingsView: View {
     @ViewBuilder
     private var uploadSection: some View {
         if !uploads.items.isEmpty {
-            Section("正在上传 \(uploads.items.count) 项") {
+            Section {
                 ForEach(uploads.items) { item in
                     Upload115Row(item: item, onCancel: { uploads.cancel(item.id) }, onRetry: { uploads.retry(item.id) }, onRemove: { uploads.removeFinished(item.id) })
                 }
+            } header: {
+                Text("正在上传 \(uploads.items.count) 项")
             } footer: {
                 Text("上传到设置中指定的 115 CID。锁屏时由 iOS 后台传输继续执行；任务可能受系统网络与电量策略延后。")
             }
