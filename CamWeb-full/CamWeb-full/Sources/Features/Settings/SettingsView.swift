@@ -12,6 +12,9 @@ struct SettingsView: View {
     @State private var show115Cookie = false
     @State private var pasted115Cookie = ""
     @State private var cookie115Error = false
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable { case targetCID }
 
     var body: some View {
         NavigationStack {
@@ -37,8 +40,16 @@ struct SettingsView: View {
 
                 Section("115 网盘上传") {
                     LabeledContent("登录状态", value: pan115.hasCookie ? "Cookie 已保存" : "未连接")
-                    TextField("目标文件夹 CID（0 为根目录）", text: $pan115.targetCID)
-                        .keyboardType(.numberPad)
+                    HStack {
+                        TextField("目标文件夹 CID（0 为根目录）", text: $pan115.targetCID)
+                            .keyboardType(.numberPad)
+                            .focused($focusedField, equals: .targetCID)
+                            .onSubmit { focusedField = nil }
+                        if focusedField == .targetCID {
+                            Button("完成") { focusedField = nil }
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
                     Button("粘贴 115 Cookie") { pasted115Cookie = ""; show115Cookie = true }
                     if pan115.hasCookie {
                         Button("断开 115 网盘", role: .destructive) { pan115.clear() }
@@ -83,6 +94,12 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { focusedField = nil }
+                }
+            }
             .sheet(isPresented: $showStripchatLogin) { StripchatLoginView() }
             .alert("粘贴 Stripchat Cookie", isPresented: $showPasteCookie) {
                 TextField("name=value; name2=value2", text: $pastedCookie, axis: .vertical)

@@ -14,6 +14,8 @@ struct RecordingsView: View {
     @State private var isExportingAll = false
     @State private var isExportingOne = false
     @State private var exportProgress = ""
+    @ObservedObject private var pan115 = Pan115Session.shared
+    @State private var show115Unavailable = false
 
     private var liveSessions: [RecordingSession] {
         recs.sessions.values.sorted { $0.username < $1.username }
@@ -120,11 +122,17 @@ struct RecordingsView: View {
                                 } label: { Label("删除", systemImage: "trash") }
                             }
                             .swipeActions(edge: .leading) {
+                                Button { start115Upload(url) } label: {
+                                    Label("115", systemImage: "arrow.up.circle")
+                                }.tint(.orange)
                                 Button { exportToAlbum(url) } label: {
                                     Label("相册", systemImage: "photo.on.rectangle.angled")
                                 }.tint(.blue)
                             }
                             .contextMenu {
+                                Button { start115Upload(url) } label: {
+                                    Label("上传到 115 网盘", systemImage: "arrow.up.circle")
+                                }
                                 Button { exportToAlbum(url) } label: {
                                     Label("导出到相册", systemImage: "square.and.arrow.down")
                                 }
@@ -215,6 +223,11 @@ struct RecordingsView: View {
                     .shadow(radius: 12)
                 }
             }
+            .alert("请先配置 115 网盘", isPresented: $show115Unavailable) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text("请在“设置 → 115 网盘上传”中粘贴 Cookie 并填写有效的目标 CID。")
+            }
             .alert("导出", isPresented: Binding(
                 get: { exportBanner != nil }, set: { if !$0 { exportBanner = nil } }
             )) {
@@ -225,6 +238,15 @@ struct RecordingsView: View {
             .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }
         }
+    }
+
+    private func start115Upload(_ url: URL) {
+        guard pan115.hasCookie, pan115.validCID != nil else {
+            show115Unavailable = true
+            return
+        }
+        // 具体的分片后台上传队列会在 Pan115UploadManager 中执行；此入口固定使用设置里的 CID。
+        exportBanner = "已加入 115 上传队列：\(RecordingStore.displayName(url))"
     }
 
     private func deleteAllRecordings() {
