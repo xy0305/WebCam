@@ -66,7 +66,7 @@ enum StreamSource {
                     )
                 }
                 return ResolvedStream(
-                    username: username, hlsURL: master, masterURL: master,
+                    username: username, requestContext: .chaturbate, hlsURL: master, masterURL: master,
                     videoPlaylist: master, audioPlaylist: nil, status: "public"
                 )
             } catch {

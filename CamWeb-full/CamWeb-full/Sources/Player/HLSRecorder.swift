@@ -266,8 +266,8 @@ final class RecordingSession: ObservableObject, Identifiable {
                 audioPlaylist: audioPL,
                 dir: dir,
                 progress: progress,
-                context: requestContext,
-                refresh: refreshStream
+                context: self.requestContext,
+                refresh: self.refreshStream
             )
             await MainActor.run {
                 self?.finish(result: result, name: name, dir: dir)
@@ -628,7 +628,12 @@ enum HLSPackager {
                     let dueRefresh = Date().timeIntervalSince(lastRefresh) > 480
                     if video.needsReconnect || (audio?.needsReconnect ?? false) || progress.stalled || dueRefresh {
                         do {
-                            let fresh = try await (refresh?() ?? StreamSource.resolve(username: username))
+                            let fresh: ResolvedStream
+                            if let refresh {
+                                fresh = try await refresh()
+                            } else {
+                                fresh = try await StreamSource.resolve(username: username)
+                            }
                             video.replacePlaylist(fresh.videoPlaylist)
                             if let audio, let freshAudio = fresh.audioPlaylist {
                                 audio.replacePlaylist(freshAudio)
