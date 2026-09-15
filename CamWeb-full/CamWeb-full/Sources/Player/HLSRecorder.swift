@@ -10,8 +10,6 @@ final class RecordingManager: ObservableObject {
     static let shared = RecordingManager()
 
     @Published private(set) var sessions: [String: RecordingSession] = [:]
-    /// Stripchat 独立会话，不与 Chaturbate 的 RecordingSession/HLSPackager 共用。
-    private var stripchatSessions: [String: StripchatRecordingSession] = [:]
     @Published var banner: String?
     @Published var libraryRevision = 0
 
@@ -28,37 +26,28 @@ final class RecordingManager: ObservableObject {
         RecordingStore.recoverInterruptedRecordings()
     }
 
-    var activeUsernames: [String] { Array(Set(sessions.keys).union(stripchatSessions.keys)).sorted() }
-    var stripchatActiveSessions: [StripchatRecordingSession] { stripchatSessions.values.sorted { $0.username < $1.username } }
-    var isAnyRecording: Bool { !sessions.isEmpty || !stripchatSessions.isEmpty }
+    var activeUsernames: [String] { Array(sessions.keys).sorted() }
+    var isAnyRecording: Bool { !sessions.isEmpty }
 
-    func isRecording(_ username: String) -> Bool {
-        let name = username.lowercased()
-        return sessions[name] != nil || stripchatSessions[name] != nil
-    }
-
+    func isRecording(_ username: String) -> Bool { sessions[username.lowercased()] != nil }
     func session(for username: String) -> RecordingSession? { sessions[username.lowercased()] }
 
-    /// Stripchat 专用入口：独立请求头、独立下载循环、独立会话字典。
-    func startStripchat(username: String, playlist: URL) {
-        let name = username.lowercased()
-        guard !isRecording(name) else { return }
-        let dir = RecordingStore.directory.appendingPathComponent("\(name)_\(Self.recordingStamp()).part", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let session = StripchatRecordingSession(username: name, playlist: playlist, directory: dir, progress: RecProgress())
+    /// Stripchat 独立网络规则：媒体 playlist + Stripchat 请求头 + Stripchat 重连解析；
+    /// 本地 HLS 存档、初始化段与 MP4 封装复用已验证的通用打包器。
+    func startStripchat(room: Room, stream: ResolvedStream) {
+        let name = room.username.lowercased()
+        guard sessions[name] == nil else { return }
+        let context = stream.requestContext
+        let session = RecordingSession(username: name, videoPlaylist: stream.videoPlaylist,
+                                       audioPlaylist: stream.audioPlaylist, context: context,
+                                       refresh: { try await StripchatStreamSource.resolve(room: room) })
         session.onFinished = { [weak self] name, message in
-            self?.stripchatSessions[name] = nil
-            self?.banner = message
-            self?.libraryRevision += 1
-            self?.refreshIdle()
+            self?.sessions[name] = nil; self?.banner = message
+            self?.libraryRevision += 1; self?.refreshIdle()
         }
-        stripchatSessions[name] = session
+        sessions[name] = session
         session.start()
-        refreshIdle(masterURL: playlist)
-    }
-
-    private static func recordingStamp() -> String {
-        let f = DateFormatter(); f.dateFormat = "yyyyMMdd_HHmmss"; return f.string(from: Date())
+        refreshIdle(masterURL: stream.audioPlaylist ?? stream.masterURL)
     }
 
     /// Chaturbate 既有录制链路：保持原 RecHLS + HLSPackager 实现不变。
@@ -80,12 +69,7 @@ final class RecordingManager: ObservableObject {
     }
 
     func stop(_ username: String) {
-        let name = username.lowercased()
-        if let stripchat = stripchatSessions[name] {
-            stripchat.stop()
-        } else {
-            sessions[name]?.stop(userInitiated: true)
-        }
+        sessions[username.lowercased()]?.stop(userInitiated: true)
     }
 
     func updateBackgroundAudio(url: URL) {
@@ -236,6 +220,8 @@ final class RecordingSession: ObservableObject, Identifiable {
     let username: String
     let videoPlaylist: URL
     let audioPlaylist: URL?
+    let requestContext: HLSRequestContext
+    let refreshStream: (@Sendable () async throws -> ResolvedStream)?
 
     @Published var elapsedText = "00:00"
     @Published var bytesText = "0 MB"
@@ -250,10 +236,12 @@ final class RecordingSession: ObservableObject, Identifiable {
     private var forceFinished = false
     private let progress = RecProgress()
 
-    init(username: String, videoPlaylist: URL, audioPlaylist: URL?) {
+    init(username: String, videoPlaylist: URL, audioPlaylist: URL?, context: HLSRequestContext = .chaturbate, refresh: (@Sendable () async throws -> ResolvedStream)? = nil) {
         self.username = username
         self.videoPlaylist = videoPlaylist
         self.audioPlaylist = audioPlaylist
+        requestContext = context
+        refreshStream = refresh
     }
 
     func start() {
@@ -277,7 +265,9 @@ final class RecordingSession: ObservableObject, Identifiable {
                 videoPlaylist: videoPL,
                 audioPlaylist: audioPL,
                 dir: dir,
-                progress: progress
+                progress: progress,
+                context: requestContext,
+                refresh: refreshStream
             )
             await MainActor.run {
                 self?.finish(result: result, name: name, dir: dir)
@@ -550,10 +540,13 @@ enum RecHLS {
         return URLSession(configuration: c)
     }()
 
-    static func data(for url: URL) async throws -> (Data, HTTPURLResponse) {
+    static func data(for url: URL, context: HLSRequestContext = .chaturbate) async throws -> (Data, HTTPURLResponse) {
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         req.timeoutInterval = 6
+        req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue(context.referer, forHTTPHeaderField: "Referer")
+        if let origin = context.origin { req.setValue(origin, forHTTPHeaderField: "Origin") }
         return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
             group.addTask {
                 let (data, resp) = try await session.data(for: req)
@@ -570,11 +563,11 @@ enum RecHLS {
         }
     }
 
-    static func bytes(_ url: URL) async -> Data? {
+    static func bytes(_ url: URL, context: HLSRequestContext = .chaturbate) async -> Data? {
         for attempt in 0..<5 {
             if Task.isCancelled { return nil }
             do {
-                let (data, http) = try await data(for: url)
+                let (data, http) = try await data(for: url, context: context)
                 if http.statusCode == 404 || http.statusCode == 410 { return nil }
                 if (200..<300).contains(http.statusCode), !data.isEmpty { return data }
             } catch {
@@ -612,18 +605,20 @@ enum HLSPackager {
         videoPlaylist: URL,
         audioPlaylist: URL?,
         dir: URL,
-        progress: RecProgress
+        progress: RecProgress,
+        context: HLSRequestContext = .chaturbate,
+        refresh: (@Sendable () async throws -> ResolvedStream)? = nil
     ) async -> Result {
         let writer = DiskWriter(dir: dir)
         let video = Track(playlist: videoPlaylist, isAudio: false, writer: writer)
         let audio = audioPlaylist.map { Track(playlist: $0, isAudio: true, writer: writer) }
 
         await withTaskGroup(of: Void.self) { group in
-            group.addTask { await pollLoop(video, progress: progress) }
-            group.addTask { await downloadLoop(video, progress: progress) }
+            group.addTask { await pollLoop(video, progress: progress, context: context) }
+            group.addTask { await downloadLoop(video, progress: progress, context: context) }
             if let audio {
-                group.addTask { await pollLoop(audio, progress: progress) }
-                group.addTask { await downloadLoop(audio, progress: progress) }
+                group.addTask { await pollLoop(audio, progress: progress, context: context) }
+                group.addTask { await downloadLoop(audio, progress: progress, context: context) }
             }
             // playlist/session 失效后，同一次 resolve 同时更新音视频，避免轨道 session 不一致。
             group.addTask {
@@ -633,7 +628,7 @@ enum HLSPackager {
                     let dueRefresh = Date().timeIntervalSince(lastRefresh) > 480
                     if video.needsReconnect || (audio?.needsReconnect ?? false) || progress.stalled || dueRefresh {
                         do {
-                            let fresh = try await StreamSource.resolve(username: username)
+                            let fresh = try await (refresh?() ?? StreamSource.resolve(username: username))
                             video.replacePlaylist(fresh.videoPlaylist)
                             if let audio, let freshAudio = fresh.audioPlaylist {
                                 audio.replacePlaylist(freshAudio)
@@ -678,23 +673,23 @@ enum HLSPackager {
         return Result(success: true, indexURL: writer.indexURL, error: nil)
     }
 
-    private static func pollLoop(_ track: Track, progress: RecProgress) async {
+    private static func pollLoop(_ track: Track, progress: RecProgress, context: HLSRequestContext) async {
         while !Task.isCancelled {
-            await track.poll()
+            await track.poll(context: context)
             if progress.stopping { break }
             try? await Task.sleep(nanoseconds: 800_000_000)
         }
-        await track.poll()
+        await track.poll(context: context)
     }
 
-    private static func downloadLoop(_ track: Track, progress: RecProgress) async {
+    private static func downloadLoop(_ track: Track, progress: RecProgress, context: HLSRequestContext) async {
         await withTaskGroup(of: Void.self) { group in
             var inflight = 0
             while !Task.isCancelled {
                 while inflight < 6, let seg = track.dequeue() {
                     inflight += 1
                     group.addTask {
-                        let data = await RecHLS.bytes(seg.url)
+                        let data = await RecHLS.bytes(seg.url, context: context)
                         track.complete(seq: seg.sequence, generation: seg.generation, data: data, duration: seg.duration)
                     }
                 }
@@ -762,13 +757,13 @@ enum HLSPackager {
             writer.markDiscontinuity(isAudio: isAudio)
         }
 
-        func poll() async {
+        func poll(context: HLSRequestContext) async {
             lock.lock()
             let current = _playlist
             let gen = generation
             lock.unlock()
             do {
-                let (data, http) = try await RecHLS.data(for: current)
+                let (data, http) = try await RecHLS.data(for: current, context: context)
                 guard (200..<300).contains(http.statusCode),
                       let text = String(data: data, encoding: .utf8) else {
                     noteFailure(status: http.statusCode)

@@ -767,8 +767,7 @@ struct PlayerView: View {
         if recs.isRecording(username) {
             recs.stop(username)
         } else if displayRoom.platform == .stripchat {
-            // Stripchat 不经过 Chaturbate HLSPackager：使用专用 HLS 会话和请求头。
-            recs.startStripchat(username: username, playlist: stream.masterURL)
+            recs.startStripchat(room: displayRoom, stream: stream)
         } else {
             recs.start(
                 username: username,

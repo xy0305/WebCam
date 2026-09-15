@@ -1,7 +1,17 @@
 import Foundation
 
+struct HLSRequestContext: Sendable {
+    let referer: String
+    let origin: String?
+    static let chaturbate = HLSRequestContext(referer: "https://chaturbate.com/", origin: nil)
+    static func stripchat(username: String) -> HLSRequestContext {
+        HLSRequestContext(referer: "https://zh.stripchat.com/\(username)/", origin: "https://zh.stripchat.com")
+    }
+}
+
 struct ResolvedStream: Sendable {
     let username: String
+    let requestContext: HLSRequestContext
     /// 播放用：有声最高画质迷你 master（data: URI），AVPlayer 直接播
     let hlsURL: URL
     /// 官方原始 master
@@ -14,6 +24,12 @@ struct ResolvedStream: Sendable {
 }
 
 enum StreamSource {
+    /// 统一入口：录制重连必须按房间平台重新解析，不能把 Stripchat 用户名送进 Chaturbate 接口。
+    static func resolve(room: Room) async throws -> ResolvedStream {
+        if room.platform == .stripchat { return try await StripchatStreamSource.resolve(room: room) }
+        return try await resolve(username: room.username)
+    }
+
     static func resolve(username: String) async throws -> ResolvedStream {
         var last: Error = StreamSourceError.badResponse
         for _ in 0..<3 {
@@ -24,7 +40,7 @@ enum StreamSource {
                         let parsed = parseMaster(text, base: master)
                         guard let video = parsed.variants.first?.url else {
                             return ResolvedStream(
-                                username: username, hlsURL: master, masterURL: master,
+                                username: username, requestContext: .chaturbate, hlsURL: master, masterURL: master,
                                 videoPlaylist: master, audioPlaylist: nil, status: "public"
                             )
                         }
@@ -40,12 +56,12 @@ enum StreamSource {
                             hls = master
                         }
                         return ResolvedStream(
-                            username: username, hlsURL: hls, masterURL: master,
+                            username: username, requestContext: .chaturbate, hlsURL: hls, masterURL: master,
                             videoPlaylist: video, audioPlaylist: parsed.audioUri, status: "public"
                         )
                     }
                     return ResolvedStream(
-                        username: username, hlsURL: master, masterURL: master,
+                        username: username, requestContext: .chaturbate, hlsURL: master, masterURL: master,
                         videoPlaylist: master, audioPlaylist: nil, status: "public"
                     )
                 }

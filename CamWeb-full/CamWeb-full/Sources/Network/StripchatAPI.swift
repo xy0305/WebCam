@@ -59,22 +59,57 @@ enum StripchatAPI {
 enum StripchatStreamSource {
     static func resolve(room: Room) async throws -> ResolvedStream {
         guard let id = room.platformRoomID, !id.isEmpty else { throw StreamSourceError.badResponse }
+        let context = HLSRequestContext.stripchat(username: room.username)
         let bases = ["https://edge-hls.saawsedge.com/hls/\(id)/master/", "https://edge-hls.growcdnssedge.com/hls/\(id)/master/", "https://edge-hls.doppiocdn.com/hls/\(id)/master/"]
         var last: Error = StreamSourceError.blocked
         for base in bases {
             guard let master = URL(string: base + "\(id)_auto.m3u8") else { continue }
             do {
-                var req = URLRequest(url: master)
-                req.timeoutInterval = 15
-                req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
-                req.setValue("*/*", forHTTPHeaderField: "Accept")
-                req.setValue("https://zh.stripchat.com/", forHTTPHeaderField: "Referer")
-                req.setValue("https://zh.stripchat.com", forHTTPHeaderField: "Origin")
-                let (data, response) = try await URLSession.shared.data(for: req)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), String(data: data, encoding: .utf8)?.contains("#EXTM3U") == true else { continue }
-                return ResolvedStream(username: room.username, hlsURL: master, masterURL: master, videoPlaylist: master, audioPlaylist: nil, status: "public")
+                let text = try await playlistText(master, context: context)
+                guard text.contains("#EXTM3U"), !text.contains("#EXT-X-MOUFLON") else { continue }
+                let parsed = parseMaster(text, base: master)
+                // _auto.m3u8 是 master 时必须取真实 media playlist；直接媒体清单则直接使用。
+                let video = parsed.variants.first ?? master
+                let hls = parsed.audio.flatMap { miniMaster(video: video, audio: $0) } ?? master
+                return ResolvedStream(username: room.username, requestContext: context, hlsURL: hls,
+                                      masterURL: master, videoPlaylist: video,
+                                      audioPlaylist: parsed.audio, status: "public")
             } catch { last = error }
         }
         throw last
+    }
+
+    private static func playlistText(_ url: URL, context: HLSRequestContext) async throws -> String {
+        var req = URLRequest(url: url); req.timeoutInterval = 15
+        req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        req.setValue(context.referer, forHTTPHeaderField: "Referer")
+        if let origin = context.origin { req.setValue(origin, forHTTPHeaderField: "Origin") }
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let text = String(data: data, encoding: .utf8) else { throw StreamSourceError.badResponse }
+        return text
+    }
+
+    private static func parseMaster(_ text: String, base: URL) -> (audio: URL?, variants: [URL]) {
+        var audio: URL?; var variants: [(Int, URL)] = []; var bandwidth = 0
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("#EXT-X-MEDIA:"), line.contains("TYPE=AUDIO"), let uri = quotedURI(line) { audio = absolute(uri, base: base) }
+            else if line.hasPrefix("#EXT-X-STREAM-INF:") { bandwidth = intAttribute("BANDWIDTH=", line) ?? 0 }
+            else if !line.isEmpty, !line.hasPrefix("#"), let url = absolute(line, base: base) { variants.append((bandwidth, url)); bandwidth = 0 }
+        }
+        return (audio, variants.sorted { $0.0 > $1.0 }.map(\.1))
+    }
+    private static func quotedURI(_ line: String) -> String? {
+        guard let r = line.range(of: "URI=\"") else { return nil }; let rest = line[r.upperBound...]
+        return rest.firstIndex(of: "\"").map { String(rest[..<$0]) }
+    }
+    private static func intAttribute(_ key: String, _ line: String) -> Int? {
+        guard let r = line.range(of: key) else { return nil }; return Int(line[r.upperBound...].prefix(while: { $0.isNumber }))
+    }
+    private static func absolute(_ value: String, base: URL) -> URL? { URL(string: value, relativeTo: base)?.absoluteURL }
+    private static func miniMaster(video: URL, audio: URL) -> URL? {
+        let text = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Audio\",DEFAULT=YES,AUTOSELECT=YES,URI=\"\(audio.absoluteString)\"\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,AUDIO=\"audio\"\n\(video.absoluteString)\n"
+        return URL(string: "data:application/vnd.apple.mpegurl;base64," + Data(text.utf8).base64EncodedString())
     }
 }
