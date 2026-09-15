@@ -216,7 +216,7 @@ final class BackgroundAudioKeeper {
 /// 把直播媒体 playlist 存成本地 HLS VOD。
 @MainActor
 final class RecordingSession: ObservableObject, Identifiable {
-    var id: String { username }
+    nonisolated let id: String
     let username: String
     let videoPlaylist: URL
     let audioPlaylist: URL?
@@ -237,6 +237,7 @@ final class RecordingSession: ObservableObject, Identifiable {
     private let progress = RecProgress()
 
     init(username: String, videoPlaylist: URL, audioPlaylist: URL?, context: HLSRequestContext = .chaturbate, refresh: (@Sendable () async throws -> ResolvedStream)? = nil) {
+        self.id = username
         self.username = username
         self.videoPlaylist = videoPlaylist
         self.audioPlaylist = audioPlaylist

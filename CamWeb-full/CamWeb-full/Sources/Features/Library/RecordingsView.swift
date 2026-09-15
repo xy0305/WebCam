@@ -51,109 +51,11 @@ struct RecordingsView: View {
     }
 
     private var recordingsContent: some View {
-        AnyView(List {
-                activeRecordingSection
-
-                Section {
-                    if monitor.entries.isEmpty {
-                        VStack(spacing: 10) {
-                            Image(systemName: "record.circle")
-                                .font(.system(size: 34))
-                                .foregroundStyle(.red)
-                            Text("添加想自动录制的主播")
-                                .font(.headline)
-                            Text("打开 App 后自动检测，在线时开始录制")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 20)
-                        .listRowBackground(Color.clear)
-                    } else {
-                        ForEach(monitor.entries) { entry in
-                            AutoRecordRow(
-                                entry: entry,
-                                state: monitor.state(for: entry.username),
-                                isRecording: recs.isRecording(entry.username),
-                                onOpen: { appState.openPlayer(username: entry.username) },
-                                onToggleAuto: { monitor.setAuto($0, for: entry.username) },
-                                onRecord: {
-                                    if recs.isRecording(entry.username) {
-                                        monitor.manualStop(entry.username)
-                                    } else {
-                                        monitor.manualStart(entry.username)
-                                    }
-                                }
-                            )
-                            .swipeActions {
-                                Button(role: .destructive) { monitor.remove(entry.username) } label: {
-                                    Label("删除", systemImage: "trash")
-                                }
-                            }
-                        }
-                    }
-                } header: {
-                    HStack {
-                        Text("自动录制")
-                        Spacer()
-                        if monitor.isChecking { ProgressView().controlSize(.small) }
-                    }
-                } footer: {
-                    Text("启用自动录制后，每分钟检测一次。主播在线且处于公开状态时自动开始。")
-                }
-
-                Section("录像文件") {
-                    if files.isEmpty {
-                        Text("没有录像，录制完成后会显示在这里")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(files, id: \.path) { url in
-                            Button { appState.openRecording(url) } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "film.fill")
-                                        .foregroundStyle(.blue)
-                                        .frame(width: 32, height: 32)
-                                        .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(RecordingStore.displayName(url))
-                                            .font(.subheadline.weight(.semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                        Text(RecordingStore.sizeText(url))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    RecordingStore.delete(url); files = RecordingStore.list()
-                                } label: { Label("删除", systemImage: "trash") }
-                            }
-                            .swipeActions(edge: .leading) {
-                                Button { start115Upload(url) } label: {
-                                    Label("115", systemImage: "arrow.up.circle")
-                                }.tint(.orange)
-                                Button { exportToAlbum(url) } label: {
-                                    Label("相册", systemImage: "photo.on.rectangle.angled")
-                                }.tint(.blue)
-                            }
-                            .contextMenu {
-                                Button { start115Upload(url) } label: {
-                                    Label("上传到 115 网盘", systemImage: "arrow.up.circle")
-                                }
-                                Button { exportToAlbum(url) } label: {
-                                    Label("导出到相册", systemImage: "square.and.arrow.down")
-                                }
-                                ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
-                                Button(role: .destructive) {
-                                    RecordingStore.delete(url); files = RecordingStore.list()
-                                } label: { Label("删除", systemImage: "trash") }
-                            }
-                        }
-                    }
-                }
-            }
+        List {
+            activeRecordingSection
+            autoRecordSection
+            recordingsSection
+        }
             .navigationTitle("录像")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -272,7 +174,41 @@ struct RecordingsView: View {
             .onChange(of: recs.activeUsernames.count) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }
-        )
+    }
+
+    @ViewBuilder
+    private var autoRecordSection: some View {
+        Section {
+            if monitor.entries.isEmpty {
+                ContentUnavailableView("添加想自动录制的主播", systemImage: "record.circle", description: Text("打开 App 后自动检测，在线时开始录制"))
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(monitor.entries) { entry in
+                    AutoRecordRow(entry: entry, state: monitor.state(for: entry.username), isRecording: recs.isRecording(entry.username), onOpen: { appState.openPlayer(username: entry.username) }, onToggleAuto: { monitor.setAuto($0, for: entry.username) }, onRecord: { toggleRecording(entry.username) })
+                    .swipeActions { Button(role: .destructive) { monitor.remove(entry.username) } label: { Label("删除", systemImage: "trash") } }
+                }
+            }
+        } header: {
+            HStack { Text("自动录制"); Spacer(); if monitor.isChecking { ProgressView().controlSize(.small) } }
+        } footer: { Text("启用自动录制后，每分钟检测一次。主播在线且处于公开状态时自动开始。") }
+    }
+
+    @ViewBuilder
+    private var recordingsSection: some View {
+        Section("录像文件") {
+            if files.isEmpty {
+                Text("没有录像，录制完成后会显示在这里").foregroundStyle(.secondary)
+            } else {
+                ForEach(files, id: \.path) { url in
+                    RecordingFileRow(url: url, onOpen: { appState.openRecording(url) }, onUpload115: { start115Upload(url) }, onExport: { exportToAlbum(url) }, onDelete: { RecordingStore.delete(url); files = RecordingStore.list() })
+                }
+            }
+        }
+    }
+
+    private func toggleRecording(_ username: String) {
+        if recs.isRecording(username) { monitor.manualStop(username) }
+        else { monitor.manualStart(username) }
     }
 
     private func enqueueImportedFiles(_ urls: [URL]) {
@@ -446,6 +382,38 @@ struct RecordingsView: View {
                     exportBanner = error.localizedDescription
                 }
             }
+        }
+    }
+}
+
+private struct RecordingFileRow: View {
+    let url: URL
+    var onOpen: () -> Void
+    var onUpload115: () -> Void
+    var onExport: () -> Void
+    var onDelete: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 12) {
+                Image(systemName: "film.fill").foregroundStyle(.blue).frame(width: 32, height: 32)
+                    .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(RecordingStore.displayName(url)).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+                    Text(RecordingStore.sizeText(url)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .swipeActions(edge: .trailing) { Button(role: .destructive, action: onDelete) { Label("删除", systemImage: "trash") } }
+        .swipeActions(edge: .leading) {
+            Button(action: onUpload115) { Label("115", systemImage: "arrow.up.circle") }.tint(.orange)
+            Button(action: onExport) { Label("相册", systemImage: "photo.on.rectangle.angled") }.tint(.blue)
+        }
+        .contextMenu {
+            Button(action: onUpload115) { Label("上传到 115 网盘", systemImage: "arrow.up.circle") }
+            Button(action: onExport) { Label("导出到相册", systemImage: "square.and.arrow.down") }
+            ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
+            Button(role: .destructive, action: onDelete) { Label("删除", systemImage: "trash") }
         }
     }
 }
