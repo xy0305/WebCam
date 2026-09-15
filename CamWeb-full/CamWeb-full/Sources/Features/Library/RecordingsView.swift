@@ -47,8 +47,11 @@ struct RecordingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        NavigationStack { recordingsContent }
+    }
+
+    private var recordingsContent: some View {
+        AnyView(List {
                 activeRecordingSection
 
                 Section {
@@ -269,7 +272,7 @@ struct RecordingsView: View {
             .onChange(of: recs.activeUsernames.count) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }
-        }
+        })
     }
 
     private func enqueueImportedFiles(_ urls: [URL]) {
@@ -302,20 +305,38 @@ struct RecordingsView: View {
             try? fm.createDirectory(at: staging, withIntermediateDirectories: true)
             var prepared = 0
             for item in items {
-                guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
-                    let type = item.supportedContentTypes.first
-                let ext = type?.preferredFilenameExtension ?? "bin"
-                let originalName: String? = {
-                    guard let id = item.itemIdentifier else { return nil }
-                    let result = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
-                    guard let asset = result.firstObject else { return nil }
-                    return PHAssetResource.assetResources(for: asset).first?.originalFilename
-                }()
-                let name = originalName ?? "相册文件_\(Int(Date().timeIntervalSince1970))_\(prepared + 1).\(ext)"
-                do { try data.write(to: staging.appendingPathComponent(name), options: .atomic); prepared += 1 } catch {}
+                // 不使用 loadTransferable(Data.self)：大视频会被一次性读入内存。
+                guard let id = item.itemIdentifier else { continue }
+                let result = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
+                guard let asset = result.firstObject,
+                      let resource = PHAssetResource.assetResources(for: asset).first else { continue }
+                let destination = uniqueStagingURL(named: resource.originalFilename, in: staging)
+                if await copyPhotoResource(resource, to: destination) { prepared += 1 }
             }
             await MainActor.run {
                 exportBanner = prepared > 0 ? "已准备 \(prepared) 个相册文件，正在加入 115 后台上传队列" : "无法读取所选相册文件"
+            }
+        }
+    }
+
+    private func uniqueStagingURL(named filename: String, in folder: URL) -> URL {
+        let fm = FileManager.default
+        var candidate = folder.appendingPathComponent(filename)
+        var suffix = 2
+        while fm.fileExists(atPath: candidate.path) {
+            let source = URL(fileURLWithPath: filename)
+            candidate = folder.appendingPathComponent("\(source.deletingPathExtension().lastPathComponent)_\(suffix).\(source.pathExtension)")
+            suffix += 1
+        }
+        return candidate
+    }
+
+    private func copyPhotoResource(_ resource: PHAssetResource, to destination: URL) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let options = PHAssetResourceRequestOptions()
+            options.isNetworkAccessAllowed = true
+            PHAssetResourceManager.default().writeData(for: resource, toFile: destination, options: options) { error in
+                continuation.resume(returning: error == nil)
             }
         }
     }
