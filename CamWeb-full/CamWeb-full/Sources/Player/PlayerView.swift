@@ -80,7 +80,11 @@ struct PlayerView: View {
         .task(id: username) {
             recommended = []
             await resolve()
-            recommended = await RoomAPI.fetchRecommended(username: username)
+            if displayRoom.platform == .stripchat {
+                recommended = await StripchatAPI.fetchRecommended(excluding: username)
+            } else {
+                recommended = await RoomAPI.fetchRecommended(username: username)
+            }
         }
         .onAppear {
             coordinator.isMaskShow = false
@@ -94,11 +98,11 @@ struct PlayerView: View {
         }
         .sheet(isPresented: $showRoomSwitcher) {
             RoomSwitcherView(
-                currentUsername: username,
+                current: displayRoom,
                 recommended: recommended,
-                favorites: SpecialFollowStore.shared.usernames,
-                recent: WatchHistoryStore.shared.items.map(\.username),
-                following: FollowingStore.shared.usernames,
+                favorites: SpecialFollowStore.shared.items.map(\.room),
+                recent: WatchHistoryStore.shared.items.map(\.room),
+                following: FollowingStore.shared.usernames.map { Room(username: $0) },
                 onSelect: { room in
                     showRoomSwitcher = false
                     appState.openPlayer(username: room.username, room: room)
@@ -179,10 +183,10 @@ struct PlayerView: View {
                     Spacer()
                     Menu {
                         Button {
-                            special.toggle(username)
+                            special.toggle(displayRoom)
                         } label: {
-                            Label(special.contains(username) ? "取消非常关注" : "非常关注",
-                                  systemImage: special.contains(username) ? "star.slash.fill" : "star")
+                            Label(special.contains(displayRoom) ? "取消非常关注" : "非常关注",
+                                  systemImage: special.contains(displayRoom) ? "star.slash.fill" : "star")
                         }
                         Button {
                             fav.toggle(username)
@@ -190,7 +194,7 @@ struct PlayerView: View {
                             Label(fav.isFollowing(username) ? "取消收藏" : "收藏",
                                   systemImage: fav.isFollowing(username) ? "heart.slash" : "heart")
                         }
-                        if let url = URL(string: "https://chaturbate.com/\(username)/") {
+                        if let url = displayRoom.pageURL {
                             ShareLink(item: url) {
                                 Label("分享", systemImage: "square.and.arrow.up")
                             }
@@ -239,11 +243,11 @@ struct PlayerView: View {
                     Spacer()
 
                     Button {
-                        special.toggle(username)
+                        special.toggle(displayRoom)
                     } label: {
-                        Image(systemName: special.contains(username) ? "star.fill" : "star")
+                        Image(systemName: special.contains(displayRoom) ? "star.fill" : "star")
                             .font(.title3)
-                            .foregroundStyle(special.contains(username) ? .yellow : Color(white: 0.7))
+                            .foregroundStyle(special.contains(displayRoom) ? .yellow : Color(white: 0.7))
                             .frame(width: 44, height: 44)
                             .background(Circle().fill(.white.opacity(0.1)))
                     }
@@ -677,7 +681,16 @@ struct PlayerView: View {
 
     private var playerOptions: KSOptions {
         let o = KSOptions()
-        o.appendHeader(APIClient.commonHeaders)
+        if displayRoom.platform == .stripchat {
+            o.appendHeader([
+                "User-Agent": APIClient.userAgent,
+                "Accept": "*/*",
+                "Referer": "https://zh.stripchat.com/\(username)/",
+                "Origin": "https://zh.stripchat.com"
+            ])
+        } else {
+            o.appendHeader(APIClient.commonHeaders)
+        }
         KSOptions.isAutoPlay = true
         o.videoAdaptable = false
         o.canStartPictureInPictureAutomaticallyFromInline = true
@@ -788,7 +801,7 @@ struct PlayerView: View {
     private func exportIPlayer() {
         // CDN session 很短，导出时重新解析；不要复用播放页打开时缓存的 chunklist。
         Task {
-            let fresh = (try? await StreamSource.resolve(username: username)) ?? stream
+            let fresh = (try? await StreamSource.resolve(room: displayRoom)) ?? stream
             guard let fresh,
                   let url = StreamExport.iplayer2URL(stream: fresh, room: displayRoom) else { return }
             await MainActor.run {

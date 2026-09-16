@@ -24,7 +24,7 @@ struct ChannelView: View {
                     }
                 }
                 .navigationDestination(for: ChannelFilter.self) { filter in
-                    ChannelListPage(gender: filter.gender, keyword: filter.keyword, title: filter.title)
+                    ChannelListPage(gender: filter.gender, keyword: filter.keyword, title: filter.title, platform: platform)
                 }
         }
         .onChange(of: appState.keywordFilter) { _, tag in
@@ -220,11 +220,17 @@ struct ChannelListPage: View {
         loadingMore = true
         defer { if generation == requestGeneration { loadingMore = false } }
         do {
-            let more = try await RoomAPI.fetchRooms(
-                offset: requestedOffset,
-                gender: emptyNil(requestedGender),
-                keywords: emptyNil(keyword)
-            )
+            let more: [Room]
+            if platform == .stripchat {
+                let primary = requestedGender == "c" ? "couples" : (requestedGender == "m" ? "men" : "girls")
+                more = try await StripchatAPI.fetch(offset: requestedOffset, primary: primary)
+            } else {
+                more = try await RoomAPI.fetchRooms(
+                    offset: requestedOffset,
+                    gender: emptyNil(requestedGender),
+                    keywords: emptyNil(keyword)
+                )
+            }
             guard generation == requestGeneration, requestedGender == localGender else { return }
             if more.isEmpty { reachedEnd = true }
             let exist = Set(rooms.map(\.username))

@@ -17,10 +17,10 @@ struct FavoriteView: View {
     @State private var selected: Section = .recent
 
     private var columns: [GridItem] { [GridItem(.adaptive(minimum: 160), spacing: 14)] }
-    private var names: [String] {
+    private var rooms: [Room] {
         switch selected {
-        case .recent: return history.items.map(\.username)
-        case .favorites: return special.usernames
+        case .recent: return history.items.map(\.room)
+        case .favorites: return special.items.map(\.room)
         case .following: return mergedFollows
         }
     }
@@ -44,7 +44,7 @@ struct FavoriteView: View {
 
                     HStack {
                         Text(selected.rawValue).font(.title3.weight(.semibold))
-                        Text("\(names.count)")
+                        Text("\(rooms.count)")
                             .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             .padding(.horizontal, 7).padding(.vertical, 2)
                             .background(Capsule().fill(Color.secondary.opacity(0.15)))
@@ -52,23 +52,23 @@ struct FavoriteView: View {
                     }
                     .padding(.horizontal, 16)
 
-                    if names.isEmpty {
+                    if rooms.isEmpty {
                         ContentUnavailableView(selected.rawValue, systemImage: emptyIcon, description: Text(emptyText))
                             .padding(.top, 52)
                     } else {
                         LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(names, id: \.self) { name in
-                                Button { appState.openPlayer(username: name, room: room(for: name)) } label: {
-                                    ChannelCard(room: room(for: name))
+                            ForEach(rooms) { room in
+                                Button { appState.openPlayer(username: room.username, room: room) } label: {
+                                    ChannelCard(room: room)
                                         .overlay(alignment: .topLeading) {
-                                            if special.contains(name) {
+                                            if special.contains(room) {
                                                 Image(systemName: "star.fill").font(.caption.weight(.bold))
                                                     .foregroundStyle(.yellow).padding(8)
                                             }
                                         }
                                 }
                                 .buttonStyle(.plain)
-                                .contextMenu { roomMenu(name) }
+                                .contextMenu { roomMenu(room) }
                             }
                         }
                         .padding(.horizontal, 16)
@@ -87,12 +87,12 @@ struct FavoriteView: View {
         }
     }
 
-    @ViewBuilder private func roomMenu(_ name: String) -> some View {
-        Button { special.toggle(name) } label: {
-            Label(special.contains(name) ? "取消收藏" : "收藏", systemImage: special.contains(name) ? "star.slash" : "star")
+    @ViewBuilder private func roomMenu(_ room: Room) -> some View {
+        Button { special.toggle(room) } label: {
+            Label(special.contains(room) ? "取消收藏" : "收藏", systemImage: special.contains(room) ? "star.slash" : "star")
         }
-        if history.items.contains(where: { $0.username == name }) {
-            Button(role: .destructive) { history.remove(name) } label: {
+        if history.items.contains(where: { $0.username == room.username && $0.platform == room.platform }) {
+            Button(role: .destructive) { history.remove(room.username) } label: {
                 Label("从最近播放移除", systemImage: "clock.badge.xmark")
             }
         }
@@ -101,12 +101,19 @@ struct FavoriteView: View {
     private var emptyIcon: String {
         switch selected { case .recent: return "clock"; case .favorites: return "star"; case .following: return "heart" }
     }
-    private var mergedFollows: [String] {
-        var out = local.usernames
-        for room in remote where !out.contains(room.username) { out.append(room.username) }
+    private var mergedFollows: [Room] {
+        var out = local.usernames.map { room(for: $0) }
+        for room in remote where !out.contains(where: { $0.username == room.username && $0.platform == room.platform }) {
+            out.append(room)
+        }
         return out
     }
-    private func room(for name: String) -> Room { remote.first(where: { $0.username == name }) ?? Room(username: name) }
+    private func room(for name: String) -> Room {
+        remote.first(where: { $0.username == name })
+            ?? history.items.first(where: { $0.username == name })?.room
+            ?? special.items.first(where: { $0.username == name })?.room
+            ?? Room(username: name)
+    }
     private func loadRemote() async {
         guard auth.isLoggedIn else { return }
         let rooms = (try? await RoomAPI.fetchFollowed()) ?? []

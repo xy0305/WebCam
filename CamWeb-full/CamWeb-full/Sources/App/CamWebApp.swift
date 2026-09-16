@@ -122,7 +122,7 @@ final class AppState: ObservableObject {
         playingRecordingURL = nil
         playingUsername = username
         playingRoom = room ?? Room(username: username)
-        WatchHistoryStore.shared.record(username)
+        WatchHistoryStore.shared.record(playingRoom ?? Room(username: username))
     }
 
     func openRecording(_ url: URL) {

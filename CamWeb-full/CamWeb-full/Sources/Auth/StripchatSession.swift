@@ -3,22 +3,22 @@ import Security
 import SwiftUI
 import WebKit
 
-@MainActor
 final class StripchatSession: ObservableObject {
     static let shared = StripchatSession()
     @Published private(set) var hasCookie = false
     private let service = "com.xy0305.WebCam.stripchat"
     private let account = "cookie"
+    private let lock = NSLock()
+    private var cachedCookie: String?
 
-    private init() { hasCookie = cookieHeader != nil }
+    private init() {
+        cachedCookie = loadCookie()
+        hasCookie = cachedCookie != nil
+    }
 
     var cookieHeader: String? {
-        var query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account, kSecReturnData: true]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data,
-              let value = String(data: data, encoding: .utf8), !value.isEmpty else { return nil }
-        return value
+        lock.lock(); defer { lock.unlock() }
+        return cachedCookie
     }
 
     func save(_ raw: String) -> Bool {
@@ -26,14 +26,31 @@ final class StripchatSession: ObservableObject {
         guard !pairs.isEmpty else { return false }
         let value = pairs.joined(separator: "; ")
         SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account] as CFDictionary)
-        let status = SecItemAdd([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account, kSecValueData: value.data(using: .utf8)!] as CFDictionary, nil)
-        hasCookie = status == errSecSuccess
-        return hasCookie
+        let status = SecItemAdd([
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData: value.data(using: .utf8)!
+        ] as CFDictionary, nil)
+        lock.lock(); cachedCookie = status == errSecSuccess ? value : nil; lock.unlock()
+        DispatchQueue.main.async { self.hasCookie = status == errSecSuccess }
+        return status == errSecSuccess
     }
 
     func clear() {
         SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account] as CFDictionary)
-        hasCookie = false
+        lock.lock(); cachedCookie = nil; lock.unlock()
+        DispatchQueue.main.async { self.hasCookie = false }
+    }
+
+    private func loadCookie() -> String? {
+        var query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account, kSecReturnData: true]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8), !value.isEmpty else { return nil }
+        return value
     }
 }
 

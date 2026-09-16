@@ -14,8 +14,8 @@ enum StreamExport {
             "url": highestURL(from: stream).absoluteString,
             "anchorName": room.title,
             "roomName": stream.username,
-            "coverImage": room.thumb?.absoluteString ?? "https://thumb.live.mmcdn.com/ri/\(stream.username).jpg",
-            "platform": "Chaturbate",
+            "coverImage": room.thumb?.absoluteString ?? "",
+            "platform": room.platform.title,
             "remark": "最高画质",
         ]
         // iPlayer 对 LL-HLS master 的兼容性不一致；传媒体 video playlist，
@@ -40,7 +40,7 @@ enum StreamExport {
     static func shareItems(stream: ResolvedStream, room: Room) -> [Any] {
         [
             highestURL(from: stream).absoluteString,
-            "\(room.title) · Chaturbate 自动最高画质（含音频）"
+            "\(room.title) · \(room.platform.title) 自动最高画质"
         ]
     }
 }

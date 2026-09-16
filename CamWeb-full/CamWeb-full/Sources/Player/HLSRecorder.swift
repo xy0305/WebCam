@@ -47,7 +47,7 @@ final class RecordingManager: ObservableObject {
         }
         sessions[name] = session
         session.start()
-        refreshIdle(masterURL: stream.audioPlaylist ?? stream.masterURL)
+        refreshIdle(masterURL: stream.videoPlaylist)
     }
 
     /// Chaturbate 既有录制链路：保持原 RecHLS + HLSPackager 实现不变。
@@ -780,7 +780,7 @@ enum HLSPackager {
                 guard !parsed.segments.isEmpty else { noteFailure(status: nil); return }
                 noteSuccess()
                 if !mapDone, let map = parsed.map {
-                    if let chunk = await RecHLS.bytes(map), !chunk.isEmpty {
+                    if let chunk = await RecHLS.bytes(map, context: context), !chunk.isEmpty {
                         writer.writeInit(chunk, isAudio: isAudio)
                         lock.lock(); if generation == gen { mapDone = true }; lock.unlock()
                     }
@@ -873,6 +873,7 @@ enum HLSPackager {
         var out = Parsed()
         var expectURI = false
         var pendingDuration: Double = 2
+        var pendingMouflon: URL?
         var seq = 0
         let lines = doc.split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -884,21 +885,32 @@ enum HLSPackager {
                 out.mediaSequence = seq
             } else if line.hasPrefix("#EXT-X-MAP:") {
                 out.map = extractURI(line, base: base)
+            } else if line.hasPrefix("#EXT-X-MOUFLON:URI:") {
+                let raw = String(line.dropFirst("#EXT-X-MOUFLON:URI:".count))
+                pendingMouflon = resolve(raw, base: base)
             } else if line.hasPrefix("#EXTINF:") {
                 let raw = line.dropFirst("#EXTINF:".count)
                 let num = raw.split(separator: ",").first.map(String.init) ?? "2"
                 pendingDuration = Double(num) ?? 2
                 expectURI = true
             } else if expectURI && !line.isEmpty && !line.hasPrefix("#") {
-                if let url = resolve(line, base: base) {
+                let url = pendingMouflon ?? resolve(line, base: base)
+                pendingMouflon = nil
+                if let url, !isPlaceholderMedia(url) {
                     out.segments.append(Segment(duration: pendingDuration, url: url, sequence: seq, generation: 0))
                     seq += 1
                 }
                 expectURI = false
+            } else if line.hasPrefix("#EXT-X-PART:") {
+                pendingMouflon = nil
             }
         }
         if out.target < 1 { out.target = 4 }
         return out
+    }
+
+    private static func isPlaceholderMedia(_ url: URL) -> Bool {
+        url.lastPathComponent.lowercased() == "media.mp4"
     }
 
     private static func extractURI(_ line: String, base: URL) -> URL? {

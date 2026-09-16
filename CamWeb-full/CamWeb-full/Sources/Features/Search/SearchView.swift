@@ -220,7 +220,15 @@ struct SearchView: View {
         errorText = nil
         defer { searching = false }
         do {
-            let rooms = try await RoomAPI.search(value)
+            async let chaturbate = RoomAPI.search(value)
+            async let stripchat = StripchatAPI.search(value)
+            let cb = (try? await chaturbate) ?? []
+            let sc = (try? await stripchat) ?? []
+            var seen = Set<String>()
+            var rooms: [Room] = []
+            for room in sc + cb where seen.insert(room.id).inserted {
+                rooms.append(room)
+            }
             results = rooms
             if rooms.isEmpty { errorText = "没有匹配房间" }
         } catch {

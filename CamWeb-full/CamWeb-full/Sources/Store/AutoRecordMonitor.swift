@@ -112,7 +112,7 @@ final class AutoRecordMonitor: ObservableObject {
             for entry in snapshot {
                 group.addTask {
                     do {
-                        return .online(entry.username, try await StreamSource.resolve(username: entry.username))
+                        return .online(entry.username, try await StreamSource.resolve(room: Room(username: entry.username)))
                     } catch {
                         return .offline(entry.username, error.localizedDescription)
                     }
@@ -148,7 +148,7 @@ final class AutoRecordMonitor: ObservableObject {
         }
         states[username] = .checking
         do {
-            let stream = try await StreamSource.resolve(username: username)
+            let stream = try await StreamSource.resolve(room: Room(username: username))
             states[username] = .online
             if autoStart, !RecordingManager.shared.isRecording(username) {
                 RecordingManager.shared.start(

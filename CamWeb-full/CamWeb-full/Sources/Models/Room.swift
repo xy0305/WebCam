@@ -48,7 +48,19 @@ struct Room: Decodable, Identifiable, Hashable {
 
     var thumb: URL? {
         if let imageURL, let u = URL(string: imageURL) { return u }
+        if platform == .stripchat, let id = platformRoomID {
+            return URL(string: "https://img.doppiocdn.com/thumbs/\(id)/\(id)")
+        }
         return URL(string: "https://thumb.live.mmcdn.com/ri/\(username).jpg")
+    }
+
+    var pageURL: URL? {
+        switch platform {
+        case .stripchat:
+            return URL(string: "https://zh.stripchat.com/\(username)/")
+        case .chaturbate:
+            return URL(string: "https://chaturbate.com/\(username)/")
+        }
     }
 
     var viewersText: String {

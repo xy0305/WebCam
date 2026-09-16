@@ -10,11 +10,11 @@ struct RoomSwitcherView: View {
         var id: Self { self }
     }
 
-    let currentUsername: String
+    let current: Room
     let recommended: [Room]
-    let favorites: [String]
-    let recent: [String]
-    let following: [String]
+    let favorites: [Room]
+    let recent: [Room]
+    let following: [Room]
     var onSelect: (Room) -> Void
     var onClose: () -> Void
 
@@ -24,13 +24,13 @@ struct RoomSwitcherView: View {
         let sourceRooms: [Room]
         switch selected {
         case .recommended: sourceRooms = recommended
-        case .favorites: sourceRooms = favorites.map { Room(username: $0) }
-        case .recent: sourceRooms = recent.map { Room(username: $0) }
-        case .following: sourceRooms = following.map { Room(username: $0) }
+        case .favorites: sourceRooms = favorites
+        case .recent: sourceRooms = recent
+        case .following: sourceRooms = following
         }
         var seen = Set<String>()
         return sourceRooms.filter { room in
-            room.username != currentUsername && seen.insert(room.username).inserted
+            room.id != current.id && seen.insert(room.id).inserted
         }
     }
 
@@ -38,15 +38,15 @@ struct RoomSwitcherView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
-                    AsyncImage(url: URL(string: "https://thumb.live.mmcdn.com/ri/\(currentUsername).jpg")) { phase in
+                    AsyncImage(url: current.thumb) { phase in
                         if case .success(let image) = phase { image.resizable().scaledToFill() }
                         else { Color.secondary.opacity(0.16).overlay(Image(systemName: "person.fill").foregroundStyle(.secondary)) }
                     }
                     .frame(width: 42, height: 42).clipShape(Circle())
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(currentUsername).font(.headline).lineLimit(1)
-                        Label("正在播放", systemImage: "play.fill")
+                        Text(current.username).font(.headline).lineLimit(1)
+                        Label(current.platform.title, systemImage: "play.fill")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -78,7 +78,7 @@ struct RoomSwitcherView: View {
                                         .frame(height: 112).frame(maxWidth: .infinity).clipped()
                                         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                                         Text(room.username).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                                        Text(room.viewersText).font(.caption).foregroundStyle(.secondary)
+                                        Text("\(room.platform.title) · \(room.viewersText)").font(.caption).foregroundStyle(.secondary)
                                     }
                                     .contentShape(Rectangle())
                                 }
