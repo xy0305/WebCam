@@ -121,7 +121,13 @@ final class AppState: ObservableObject {
         stopMini()
         playingRecordingURL = nil
         playingUsername = username
-        playingRoom = room ?? Room(username: username)
+        if let room {
+            playingRoom = room
+        } else if playingRoom?.username != username.lowercased() {
+            playingRoom = WatchHistoryStore.shared.items.first(where: { $0.username == username.lowercased() })?.room
+                ?? SpecialFollowStore.shared.items.first(where: { $0.username == username.lowercased() })?.room
+                ?? Room(username: username)
+        }
         WatchHistoryStore.shared.record(playingRoom ?? Room(username: username))
     }
 

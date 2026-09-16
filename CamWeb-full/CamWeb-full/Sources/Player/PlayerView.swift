@@ -33,7 +33,25 @@ struct PlayerView: View {
     @State private var recommended: [Room] = []
 
     private var displayRoom: Room {
-        room ?? appState.playingRoom ?? Room(username: username)
+        if let room { return room }
+        if let r = appState.playingRoom, r.username == username.lowercased() { return r }
+        if let r = SpecialFollowStore.shared.items.first(where: { $0.username == username.lowercased() })?.room {
+            return r
+        }
+        if let r = WatchHistoryStore.shared.items.first(where: { $0.username == username.lowercased() })?.room {
+            return r
+        }
+        if stream?.requestContext.origin?.contains("stripchat") == true {
+            return Room(platform: .stripchat, username: username)
+        }
+        return Room(username: username)
+    }
+
+    private var shareURL: URL {
+        if displayRoom.platform == .stripchat || stream?.requestContext.origin?.contains("stripchat") == true {
+            return URL(string: "https://zh.stripchat.com/\(username)/")!
+        }
+        return URL(string: "https://chaturbate.com/\(username)/")!
     }
 
     var body: some View {
@@ -194,10 +212,8 @@ struct PlayerView: View {
                             Label(fav.isFollowing(username) ? "取消收藏" : "收藏",
                                   systemImage: fav.isFollowing(username) ? "heart.slash" : "heart")
                         }
-                        if let url = displayRoom.pageURL {
-                            ShareLink(item: url) {
-                                Label("分享", systemImage: "square.and.arrow.up")
-                            }
+                        ShareLink(item: shareURL) {
+                            Label("分享", systemImage: "square.and.arrow.up")
                         }
                     } label: {
                         Image(systemName: "ellipsis")

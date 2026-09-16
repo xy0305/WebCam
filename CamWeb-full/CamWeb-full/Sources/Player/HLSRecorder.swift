@@ -530,25 +530,59 @@ enum FFmpegLocalMuxer {
 }
 
 enum RecHLS {
+    private static let cdnTLDs = ["doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"]
+
     static let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.httpMaximumConnectionsPerHost = 8
-        c.timeoutIntervalForRequest = 6
-        c.timeoutIntervalForResource = 10
+        c.timeoutIntervalForRequest = 12
+        c.timeoutIntervalForResource = 20
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         c.urlCache = nil
         c.waitsForConnectivity = false
-        c.httpAdditionalHeaders = APIClient.hlsHeaders
+        c.httpAdditionalHeaders = [
+            "User-Agent": APIClient.userAgent,
+            "Accept": "*/*"
+        ]
         return URLSession(configuration: c)
     }()
 
     static func data(for url: URL, context: HLSRequestContext = .chaturbate) async throws -> (Data, HTTPURLResponse) {
+        let targets = candidates(for: url, context: context)
+        if targets.count == 1 {
+            return try await fetch(targets[0], context: context)
+        }
+        return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
+            for target in targets {
+                group.addTask {
+                    let (data, http) = try await fetch(target, context: context)
+                    guard (200..<300).contains(http.statusCode), !data.isEmpty else {
+                        throw URLError(.badServerResponse)
+                    }
+                    return (data, http)
+                }
+            }
+            var last: Error = URLError(.badServerResponse)
+            while let result = await group.nextResult() {
+                switch result {
+                case .success(let value):
+                    group.cancelAll()
+                    return value
+                case .failure(let error):
+                    last = error
+                }
+            }
+            throw last
+        }
+    }
+
+    private static func fetch(_ url: URL, context: HLSRequestContext) async throws -> (Data, HTTPURLResponse) {
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
-        req.timeoutInterval = 6
+        req.timeoutInterval = 12
         req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
         req.setValue(context.referer, forHTTPHeaderField: "Referer")
-        if let origin = context.origin { req.setValue(origin, forHTTPHeaderField: "Origin") }
         return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
             group.addTask {
                 let (data, resp) = try await session.data(for: req)
@@ -556,13 +590,36 @@ enum RecHLS {
                 return (data, http)
             }
             group.addTask {
-                try await Task.sleep(nanoseconds: 7_000_000_000)
+                try await Task.sleep(nanoseconds: 15_000_000_000)
                 throw URLError(.timedOut)
             }
             guard let first = try await group.next() else { throw URLError(.timedOut) }
             group.cancelAll()
             return first
         }
+    }
+
+    private static func candidates(for url: URL, context: HLSRequestContext) -> [URL] {
+        let encoded = encodeIfNeeded(url)
+        guard isStripchat(context), let host = encoded.host,
+              let src = cdnTLDs.first(where: { host.hasSuffix($0) }) else {
+            return [encoded]
+        }
+        var out: [URL] = [encoded]
+        for tld in cdnTLDs where tld != src {
+            let raw = encoded.absoluteString.replacingOccurrences(of: src, with: tld)
+            if let item = URL(string: raw), !out.contains(item) { out.append(item) }
+        }
+        return out
+    }
+
+    private static func encodeIfNeeded(_ url: URL) -> URL {
+        guard url.host?.contains("doppiocdn") == true else { return url }
+        return StripchatPlaylistProxy.encodedRemote(url.absoluteString, base: url) ?? url
+    }
+
+    private static func isStripchat(_ context: HLSRequestContext) -> Bool {
+        context.origin?.contains("stripchat") == true || context.referer.contains("stripchat")
     }
 
     static func bytes(_ url: URL, context: HLSRequestContext = .chaturbate) async -> Data? {
@@ -929,6 +986,9 @@ enum HLSPackager {
     }
 
     private static func resolve(_ str: String, base: URL) -> URL? {
+        if str.contains("doppiocdn") || base.host?.contains("doppiocdn") == true {
+            return StripchatPlaylistProxy.encodedRemote(str, base: base)
+        }
         if str.hasPrefix("http://") || str.hasPrefix("https://") { return URL(string: str) }
         return URL(string: str, relativeTo: base)?.absoluteURL
     }

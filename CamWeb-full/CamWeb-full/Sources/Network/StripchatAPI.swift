@@ -171,6 +171,9 @@ enum StripchatStreamSource {
         let context = HLSRequestContext.stripchat(username: room.username)
         let bases = [
             "https://edge-hls.doppiocdn.com/hls/\(id)/master/",
+            "https://edge-hls.doppiocdn.org/hls/\(id)/master/",
+            "https://edge-hls.doppiocdn.net/hls/\(id)/master/",
+            "https://edge-hls.doppiocdn.live/hls/\(id)/master/",
             "https://edge-hls.saawsedge.com/hls/\(id)/master/",
             "https://edge-hls.growcdnssedge.com/hls/\(id)/master/"
         ]
