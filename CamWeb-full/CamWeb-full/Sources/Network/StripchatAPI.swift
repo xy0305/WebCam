@@ -245,7 +245,6 @@ enum StripchatStreamSource {
         req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("*/*", forHTTPHeaderField: "Accept")
         req.setValue(context.referer, forHTTPHeaderField: "Referer")
-        if let origin = context.origin { req.setValue(origin, forHTTPHeaderField: "Origin") }
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               let text = String(data: data, encoding: .utf8) else {

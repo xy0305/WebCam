@@ -681,15 +681,13 @@ struct PlayerView: View {
 
     private var playerOptions: KSOptions {
         let o = KSOptions()
-        if displayRoom.platform == .stripchat {
+        if displayRoom.platform != .stripchat {
+            o.appendHeader(APIClient.commonHeaders)
+        } else {
             o.appendHeader([
                 "User-Agent": APIClient.userAgent,
-                "Accept": "*/*",
-                "Referer": "https://zh.stripchat.com/\(username)/",
-                "Origin": "https://zh.stripchat.com"
+                "Accept": "*/*"
             ])
-        } else {
-            o.appendHeader(APIClient.commonHeaders)
         }
         KSOptions.isAutoPlay = true
         o.videoAdaptable = false

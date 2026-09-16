@@ -2,7 +2,8 @@ import Foundation
 import Network
 
 /// Stripchat 媒体清单用 `#EXT-X-MOUFLON:URI` 藏真实分片，公开 URI 是占位 `media.mp4`。
-/// KSPlayer / FFmpeg 会忽略未知标签并卡住。这里把清单改写成标准 HLS，再经本地 HTTP 交给播放器刷新。
+/// KSPlayer 会忽略未知标签，且分片路径里的 `+` `/` 会被拆错。
+/// 这里把清单改成标准 HLS，并把 MAP/分片都走 127.0.0.1，由我们带 Referer 去拉。
 final class StripchatPlaylistProxy: @unchecked Sendable {
     static let shared = StripchatPlaylistProxy()
 
@@ -48,7 +49,7 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         }
         let listener: NWListener
         do {
-            listener = try NWListener(using: .tcp, on: 0)
+            listener = try Self.makeListener()
         } catch {
             lock.unlock()
             throw error
@@ -70,12 +71,27 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         }
     }
 
+    private static func makeListener() throws -> NWListener {
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true
+        let params = NWParameters(tls: nil, tcp: tcp)
+        params.allowLocalEndpointReuse = true
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 0)
+        do {
+            return try NWListener(using: params)
+        } catch {
+            return try NWListener(using: .tcp, on: 18_765)
+        }
+    }
+
     private func handle(_ state: NWListener.State) {
         switch state {
         case .ready:
             lock.lock()
-            if let value = listener?.port?.rawValue {
+            if let value = listener?.port?.rawValue, value > 0 {
                 port = value
+            } else {
+                port = 18_765
             }
             let waiting = startContinuations
             startContinuations.removeAll()
@@ -96,33 +112,49 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
 
     private func accept(_ connection: NWConnection) {
         connection.start(queue: queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, _, error in
-            guard let self, let data, error == nil else {
+        readHeader(connection, buffer: Data())
+    }
+
+    private func readHeader(_ connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, complete, error in
+            guard let self, error == nil else {
                 connection.cancel()
                 return
             }
-            let head = String(data: data, encoding: .utf8) ?? ""
-            let path = Self.path(from: head)
-            Task {
-                await self.respond(connection, path: path)
+            var buf = buffer
+            if let data { buf.append(data) }
+            if let range = buf.range(of: Data("\r\n\r\n".utf8)) {
+                let head = String(data: buf[..<range.lowerBound], encoding: .utf8) ?? ""
+                Task { await self.respond(connection, path: Self.path(from: head)) }
+                return
             }
+            if complete || buf.count > 32 * 1024 {
+                connection.cancel()
+                return
+            }
+            self.readHeader(connection, buffer: buf)
         }
     }
 
     private func respond(_ connection: NWConnection, path: String) async {
-        let id = path
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .replacingOccurrences(of: ".m3u8", with: "")
+        let parts = path.split(separator: "/").map(String.init)
+        if parts.count >= 3, parts[1] == "m" {
+            await sendSegment(connection, id: parts[0], token: parts[2])
+            return
+        }
+        let id = parts.first?.replacingOccurrences(of: ".m3u8", with: "") ?? ""
         lock.lock()
         let source = sources[id]
+        let port = self.port
         lock.unlock()
-        guard let source else {
+        guard let source, port > 0 else {
             send(connection, status: 404, body: Data("not found".utf8), type: "text/plain")
             return
         }
         do {
             let remote = try await fetchMedia(source)
-            let rewritten = Self.rewrite(remote, base: source.remote)
+            let local = URL(string: "http://127.0.0.1:\(port)")!
+            let rewritten = Self.rewrite(remote, base: source.remote, local: local, id: id)
             guard rewritten.contains("#EXTINF:"),
                   !rewritten.contains("media.mp4"),
                   !remote.contains("#EXT-X-MOUFLON-ADVERT") else {
@@ -134,14 +166,42 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         }
     }
 
+    private func sendSegment(_ connection: NWConnection, id: String, token: String) async {
+        lock.lock()
+        let source = sources[id]
+        lock.unlock()
+        guard let source, let raw = Self.detokenize(token),
+              let url = Self.encodedRemote(raw, base: source.remote) else {
+            send(connection, status: 404, body: Data("bad segment".utf8), type: "text/plain")
+            return
+        }
+        do {
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 12
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
+            req.setValue("*/*", forHTTPHeaderField: "Accept")
+            req.setValue(source.context.referer, forHTTPHeaderField: "Referer")
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
+                throw StreamSourceError.badResponse
+            }
+            let type = http.value(forHTTPHeaderField: "Content-Type") ?? "video/mp4"
+            send(connection, status: 200, body: data, type: type)
+        } catch {
+            send(connection, status: 502, body: Data("segment error".utf8), type: "text/plain")
+        }
+    }
+
     private func fetchMedia(_ source: Source) async throws -> String {
-        var urls: [URL] = [source.remote]
+        var urls: [URL] = []
         for key in source.keys.reversed() {
             if let url = StripchatStreamSource.withPkey(source.remote, key: key),
                !urls.contains(url) {
-                urls.insert(url, at: 0)
+                urls.append(url)
             }
         }
+        if !urls.contains(source.remote) { urls.append(source.remote) }
         var last: Error = StreamSourceError.badResponse
         for url in urls {
             do {
@@ -162,6 +222,7 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         Content-Type: \(type)\r
         Content-Length: \(body.count)\r
         Cache-Control: no-cache, no-store, must-revalidate\r
+        Access-Control-Allow-Origin: *\r
         Connection: close\r
         \r
         """
@@ -179,14 +240,14 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         return String(parts[1]).split(separator: "?").first.map(String.init) ?? ""
     }
 
-    static func rewrite(_ text: String, base: URL) -> String {
+    static func rewrite(_ text: String, base: URL, local: URL, id: String) -> String {
         var pending: String?
         var expectURI = false
         var lines: [String] = []
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.hasPrefix("#EXT-X-MOUFLON:URI:") {
-                pending = abs(String(line.dropFirst("#EXT-X-MOUFLON:URI:".count)), base: base)
+                pending = String(line.dropFirst("#EXT-X-MOUFLON:URI:".count))
                 continue
             }
             if line.hasPrefix("#EXT-X-MOUFLON") { continue }
@@ -201,7 +262,7 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
                 continue
             }
             if expectURI, !line.isEmpty, !line.hasPrefix("#") {
-                let url = abs(pending ?? line, base: base)
+                let url = pending ?? line
                 pending = nil
                 expectURI = false
                 if isPlaceholder(url) {
@@ -210,11 +271,11 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
                     }
                     continue
                 }
-                lines.append(url)
+                lines.append(localMedia(url, base: base, local: local, id: id))
                 continue
             }
             if line.hasPrefix("#EXT-X-MAP:") {
-                lines.append(absolutizeMap(line, base: base))
+                lines.append(localMap(line, base: base, local: local, id: id))
                 continue
             }
             if !line.isEmpty {
@@ -227,22 +288,68 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    private static func localMap(_ line: String, base: URL, local: URL, id: String) -> String {
+        guard let range = line.range(of: "URI=\"") else { return line }
+        let after = line[range.upperBound...]
+        guard let end = after.firstIndex(of: "\"") else { return line }
+        let raw = String(after[..<end])
+        let localURL = localMedia(raw, base: base, local: local, id: id)
+        return line.replacingOccurrences(of: "URI=\"\(raw)\"", with: "URI=\"\(localURL)\"")
+    }
+
+    private static func localMedia(_ raw: String, base: URL, local: URL, id: String) -> String {
+        let abs = Self.abs(raw, base: base)
+        return "\(local.absoluteString)/\(id)/m/\(token(for: abs))"
+    }
+
+    static func encodedRemote(_ raw: String, base: URL) -> URL? {
+        let absolute = abs(raw, base: base)
+        guard let schemeEnd = absolute.range(of: "://") else { return URL(string: absolute) }
+        guard let pathStart = absolute[schemeEnd.upperBound...].firstIndex(of: "/") else {
+            return URL(string: absolute)
+        }
+        let origin = String(absolute[..<pathStart])
+        var rest = String(absolute[pathStart...])
+        var query = ""
+        if let q = rest.firstIndex(of: "?") {
+            query = String(rest[q...])
+            rest = String(rest[..<q])
+        }
+        let parts = rest.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count > 3 else {
+            return URL(string: origin + rest.replacingOccurrences(of: "+", with: "%2B") + query)
+        }
+        let head = parts.prefix(3).joined(separator: "/")
+        let tail = parts.dropFirst(3).joined(separator: "/")
+            .replacingOccurrences(of: "+", with: "%2B")
+            .replacingOccurrences(of: "/", with: "%2F")
+        return URL(string: origin + head + "/" + tail + query)
+    }
+
     private static func abs(_ value: String, base: URL) -> String {
         let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("http://") || text.hasPrefix("https://") { return text }
         return URL(string: text, relativeTo: base)?.absoluteString ?? text
     }
 
-    private static func absolutizeMap(_ line: String, base: URL) -> String {
-        guard let range = line.range(of: "URI=\"") else { return line }
-        let after = line[range.upperBound...]
-        guard let end = after.firstIndex(of: "\"") else { return line }
-        let raw = String(after[..<end])
-        return line.replacingOccurrences(of: "URI=\"\(raw)\"", with: "URI=\"\(abs(raw, base: base))\"")
-    }
-
     private static func isPlaceholder(_ url: String) -> Bool {
         let last = url.split(separator: "?").first.map(String.init)?.lowercased() ?? url.lowercased()
         return last.hasSuffix("/media.mp4") || last.hasSuffix("media.mp4")
+    }
+
+    private static func token(for url: String) -> String {
+        Data(url.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func detokenize(_ token: String) -> String? {
+        var text = token
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while text.count % 4 != 0 { text += "=" }
+        guard let data = Data(base64Encoded: text) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }
