@@ -186,31 +186,53 @@ enum StripchatStreamSource {
     }
 
     private static func resolveMaster(id: String, base: String, room: Room, context: HLSRequestContext) async throws -> ResolvedStream {
-        guard let master = URL(string: base + "\(id)_auto.m3u8?playlistType=lowLatency") else {
-            throw StreamSourceError.badResponse
+        let paths = [
+            "\(id)_auto.m3u8?playlistType=standard",
+            "\(id)_auto.m3u8?playlistType=lowLatency"
+        ]
+        var last: Error = StreamSourceError.badResponse
+        for path in paths {
+            guard let master = URL(string: base + path) else { continue }
+            do {
+                return try await decodeMaster(id: id, master: master, room: room, context: context)
+            } catch {
+                last = error
+            }
         }
+        throw last
+    }
+
+    private static func decodeMaster(id: String, master: URL, room: Room, context: HLSRequestContext) async throws -> ResolvedStream {
         let text = try await playlistText(master, context: context)
         guard text.contains("#EXTM3U") else { throw StreamSourceError.badResponse }
+        let keys = mouflonKeys(in: text)
         if text.contains("#EXT-X-STREAM-INF") {
-            let pkey = mouflonKey(in: text)
-            let variants = parseVariants(text, base: master, pkey: pkey)
+            let variants = parseVariants(text, base: master, pkey: keys.last)
             guard let best = variants.first else { throw StreamSourceError.blocked }
+            let media = try await pickWorkingMedia(best.url, keys: keys, context: context)
+            let playURL = try await StripchatPlaylistProxy.shared.playbackURL(
+                id: id, remote: media, context: context, keys: keys
+            )
             return ResolvedStream(
                 username: room.username,
                 requestContext: context,
-                hlsURL: best.url,
+                hlsURL: playURL,
                 masterURL: master,
-                videoPlaylist: best.url,
+                videoPlaylist: media,
                 audioPlaylist: nil,
                 status: room.roomSubject ?? "public"
             )
         }
+        let media = try await pickWorkingMedia(master, keys: keys, context: context)
+        let playURL = try await StripchatPlaylistProxy.shared.playbackURL(
+            id: id, remote: media, context: context, keys: keys
+        )
         return ResolvedStream(
             username: room.username,
             requestContext: context,
-            hlsURL: master,
+            hlsURL: playURL,
             masterURL: master,
-            videoPlaylist: master,
+            videoPlaylist: media,
             audioPlaylist: nil,
             status: room.roomSubject ?? "public"
         )
@@ -232,16 +254,50 @@ enum StripchatStreamSource {
         return text
     }
 
-    static func mouflonKey(in text: String) -> String? {
+    static func mouflonKeys(in text: String) -> [String] {
+        var keys: [String] = []
         for raw in text.split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard line.hasPrefix("#EXT-X-MOUFLON:PSCH:") else { continue }
             let parts = line.split(separator: ":")
-            if let key = parts.last?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
-                return key
+            guard let key = parts.last?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else { continue }
+            if keys.contains(key) == false { keys.append(key) }
+        }
+        return keys
+    }
+
+    static func mouflonKey(in text: String) -> String? {
+        mouflonKeys(in: text).last
+    }
+
+    static func withPkey(_ url: URL, key: String) -> URL? {
+        decorate(url.absoluteString, base: url, pkey: key)
+    }
+
+    static func pickWorkingMedia(_ url: URL, keys: [String], context: HLSRequestContext) async throws -> URL {
+        var candidates: [URL] = []
+        func add(_ item: URL?) {
+            guard let item, candidates.contains(item) == false else { return }
+            candidates.append(item)
+        }
+        for key in keys.reversed() {
+            add(withPkey(url, key: key))
+        }
+        add(url)
+        var last: Error = StreamSourceError.badResponse
+        for candidate in candidates {
+            do {
+                let text = try await playlistText(candidate, context: context)
+                if text.contains("#EXT-X-MOUFLON-ADVERT") { continue }
+                if text.contains("#EXT-X-MOUFLON:URI:") { return candidate }
+                if text.contains("#EXTINF:"), text.contains("media.mp4") == false {
+                    return candidate
+                }
+            } catch {
+                last = error
             }
         }
-        return nil
+        throw last
     }
 
     private static func parseVariants(_ text: String, base: URL, pkey: String?) -> [(bandwidth: Int, url: URL)] {
@@ -268,9 +324,6 @@ enum StripchatStreamSource {
         func set(_ name: String, _ value: String) {
             items.removeAll { $0.name == name }
             items.append(URLQueryItem(name: name, value: value))
-        }
-        if items.contains(where: { $0.name == "playlistType" }) == false {
-            set("playlistType", "lowLatency")
         }
         if let pkey, !pkey.isEmpty {
             set("psch", "v2")
