@@ -78,7 +78,11 @@ enum StripchatAPI {
         var all: [Model] {
             var seen = Set<Int>()
             var out: [Model] = []
-            for m in (models ?? []) + (blocks?.flatMap { $0.models ?? [] } ?? []) + (favorites ?? []) + (items ?? []) {
+            let blockModels = blocks?.compactMap(\.models).flatMap { $0 } ?? []
+            let allModels = models ?? []
+            let allFavorites = favorites ?? []
+            let allItems = items ?? []
+            for m in allModels + blockModels + allFavorites + allItems {
                 if seen.insert(m.id).inserted { out.append(m) }
             }
             return out
