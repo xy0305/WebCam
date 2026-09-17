@@ -166,8 +166,7 @@ enum StripchatAPI {
 }
 
 enum StripchatStreamSource {
-    private static let cdnTLDs = ["doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"]
-    private static let extraCDNs = ["saawsedge.com", "growcdnssedge.com"]
+    private static let cdnHosts = ["saawsedge.com", "growcdnssedge.com", "doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"]
 
     static func resolve(room: Room) async throws -> ResolvedStream {
         let id = try await modelID(for: room)
@@ -177,15 +176,15 @@ enum StripchatStreamSource {
         guard text.contains("#EXTM3U") else { throw StreamSourceError.badResponse }
         let keys = mouflonKeys(in: text)
         let pdkeys = await keysTask
-        let matched = keys.first { pdkeys[$0] != nil } ?? keys.last
+        let matched = keys.first { pdkeys[$0] != nil } ?? keys.first
         let pdkey = matched.flatMap { pdkeys[$0] }
         let mediaURL: URL
         if text.contains("#EXT-X-STREAM-INF") {
             let variants = parseVariants(text, base: master)
             guard let best = variants.first else { throw StreamSourceError.blocked }
-            mediaURL = try await pickWorkingMedia(best.url, keys: keys, prefer: matched, context: context)
+            mediaURL = decorate(best.url.absoluteString, base: best.url, pkey: matched, lowLatency: true) ?? best.url
         } else {
-            mediaURL = try await pickWorkingMedia(master, keys: keys, prefer: matched, context: context)
+            mediaURL = decorate(master.absoluteString, base: master, pkey: matched, lowLatency: true) ?? master
         }
         let playURL = try await StripchatPlaylistProxy.shared.playbackURL(
             id: id, remote: mediaURL, context: context, keys: keys, pdkey: pdkey
@@ -236,12 +235,7 @@ enum StripchatStreamSource {
 
     private static func fetchAutoPlaylist(id: String, context: HLSRequestContext) async throws -> (URL, String) {
         var urls: [URL] = []
-        for tld in cdnTLDs {
-            if let url = URL(string: "https://edge-hls.\(tld)/hls/\(id)/master/\(id)_auto.m3u8") {
-                urls.append(url)
-            }
-        }
-        for host in extraCDNs {
+        for host in cdnHosts {
             if let url = URL(string: "https://edge-hls.\(host)/hls/\(id)/master/\(id)_auto.m3u8") {
                 urls.append(url)
             }
@@ -346,7 +340,7 @@ enum StripchatStreamSource {
         return out.sorted { $0.0 > $1.0 }
     }
 
-    static func decorate(_ value: String, base: URL, pkey: String?) -> URL? {
+    static func decorate(_ value: String, base: URL, pkey: String?, lowLatency: Bool = false) -> URL? {
         guard let absolute = URL(string: value, relativeTo: base)?.absoluteURL ?? URL(string: value),
               var comps = URLComponents(url: absolute, resolvingAgainstBaseURL: false) else {
             return URL(string: value, relativeTo: base)?.absoluteURL
@@ -356,6 +350,7 @@ enum StripchatStreamSource {
             items.removeAll { $0.name == name }
             items.append(URLQueryItem(name: name, value: value))
         }
+        if lowLatency { set("playlistType", "lowLatency") }
         if let pkey, !pkey.isEmpty {
             set("psch", "v2")
             set("pkey", pkey)

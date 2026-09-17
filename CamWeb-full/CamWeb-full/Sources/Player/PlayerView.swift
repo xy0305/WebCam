@@ -700,6 +700,10 @@ struct PlayerView: View {
         if displayRoom.platform != .stripchat {
             o.appendHeader(APIClient.commonHeaders)
         } else {
+            // Forward 脚本能快播，是因为它把 CDN m3u8 交给系统播放器。
+            // FFmpeg(KSMEPlayer) 不走系统 VPN/代理，所以 Stripchat 强制 AVPlayer。
+            KSOptions.firstPlayerType = KSAVPlayer.self
+            KSOptions.secondPlayerType = nil
             o.appendHeader([
                 "User-Agent": APIClient.userAgent,
                 "Accept": "*/*",
