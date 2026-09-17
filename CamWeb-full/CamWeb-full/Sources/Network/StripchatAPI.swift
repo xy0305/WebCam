@@ -177,7 +177,6 @@ enum StripchatStreamSource {
         let keys = mouflonKeys(in: text)
         let pdkeys = await keysTask
         let matched = keys.first { pdkeys[$0] != nil } ?? keys.first
-        let pdkey = matched.flatMap { pdkeys[$0] }
         let mediaURL: URL
         if text.contains("#EXT-X-STREAM-INF") {
             let variants = parseVariants(text, base: master)
@@ -186,13 +185,10 @@ enum StripchatStreamSource {
         } else {
             mediaURL = decorate(master.absoluteString, base: master, pkey: matched, lowLatency: true) ?? master
         }
-        let playURL = try await StripchatPlaylistProxy.shared.playbackURL(
-            id: id, remote: mediaURL, context: context, keys: keys, pdkey: pdkey
-        )
         return ResolvedStream(
             username: room.username,
             requestContext: context,
-            hlsURL: playURL,
+            hlsURL: mediaURL,
             masterURL: master,
             videoPlaylist: mediaURL,
             audioPlaylist: nil,
