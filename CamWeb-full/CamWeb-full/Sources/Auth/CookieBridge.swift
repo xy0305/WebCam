@@ -9,6 +9,27 @@ enum CookieBridge {
         return cookies.contains { $0.name.lowercased() == "sessionid" && !($0.value.isEmpty) }
     }
 
+    /// 粘贴浏览器 Cookie 头：至少要有 sessionid。写入 chaturbate.com 后快照。
+    @discardableResult
+    static func saveChaturbateCookie(_ raw: String) -> Bool {
+        let pairs = raw.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }.filter { $0.contains("=") }
+        guard pairs.contains(where: { $0.lowercased().hasPrefix("sessionid=") }) else { return false }
+        for pair in pairs {
+            let bits = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            guard bits.count == 2, !bits[0].isEmpty else { continue }
+            guard let cookie = HTTPCookie(properties: [
+                .name: bits[0],
+                .value: bits[1],
+                .domain: ".chaturbate.com",
+                .path: "/",
+                .secure: true
+            ]) else { continue }
+            HTTPCookieStorage.shared.setCookie(cookie)
+        }
+        snapshot()
+        return hasSessionCookie()
+    }
+
     static func csrfToken() -> String? {
         HTTPCookieStorage.shared.cookies?.first { $0.name == "csrftoken" }?.value
     }
