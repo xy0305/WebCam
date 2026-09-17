@@ -222,11 +222,13 @@ struct SearchView: View {
         do {
             async let chaturbate = RoomAPI.search(value)
             async let stripchat = StripchatAPI.search(value)
+            async let panda = PandaAPI.search(value)
             let cb = (try? await chaturbate) ?? []
             let sc = (try? await stripchat) ?? []
+            let pd = (try? await panda) ?? []
             var seen = Set<String>()
             var rooms: [Room] = []
-            for room in sc + cb where seen.insert(room.id).inserted {
+            for room in sc + pd + cb where seen.insert(room.id).inserted {
                 rooms.append(room)
             }
             results = rooms

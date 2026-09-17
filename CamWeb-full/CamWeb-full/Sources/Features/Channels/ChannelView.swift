@@ -147,9 +147,16 @@ struct ChannelListPage: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("全部") { applyGender("") }
-                    Button("Women") { applyGender("f") }
-                    Button("Couples") { applyGender("c") }
+                    if platform == .panda {
+                        Button("观看人数") { applyGender("") }
+                        Button("热门") { applyGender("hot") }
+                        Button("最新") { applyGender("new") }
+                        Button("NEW BJ") { applyGender("newbj") }
+                    } else {
+                        Button("全部") { applyGender("") }
+                        Button("Women") { applyGender("f") }
+                        Button("Couples") { applyGender("c") }
+                    }
                 } label: {
                     Label(currentSectionTitle, systemImage: "line.3.horizontal.decrease.circle")
                         .labelStyle(.titleAndIcon)
@@ -165,6 +172,14 @@ struct ChannelListPage: View {
     }
 
     private var currentSectionTitle: String {
+        if platform == .panda {
+            switch localGender {
+            case "hot": return "热门"
+            case "new": return "最新"
+            case "newbj": return "NEW BJ"
+            default: return "观看人数"
+            }
+        }
         switch localGender {
         case "f": return "Women"
         case "c": return "Couples"
@@ -195,6 +210,9 @@ struct ChannelListPage: View {
             if platform == .stripchat {
                 let primary = requestedGender == "c" ? "couples" : (requestedGender == "m" ? "men" : "girls")
                 fetched = try await StripchatAPI.fetch(offset: 0, primary: primary)
+            } else if platform == .panda {
+                let sort = requestedGender.isEmpty ? "user" : requestedGender
+                fetched = try await PandaAPI.fetch(offset: 0, sort: sort)
             } else {
                 fetched = try await RoomAPI.fetchRooms(
                     offset: 0,
@@ -224,6 +242,9 @@ struct ChannelListPage: View {
             if platform == .stripchat {
                 let primary = requestedGender == "c" ? "couples" : (requestedGender == "m" ? "men" : "girls")
                 more = try await StripchatAPI.fetch(offset: requestedOffset, primary: primary)
+            } else if platform == .panda {
+                let sort = requestedGender.isEmpty ? "user" : requestedGender
+                more = try await PandaAPI.fetch(offset: requestedOffset, sort: sort)
             } else {
                 more = try await RoomAPI.fetchRooms(
                     offset: requestedOffset,

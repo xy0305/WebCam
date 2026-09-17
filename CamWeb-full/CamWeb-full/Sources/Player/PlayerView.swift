@@ -44,12 +44,18 @@ struct PlayerView: View {
         if stream?.requestContext.origin?.contains("stripchat") == true {
             return Room(platform: .stripchat, username: username)
         }
+        if stream?.requestContext.origin?.contains("pandalive") == true {
+            return Room(platform: .panda, username: username)
+        }
         return Room(username: username)
     }
 
     private var shareURL: URL {
         if displayRoom.platform == .stripchat || stream?.requestContext.origin?.contains("stripchat") == true {
             return URL(string: "https://zh.stripchat.com/\(username)/")!
+        }
+        if displayRoom.platform == .panda || stream?.requestContext.origin?.contains("pandalive") == true {
+            return URL(string: "https://www.pandalive.co.kr/play/\(username)")!
         }
         return URL(string: "https://chaturbate.com/\(username)/")!
     }
@@ -100,6 +106,8 @@ struct PlayerView: View {
             await resolve()
             if displayRoom.platform == .stripchat {
                 recommended = await StripchatAPI.fetchRecommended(excluding: username)
+            } else if displayRoom.platform == .panda {
+                recommended = await PandaAPI.fetchRecommended(excluding: username)
             } else {
                 recommended = await RoomAPI.fetchRecommended(username: username)
             }
@@ -697,10 +705,7 @@ struct PlayerView: View {
 
     private var playerOptions: KSOptions {
         let o = KSOptions()
-        if displayRoom.platform != .stripchat {
-            o.appendHeader(APIClient.commonHeaders)
-        } else {
-            // StripCam 普通 HLS：KSMEPlayer 主路，AVPlayer 兜底；请求头对齐插件 playHeaders。
+        if displayRoom.platform == .stripchat {
             KSOptions.firstPlayerType = KSMEPlayer.self
             KSOptions.secondPlayerType = KSAVPlayer.self
             o.appendHeader([
@@ -709,6 +714,17 @@ struct PlayerView: View {
                 "Referer": "https://zh.stripchat.com/",
                 "Origin": "https://zh.stripchat.com"
             ])
+        } else if displayRoom.platform == .panda {
+            KSOptions.firstPlayerType = KSMEPlayer.self
+            KSOptions.secondPlayerType = KSAVPlayer.self
+            o.appendHeader([
+                "User-Agent": PandaAPI.userAgent,
+                "Accept": "*/*",
+                "Referer": stream?.requestContext.referer ?? "https://www.pandalive.co.kr/",
+                "Origin": "https://www.pandalive.co.kr"
+            ])
+        } else {
+            o.appendHeader(APIClient.commonHeaders)
         }
         KSOptions.isAutoPlay = true
         o.videoAdaptable = false
@@ -784,6 +800,8 @@ struct PlayerView: View {
         do {
             if displayRoom.platform == .stripchat {
                 stream = try await StripchatStreamSource.resolve(room: displayRoom)
+            } else if displayRoom.platform == .panda {
+                stream = try await PandaStreamSource.resolve(room: displayRoom)
             } else {
                 stream = try await StreamSource.resolve(username: username)
             }

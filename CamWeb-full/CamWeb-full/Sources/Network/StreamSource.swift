@@ -7,6 +7,9 @@ struct HLSRequestContext: Sendable {
     static func stripchat(username: String) -> HLSRequestContext {
         HLSRequestContext(referer: "https://zh.stripchat.com/\(username)/", origin: "https://zh.stripchat.com")
     }
+    static func panda(roomId: String) -> HLSRequestContext {
+        HLSRequestContext(referer: "https://www.pandalive.co.kr/play/\(roomId)", origin: "https://www.pandalive.co.kr")
+    }
 }
 
 struct ResolvedStream: Sendable {
@@ -27,6 +30,7 @@ enum StreamSource {
     /// 统一入口：录制重连必须按房间平台重新解析，不能把 Stripchat 用户名送进 Chaturbate 接口。
     static func resolve(room: Room) async throws -> ResolvedStream {
         if room.platform == .stripchat { return try await StripchatStreamSource.resolve(room: room) }
+        if room.platform == .panda { return try await PandaStreamSource.resolve(room: room) }
         return try await resolve(username: room.username)
     }
 

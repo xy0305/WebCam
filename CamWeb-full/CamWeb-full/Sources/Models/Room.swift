@@ -1,8 +1,14 @@
 import Foundation
 
 enum CamPlatform: String, Codable, Hashable, CaseIterable {
-    case chaturbate, stripchat
-    var title: String { self == .chaturbate ? "Chaturbate" : "Stripchat" }
+    case chaturbate, stripchat, panda
+    var title: String {
+        switch self {
+        case .chaturbate: return "Chaturbate"
+        case .stripchat: return "Stripchat"
+        case .panda: return "PandaTV"
+        }
+    }
 }
 
 struct RoomListResponse: Decodable {
@@ -58,6 +64,8 @@ struct Room: Decodable, Identifiable, Hashable {
         switch platform {
         case .stripchat:
             return URL(string: "https://zh.stripchat.com/\(username)/")
+        case .panda:
+            return URL(string: "https://www.pandalive.co.kr/play/\(username)")
         case .chaturbate:
             return URL(string: "https://chaturbate.com/\(username)/")
         }
@@ -137,7 +145,7 @@ struct Room: Decodable, Identifiable, Hashable {
         self.platform = platform
         self.platformRoomID = platformRoomID
         self.presets = presets
-        self.username = username.lowercased()
+        self.username = platform == .panda ? username : username.lowercased()
         self.displayName = displayName ?? username
         self.roomSubject = roomSubject
         self.numUsers = numUsers
