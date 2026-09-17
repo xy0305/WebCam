@@ -166,42 +166,41 @@ enum StripchatAPI {
 }
 
 enum StripchatStreamSource {
+    /// 与 StripCam 插件 qualityModels 同一组 CDN、同一顺序。
     private static let cdnHosts = [
-        "saawsedge.com", "growcdnssedge.com",
-        "doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"
+        "saawsedge.com", "growcdnssedge.com", "doppiocdn.com"
     ]
 
     static func resolve(room: Room) async throws -> ResolvedStream {
         let id = try await modelID(for: room)
         let context = HLSRequestContext.stripchat(username: room.username)
-        async let keysTask = StripchatMouflon.keys()
-        let (master, text) = try await fetchAutoPlaylist(id: id, context: context)
-        guard text.contains("#EXTM3U") else { throw StreamSourceError.badResponse }
-        let keys = mouflonKeys(in: text)
-        let pdkeys = await keysTask
-        let matched = keys.first { pdkeys[$0] != nil } ?? keys.first
-        let pdkey = matched.flatMap { pdkeys[$0] }
-        let rawMedia: URL
-        if text.contains("#EXT-X-STREAM-INF") {
-            let variants = parseVariants(text, base: master)
-            guard let best = variants.first else { throw StreamSourceError.blocked }
-            rawMedia = best.url
-        } else {
-            rawMedia = master
-        }
-        let media = try await pickWorkingMedia(rawMedia, keys: keys, prefer: matched, context: context)
-        let playURL = try await StripchatPlaylistProxy.shared.playbackURL(
-            id: id, remote: media, context: context, keys: keys, pdkey: pdkey
-        )
+        let host = cdnHosts[0]
+        // StripCam getPlayback：开播前不拉 CDN，直接把 _auto.m3u8 交给播放器。
+        let master = playlistURL(id: id, host: host, file: "\(id)_auto.m3u8", lowLatency: false)
+        let quality = preferredQuality(room.presets)
+        let media = playlistURL(id: id, host: host, file: "\(id)_\(quality).m3u8", lowLatency: true)
         return ResolvedStream(
             username: room.username,
             requestContext: context,
-            hlsURL: playURL,
+            hlsURL: master,
             masterURL: master,
             videoPlaylist: media,
             audioPlaylist: nil,
             status: room.roomSubject ?? "public"
         )
+    }
+
+    private static func preferredQuality(_ presets: [String]?) -> String {
+        let order = (presets ?? ["1080p", "960p", "720p", "480p", "240p", "160p"])
+            .filter { !$0.localizedCaseInsensitiveContains("blurred") }
+            .sorted { (Int($0.filter(\.isNumber)) ?? 0) > (Int($1.filter(\.isNumber)) ?? 0) }
+        return order.first ?? "1080p"
+    }
+
+    private static func playlistURL(id: String, host: String, file: String, lowLatency: Bool) -> URL {
+        let url = URL(string: "https://edge-hls.\(host)/hls/\(id)/master/\(file)")!
+        guard lowLatency else { return url }
+        return decorate(url.absoluteString, base: url, pkey: nil, lowLatency: true) ?? url
     }
 
     private static func modelID(for room: Room) async throws -> String {
