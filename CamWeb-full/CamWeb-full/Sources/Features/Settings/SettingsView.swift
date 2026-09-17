@@ -8,91 +8,20 @@ struct SettingsView: View {
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
-    @State private var showPasteChaturbateCookie = false
-    @State private var showPasteCookie = false
-    @State private var showPastePandaCookie = false
-    @State private var pastedChaturbateCookie = ""
+    @State private var pasteKind: CookiePasteKind?
     @State private var pastedCookie = ""
-    @State private var pastedPandaCookie = ""
-    @State private var chaturbateCookieError = false
-    @State private var cookieError = false
-    @State private var pandaCookieError = false
+    @State private var cookieAlert: CookieAlert?
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("账号") {
-                    LabeledContent("状态", value: auth.isLoggedIn ? "已登录" : (auth.continueAsGuest ? "游客" : "未登录"))
-                    if auth.isLoggedIn {
-                        LabeledContent("用户名", value: auth.account?.username ?? "-")
-                    }
-                    LabeledContent("会话 Cookie", value: CookieBridge.hasSessionCookie() ? "有效" : "无")
-                }
-
-                Section("Chaturbate Cookie 登录") {
-                    LabeledContent("状态", value: auth.isLoggedIn ? (auth.account?.username.map { "已登录 \($0)" } ?? "Cookie 已保存") : (CookieBridge.hasSessionCookie() ? "Cookie 已保存" : "未连接"))
-                    Button("网页登录 Chaturbate") { showChaturbateLogin = true }
-                    Button("粘贴 Cookie") { pastedChaturbateCookie = ""; showPasteChaturbateCookie = true }
-                    Text("公开浏览和播放不需要 Cookie。网页登录或粘贴 sessionid，可过验证码、看关注列表。不会保存密码，也不会解锁私密或付费房间。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-
-                Section("Stripchat Cookie 登录") {
-                    LabeledContent("状态", value: stripchat.hasCookie ? "Cookie 已保存" : "未连接")
-                    Button("网页登录 Stripchat") { showStripchatLogin = true }
-                    Button("粘贴 Cookie") { pastedCookie = ""; showPasteCookie = true }
-                    if stripchat.hasCookie {
-                        Button("断开 Stripchat", role: .destructive) { stripchat.clear() }
-                    }
-                    Text("公开浏览和播放不需要 Cookie；Cookie 仅用于你的 Stripchat 收藏。不会保存密码，也不会解锁私密或付费内容。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-
-                Section("PandaTV Cookie 登录") {
-                    LabeledContent("状态", value: panda.hasCookie ? (panda.userName.map { "已登录 \($0)" } ?? "Cookie 已保存") : "未连接")
-                    Button("网页登录 PandaTV") { showPandaLogin = true }
-                    Button("粘贴 Cookie") { pastedPandaCookie = ""; showPastePandaCookie = true }
-                    if panda.hasCookie {
-                        Button("断开 PandaTV", role: .destructive) { panda.clear() }
-                    }
-                    Text("对照 StripCam：移动端 /my 登录，信号 cookie 是 sessKey。未登录可看公开列表；密码房和需登录的房间仍打不开。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-
-                Section("播放") {
-                    LabeledContent("播放器", value: "KSPlayer")
-                    LabeledContent("录制", value: "HLS 源流切片")
-                }
-
-                Section {
-                    if auth.isLoggedIn || CookieBridge.hasSessionCookie() {
-                        Button(role: .destructive) {
-                            Task {
-                                loggingOut = true
-                                await auth.logout()
-                                loggingOut = false
-                            }
-                        } label: {
-                            if loggingOut {
-                                ProgressView()
-                            } else {
-                                Text("退出登录")
-                            }
-                        }
-                    } else {
-                        Button {
-                            auth.continueAsGuest = false
-                        } label: {
-                            Text("去登录")
-                        }
-                    }
-                }
-
-                Section {
-                    Text("登录只为带上你自己的官网会话。不会保存密码。私密/付费房间不会被解锁。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                accountSection
+                chaturbateSection
+                stripchatSection
+                pandaSection
+                playbackSection
+                logoutSection
+                footerSection
             }
             .navigationTitle("设置")
             .sheet(isPresented: $showChaturbateLogin) {
@@ -103,50 +32,205 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showStripchatLogin) { StripchatLoginView() }
             .sheet(isPresented: $showPandaLogin) { PandaLoginView() }
-            .alert("粘贴 Chaturbate Cookie", isPresented: $showPasteChaturbateCookie) {
-                TextField("sessionid=...; csrftoken=...", text: $pastedChaturbateCookie, axis: .vertical)
-                Button("取消", role: .cancel) {}
-                Button("保存") {
-                    Task { await saveChaturbateCookie() }
+            .alert(
+                pasteKind?.title ?? "粘贴 Cookie",
+                isPresented: Binding(
+                    get: { pasteKind != nil },
+                    set: { if !$0 { pasteKind = nil } }
+                )
+            ) {
+                TextField(pasteKind?.placeholder ?? "", text: $pastedCookie, axis: .vertical)
+                Button("取消", role: .cancel) { pasteKind = nil }
+                Button("保存") { savePastedCookie() }
+            } message: {
+                Text(pasteKind?.message ?? "")
+            }
+            .alert(
+                cookieAlert?.title ?? "Cookie 无效",
+                isPresented: Binding(
+                    get: { cookieAlert != nil },
+                    set: { if !$0 { cookieAlert = nil } }
+                )
+            ) {
+                Button("好", role: .cancel) { cookieAlert = nil }
+            } message: {
+                Text(cookieAlert?.message ?? "")
+            }
+        }
+    }
+
+    private var accountSection: some View {
+        Section("账号") {
+            LabeledContent("状态", value: accountStatus)
+            if auth.isLoggedIn {
+                LabeledContent("用户名", value: auth.account?.username ?? "-")
+            }
+            LabeledContent("会话 Cookie", value: CookieBridge.hasSessionCookie() ? "有效" : "无")
+        }
+    }
+
+    private var chaturbateSection: some View {
+        Section("Chaturbate Cookie 登录") {
+            LabeledContent("状态", value: chaturbateStatus)
+            Button("网页登录 Chaturbate") { showChaturbateLogin = true }
+            Button("粘贴 Cookie") { beginPaste(.chaturbate) }
+            Text("公开浏览和播放不需要 Cookie。网页登录或粘贴 sessionid，可过验证码、看关注列表。不会保存密码，也不会解锁私密或付费房间。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private var stripchatSection: some View {
+        Section("Stripchat Cookie 登录") {
+            LabeledContent("状态", value: stripchat.hasCookie ? "Cookie 已保存" : "未连接")
+            Button("网页登录 Stripchat") { showStripchatLogin = true }
+            Button("粘贴 Cookie") { beginPaste(.stripchat) }
+            if stripchat.hasCookie {
+                Button("断开 Stripchat", role: .destructive) { stripchat.clear() }
+            }
+            Text("公开浏览和播放不需要 Cookie；Cookie 仅用于你的 Stripchat 收藏。不会保存密码，也不会解锁私密或付费内容。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private var pandaSection: some View {
+        Section("PandaTV Cookie 登录") {
+            LabeledContent("状态", value: pandaStatus)
+            Button("网页登录 PandaTV") { showPandaLogin = true }
+            Button("粘贴 Cookie") { beginPaste(.panda) }
+            if panda.hasCookie {
+                Button("断开 PandaTV", role: .destructive) { panda.clear() }
+            }
+            Text("对照 StripCam：移动端 /my 登录，信号 cookie 是 sessKey。未登录可看公开列表；密码房和需登录的房间仍打不开。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private var playbackSection: some View {
+        Section("播放") {
+            LabeledContent("播放器", value: "KSPlayer")
+            LabeledContent("录制", value: "HLS 源流切片")
+        }
+    }
+
+    private var logoutSection: some View {
+        Section {
+            if auth.isLoggedIn || CookieBridge.hasSessionCookie() {
+                Button(role: .destructive) {
+                    Task {
+                        loggingOut = true
+                        await auth.logout()
+                        loggingOut = false
+                    }
+                } label: {
+                    if loggingOut {
+                        ProgressView()
+                    } else {
+                        Text("退出登录")
+                    }
                 }
-            } message: {
-                Text("粘贴浏览器中 chaturbate.com 的完整 Cookie，必须包含 sessionid。")
+            } else {
+                Button("去登录") { auth.continueAsGuest = false }
             }
-            .alert("粘贴 Stripchat Cookie", isPresented: $showPasteCookie) {
-                TextField("name=value; name2=value2", text: $pastedCookie, axis: .vertical)
-                Button("取消", role: .cancel) {}
-                Button("保存") { cookieError = !stripchat.save(pastedCookie) }
-            } message: {
-                Text("粘贴浏览器中 Stripchat 的完整 Cookie，不要带 Set-Cookie: 前缀。")
-            }
-            .alert("粘贴 PandaTV Cookie", isPresented: $showPastePandaCookie) {
-                TextField("sessKey=...", text: $pastedPandaCookie, axis: .vertical)
-                Button("取消", role: .cancel) {}
-                Button("保存") { pandaCookieError = !panda.save(pastedPandaCookie) }
-            } message: {
-                Text("粘贴浏览器中 pandalive.co.kr 的完整 Cookie，必须包含 sessKey。")
-            }
-            .alert("Cookie 格式无效", isPresented: $cookieError) {
-                Button("好", role: .cancel) {}
-            } message: { Text("请输入至少一个 name=value 格式的 Cookie。") }
-            .alert("PandaTV Cookie 无效", isPresented: $pandaCookieError) {
-                Button("好", role: .cancel) {}
-            } message: { Text("必须包含 sessKey= 这一项。") }
-            .alert("Chaturbate Cookie 无效", isPresented: $chaturbateCookieError) {
-                Button("好", role: .cancel) {}
-            } message: { Text("必须包含 sessionid= 这一项。") }
+        }
+    }
+
+    private var footerSection: some View {
+        Section {
+            Text("登录只为带上你自己的官网会话。不会保存密码。私密/付费房间不会被解锁。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var accountStatus: String {
+        if auth.isLoggedIn { return "已登录" }
+        if auth.continueAsGuest { return "游客" }
+        return "未登录"
+    }
+
+    private var chaturbateStatus: String {
+        if let name = auth.account?.username, auth.isLoggedIn { return "已登录 \(name)" }
+        if CookieBridge.hasSessionCookie() { return "Cookie 已保存" }
+        return "未连接"
+    }
+
+    private var pandaStatus: String {
+        if let name = panda.userName, panda.hasCookie { return "已登录 \(name)" }
+        if panda.hasCookie { return "Cookie 已保存" }
+        return "未连接"
+    }
+
+    private func beginPaste(_ kind: CookiePasteKind) {
+        pastedCookie = ""
+        pasteKind = kind
+    }
+
+    private func savePastedCookie() {
+        guard let kind = pasteKind else { return }
+        pasteKind = nil
+        switch kind {
+        case .chaturbate:
+            Task { await saveChaturbateCookie() }
+        case .stripchat:
+            if !stripchat.save(pastedCookie) { cookieAlert = .invalidStripchat }
+        case .panda:
+            if !panda.save(pastedCookie) { cookieAlert = .invalidPanda }
         }
     }
 
     private func saveChaturbateCookie() async {
-        guard CookieBridge.saveChaturbateCookie(pastedChaturbateCookie) else {
-            chaturbateCookieError = true
+        guard CookieBridge.saveChaturbateCookie(pastedCookie) else {
+            cookieAlert = .invalidChaturbate
             return
         }
         if let name = await auth.fetchContextUsername() {
             auth.markLoggedIn(username: name)
         } else {
             auth.markLoggedIn(username: "chaturbate")
+        }
+    }
+}
+
+private enum CookiePasteKind: Identifiable {
+    case chaturbate, stripchat, panda
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .chaturbate: return "粘贴 Chaturbate Cookie"
+        case .stripchat: return "粘贴 Stripchat Cookie"
+        case .panda: return "粘贴 PandaTV Cookie"
+        }
+    }
+    var placeholder: String {
+        switch self {
+        case .chaturbate: return "sessionid=...; csrftoken=..."
+        case .stripchat: return "name=value; name2=value2"
+        case .panda: return "sessKey=..."
+        }
+    }
+    var message: String {
+        switch self {
+        case .chaturbate: return "粘贴浏览器中 chaturbate.com 的完整 Cookie，必须包含 sessionid。"
+        case .stripchat: return "粘贴浏览器中 Stripchat 的完整 Cookie，不要带 Set-Cookie: 前缀。"
+        case .panda: return "粘贴浏览器中 pandalive.co.kr 的完整 Cookie，必须包含 sessKey。"
+        }
+    }
+}
+
+private enum CookieAlert {
+    case invalidChaturbate, invalidStripchat, invalidPanda
+    var title: String {
+        switch self {
+        case .invalidChaturbate: return "Chaturbate Cookie 无效"
+        case .invalidStripchat: return "Cookie 格式无效"
+        case .invalidPanda: return "PandaTV Cookie 无效"
+        }
+    }
+    var message: String {
+        switch self {
+        case .invalidChaturbate: return "必须包含 sessionid= 这一项。"
+        case .invalidStripchat: return "请输入至少一个 name=value 格式的 Cookie。"
+        case .invalidPanda: return "必须包含 sessKey= 这一项。"
         }
     }
 }
