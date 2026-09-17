@@ -617,7 +617,11 @@ enum RecHLS {
     }
 
     private static func encodeIfNeeded(_ url: URL) -> URL {
-        StripchatPlaylistProxy.encodedRemote(url.absoluteString, base: url) ?? url
+        guard let host = url.host?.lowercased(),
+              host.contains("doppiocdn") || host.contains("saawsedge") || host.contains("growcdn") else {
+            return url
+        }
+        return StripchatPlaylistProxy.encodedRemote(url.absoluteString, base: url) ?? url
     }
 
     private static func isStripchat(_ context: HLSRequestContext) -> Bool {
