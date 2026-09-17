@@ -10,6 +10,9 @@ struct HLSRequestContext: Sendable {
     static func panda(roomId: String) -> HLSRequestContext {
         HLSRequestContext(referer: "https://www.pandalive.co.kr/play/\(roomId)", origin: "https://www.pandalive.co.kr")
     }
+    var cookieHeader: String? {
+        origin?.contains("pandalive") == true ? PandaSession.shared.cookieHeader : nil
+    }
 }
 
 struct ResolvedStream: Sendable {

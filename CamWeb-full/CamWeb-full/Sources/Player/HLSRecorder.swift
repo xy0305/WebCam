@@ -50,6 +50,24 @@ final class RecordingManager: ObservableObject {
         refreshIdle(masterURL: stream.videoPlaylist)
     }
 
+    /// PandaTV：19+ / 登录房必须把 sessKey Cookie、Origin、Referer 带到 playlist 和分片。
+    func startPanda(room: Room, stream: ResolvedStream) {
+        let name = room.username.lowercased()
+        guard sessions[name] == nil else { return }
+        let context = stream.requestContext
+        let captured = room
+        let session = RecordingSession(username: name, videoPlaylist: stream.videoPlaylist,
+                                       audioPlaylist: stream.audioPlaylist, context: context,
+                                       refresh: { try await PandaStreamSource.resolve(room: captured) })
+        session.onFinished = { [weak self] name, message in
+            self?.sessions[name] = nil; self?.banner = message
+            self?.libraryRevision += 1; self?.refreshIdle()
+        }
+        sessions[name] = session
+        session.start()
+        refreshIdle(masterURL: stream.videoPlaylist)
+    }
+
     /// Chaturbate 既有录制链路：保持原 RecHLS + HLSPackager 实现不变。
     func start(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         let name = username.lowercased()
@@ -581,6 +599,12 @@ enum RecHLS {
         req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("*/*", forHTTPHeaderField: "Accept")
         req.setValue(context.referer, forHTTPHeaderField: "Referer")
+        if let origin = context.origin, !origin.isEmpty {
+            req.setValue(origin, forHTTPHeaderField: "Origin")
+        }
+        if let cookie = context.cookieHeader {
+            req.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
         return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
             group.addTask {
                 let (data, resp) = try await session.data(for: req)

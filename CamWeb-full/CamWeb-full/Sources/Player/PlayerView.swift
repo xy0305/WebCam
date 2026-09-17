@@ -818,6 +818,8 @@ struct PlayerView: View {
             recs.stop(username)
         } else if displayRoom.platform == .stripchat {
             recs.startStripchat(room: displayRoom, stream: stream)
+        } else if displayRoom.platform == .panda {
+            recs.startPanda(room: displayRoom, stream: stream)
         } else {
             recs.start(
                 username: username,
