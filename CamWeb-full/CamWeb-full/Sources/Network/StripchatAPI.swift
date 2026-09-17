@@ -177,8 +177,8 @@ enum StripchatStreamSource {
         let host = cdnHosts[0]
         // StripCam getPlayback：开播前不拉 CDN，直接把 _auto.m3u8 交给播放器。
         let master = playlistURL(id: id, host: host, file: "\(id)_auto.m3u8", lowLatency: false)
-        let quality = preferredQuality(room.presets)
-        let media = playlistURL(id: id, host: host, file: "\(id)_\(quality).m3u8", lowLatency: true)
+        let media = (try? await recordingPlaylist(id: id, master: master, room: room, context: context))
+            ?? playlistURL(id: id, host: host, file: "\(id)_\(preferredQuality(room.presets)).m3u8", lowLatency: true)
         return ResolvedStream(
             username: room.username,
             requestContext: context,
@@ -188,6 +188,28 @@ enum StripchatStreamSource {
             audioPlaylist: nil,
             status: room.roomSubject ?? "public"
         )
+    }
+
+    /// 录制必须拿带 pkey 的真实媒体清单；公开 URI 是 media.mp4 占位。
+    private static func recordingPlaylist(id: String, master: URL, room: Room, context: HLSRequestContext) async throws -> URL {
+        async let keysTask = StripchatMouflon.keys()
+        let text = try await playlistText(master, context: context)
+        guard text.contains("#EXTM3U") else { throw StreamSourceError.badResponse }
+        let keys = mouflonKeys(in: text)
+        let pdkeys = await keysTask
+        let matched = keys.first { pdkeys[$0] != nil } ?? keys.first
+        let rawMedia: URL
+        if text.contains("#EXT-X-STREAM-INF") {
+            let variants = parseVariants(text, base: master)
+            if let best = variants.first {
+                rawMedia = best.url
+            } else {
+                rawMedia = playlistURL(id: id, host: cdnHosts[0], file: "\(id)_\(preferredQuality(room.presets)).m3u8", lowLatency: true)
+            }
+        } else {
+            rawMedia = master
+        }
+        return try await pickWorkingMedia(rawMedia, keys: keys, prefer: matched, context: context)
     }
 
     private static func preferredQuality(_ presets: [String]?) -> String {

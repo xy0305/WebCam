@@ -530,8 +530,6 @@ enum FFmpegLocalMuxer {
 }
 
 enum RecHLS {
-    private static let cdnTLDs = ["doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"]
-
     static let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.httpMaximumConnectionsPerHost = 8
@@ -599,14 +597,19 @@ enum RecHLS {
         }
     }
 
+    private static let cdnHosts = [
+        "saawsedge.com", "growcdnssedge.com",
+        "doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"
+    ]
+
     private static func candidates(for url: URL, context: HLSRequestContext) -> [URL] {
         let encoded = encodeIfNeeded(url)
         guard isStripchat(context), let host = encoded.host,
-              let src = cdnTLDs.first(where: { host.hasSuffix($0) }) else {
+              let src = cdnHosts.first(where: { host.hasSuffix($0) }) else {
             return [encoded]
         }
         var out: [URL] = [encoded]
-        for tld in cdnTLDs where tld != src {
+        for tld in cdnHosts where tld != src {
             let raw = encoded.absoluteString.replacingOccurrences(of: src, with: tld)
             if let item = URL(string: raw), !out.contains(item) { out.append(item) }
         }
@@ -614,8 +617,7 @@ enum RecHLS {
     }
 
     private static func encodeIfNeeded(_ url: URL) -> URL {
-        guard url.host?.contains("doppiocdn") == true else { return url }
-        return StripchatPlaylistProxy.encodedRemote(url.absoluteString, base: url) ?? url
+        StripchatPlaylistProxy.encodedRemote(url.absoluteString, base: url) ?? url
     }
 
     private static func isStripchat(_ context: HLSRequestContext) -> Bool {
@@ -947,7 +949,8 @@ enum HLSPackager {
                 currentPkey = line.split(separator: ":").last.map(String.init)
             } else if line.hasPrefix("#EXT-X-MOUFLON:URI:") {
                 let raw = String(line.dropFirst("#EXT-X-MOUFLON:URI:".count))
-                pendingMouflon = resolve(StripchatMouflon.decrypt(raw, pkey: currentPkey), base: base)
+                let decoded = StripchatMouflon.decrypt(raw, pdkey: StripchatMouflon.pdkey(for: currentPkey))
+                pendingMouflon = resolve(decoded == raw ? StripchatMouflon.decrypt(raw, pkey: currentPkey) : decoded, base: base)
             } else if line.hasPrefix("#EXTINF:") {
                 let raw = line.dropFirst("#EXTINF:".count)
                 let num = raw.split(separator: ",").first.map(String.init) ?? "2"
