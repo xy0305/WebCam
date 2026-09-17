@@ -715,14 +715,18 @@ struct PlayerView: View {
                 "Origin": "https://zh.stripchat.com"
             ])
         } else if displayRoom.platform == .panda {
-            KSOptions.firstPlayerType = KSMEPlayer.self
-            KSOptions.secondPlayerType = KSAVPlayer.self
+            // 刚接入时能播：直出 play 接口 HLS。FFmpeg 不走系统 VPN，Panda 改走 AVPlayer。
+            KSOptions.firstPlayerType = KSAVPlayer.self
+            KSOptions.secondPlayerType = KSMEPlayer.self
             o.appendHeader([
                 "User-Agent": PandaAPI.userAgent,
                 "Accept": "*/*",
                 "Referer": stream?.requestContext.referer ?? "https://www.pandalive.co.kr/",
                 "Origin": "https://www.pandalive.co.kr"
             ])
+            if let cookie = PandaSession.shared.cookieHeader {
+                o.appendHeader(["Cookie": cookie])
+            }
         } else {
             o.appendHeader(APIClient.commonHeaders)
         }

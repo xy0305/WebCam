@@ -864,6 +864,28 @@ enum HLSPackager {
                     return
                 }
                 let parsed = HLSPackager.parse(text, base: current)
+                if parsed.segments.isEmpty, let follow = HLSPackager.bestVariant(text, base: current), follow != current {
+                    lock.lock()
+                    if generation == gen { _playlist = follow }
+                    lock.unlock()
+                    let (more, moreHTTP) = try await RecHLS.data(for: follow, context: context)
+                    guard (200..<300).contains(moreHTTP.statusCode),
+                          let moreText = String(data: more, encoding: .utf8) else {
+                        noteFailure(status: moreHTTP.statusCode)
+                        return
+                    }
+                    let nested = HLSPackager.parse(moreText, base: follow)
+                    guard !nested.segments.isEmpty else { noteFailure(status: nil); return }
+                    noteSuccess()
+                    if !mapDone, let map = nested.map {
+                        if let chunk = await RecHLS.bytes(map, context: context), !chunk.isEmpty {
+                            writer.writeInit(chunk, isAudio: isAudio)
+                            lock.lock(); if generation == gen { mapDone = true }; lock.unlock()
+                        }
+                    }
+                    enqueue(nested.segments, generation: gen)
+                    return
+                }
                 guard !parsed.segments.isEmpty else { noteFailure(status: nil); return }
                 noteSuccess()
                 if !mapDone, let map = parsed.map {
@@ -998,6 +1020,24 @@ enum HLSPackager {
         }
         if out.target < 1 { out.target = 4 }
         return out
+    }
+
+    static func bestVariant(_ doc: String, base: URL) -> URL? {
+        var bandwidth = 0
+        var best: (Int, URL)?
+        for raw in doc.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("#EXT-X-STREAM-INF:") {
+                if let r = line.range(of: "BANDWIDTH=") {
+                    bandwidth = Int(line[r.upperBound...].prefix(while: { $0.isNumber })) ?? 0
+                }
+            } else if !line.isEmpty, !line.hasPrefix("#"),
+                      let url = resolve(line, base: base) {
+                if best == nil || bandwidth > best!.0 { best = (bandwidth, url) }
+                bandwidth = 0
+            }
+        }
+        return best?.1
     }
 
     private static func isPlaceholderMedia(_ url: URL) -> Bool {

@@ -187,51 +187,15 @@ enum PandaStreamSource {
         }
         let master = try firstPlaylist(play)
         let context = HLSRequestContext.panda(roomId: userId)
-        let video = (try? await mediaPlaylist(from: master, context: context)) ?? master
         return ResolvedStream(
             username: userId,
             requestContext: context,
             hlsURL: master,
             masterURL: master,
-            videoPlaylist: video,
+            videoPlaylist: master,
             audioPlaylist: nil,
             status: "public"
         )
-    }
-
-    /// 录制需要媒体清单。19+ 的 master 往往带鉴权 query，分片请求必须带同一套 Cookie/Referer。
-    private static func mediaPlaylist(from master: URL, context: HLSRequestContext) async throws -> URL {
-        var req = URLRequest(url: master)
-        req.timeoutInterval = 12
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        req.setValue(PandaAPI.userAgent, forHTTPHeaderField: "User-Agent")
-        req.setValue("*/*", forHTTPHeaderField: "Accept")
-        req.setValue(context.referer, forHTTPHeaderField: "Referer")
-        req.setValue(context.origin ?? PandaAPI.webHost, forHTTPHeaderField: "Origin")
-        if let cookie = context.cookieHeader {
-            req.setValue(cookie, forHTTPHeaderField: "Cookie")
-        }
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              let text = String(data: data, encoding: .utf8), text.contains("#EXTM3U") else {
-            throw StreamSourceError.badResponse
-        }
-        if !text.contains("#EXT-X-STREAM-INF") { return master }
-        var bandwidth = 0
-        var best: (Int, URL)?
-        for raw in text.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.hasPrefix("#EXT-X-STREAM-INF:") {
-                if let r = line.range(of: "BANDWIDTH=") {
-                    bandwidth = Int(line[r.upperBound...].prefix(while: { $0.isNumber })) ?? 0
-                }
-            } else if !line.isEmpty, !line.hasPrefix("#"),
-                      let url = URL(string: line, relativeTo: master)?.absoluteURL {
-                if best == nil || bandwidth > best!.0 { best = (bandwidth, url) }
-                bandwidth = 0
-            }
-        }
-        return best?.1 ?? master
     }
 
     private static func userIdx(for room: Room) async throws -> String {
