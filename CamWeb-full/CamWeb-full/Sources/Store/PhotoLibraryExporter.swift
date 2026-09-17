@@ -29,13 +29,16 @@ enum PhotoLibraryExporter {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else { throw ExportError.denied }
 
-        // Photos 对第三方封装 MP4 的索引/时间戳比播放器严格；使用系统媒体栈重封装为 MOV。
         let compatible = try await remuxForPhotos(url)
         defer { if compatible != url { try? FileManager.default.removeItem(at: compatible) } }
 
         do {
+            let filename = "\(RecordingStore.exportFileStem(from: url)).mov"
             try await PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: compatible)
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.originalFilename = filename
+                request.addResource(with: .video, fileURL: compatible, options: options)
             }
         } catch let error as NSError {
             if error.domain == PHPhotosErrorDomain, error.code == 3302 {
@@ -57,8 +60,9 @@ enum PhotoLibraryExporter {
             throw ExportError.incompatible
         }
 
+        let stem = RecordingStore.exportFileStem(from: source)
         let output = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CamWeb-Photos-\(UUID().uuidString).mov")
+            .appendingPathComponent("\(stem).mov")
         try? FileManager.default.removeItem(at: output)
         session.outputURL = output
         session.outputFileType = .mov

@@ -128,7 +128,7 @@ struct RecordingsView: View {
                                 Button { exportToAlbum(url) } label: {
                                     Label("导出到相册", systemImage: "square.and.arrow.down")
                                 }
-                                ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
+                                ShareLink(item: RecordingStore.shareURL(for: url)) { Label("分享", systemImage: "square.and.arrow.up") }
                                 Button(role: .destructive) {
                                     RecordingStore.delete(url); files = RecordingStore.list()
                                 } label: { Label("删除", systemImage: "trash") }
@@ -230,7 +230,7 @@ struct RecordingsView: View {
     private func deleteAllRecordings() {
         let count = files.count
         // 清掉录像列表以外的 .part 分片和封装残留，否则它们会继续占用 App 存储。
-        RecordingStore.clearAll(excludingActiveUsernames: recs.activeUsernames)
+        RecordingStore.clearAll(excludingActiveUsernames: recs.activeUsernames, excludingStems: recs.activeFileStems)
         files = RecordingStore.list()
         recs.noteLibraryChanged()
         exportBanner = "已删除全部录像与缓存（共 \(count) 个）"
@@ -280,7 +280,7 @@ struct RecordingsView: View {
                 isExportingAll = false
                 exportProgress = ""
                 // 所有成功导出的 App 副本都已删除，同时清理旧分片/封装残留。
-                RecordingStore.purgeTemporary(excludingActiveUsernames: recs.activeUsernames)
+                RecordingStore.purgeTemporary(excludingActiveUsernames: recs.activeUsernames, excludingStems: recs.activeFileStems)
                 files = RecordingStore.list()
                 recs.noteLibraryChanged()
                 if failed == 0 {

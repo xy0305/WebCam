@@ -18,7 +18,6 @@ enum RecordingStore {
         for url in urls {
             let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             if isDir {
-                // 录制/封装中的目录不提供播放或分享，避免把 m3u8 当文本导出。
                 if url.pathExtension.lowercased() == "part" { continue }
                 let index = url.appendingPathComponent("index.m3u8")
                 if fm.fileExists(atPath: index.path) {
@@ -40,7 +39,6 @@ enum RecordingStore {
     }
 
     /// 将系统中断后遗留的 .part HLS 目录变成可播放、可导出、可删除的恢复录像。
-    /// 不删除任何分片，避免切后台时已经录到的内容凭空消失。
     static func recoverInterruptedRecordings() {
         let fm = FileManager.default
         let dirs = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
@@ -60,10 +58,80 @@ enum RecordingStore {
     }
 
     static func displayName(_ url: URL) -> String {
+        exportFileStem(from: url)
+    }
+
+    /// 录像 / 分享 / 相册：`主播名_yyyy-MM-dd_HHmmss`
+    static func makeRecordingStem(displayName: String, date: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd_HHmmss"
+        let stem = "\(sanitizeFileName(displayName))_\(f.string(from: date))"
+        return uniqueStem(stem)
+    }
+
+    /// 从已有录像路径取出可当文件名的「主播名_日期」，去掉恢复/导出后缀。
+    static func exportFileStem(from url: URL) -> String {
+        var name = url.deletingPathExtension().lastPathComponent
         if url.lastPathComponent.lowercased() == "index.m3u8" {
-            return url.deletingLastPathComponent().lastPathComponent
+            name = url.deletingLastPathComponent().lastPathComponent
         }
-        return url.deletingPathExtension().lastPathComponent
+        for token in [".album-export", "_恢复录像"] {
+            if let range = name.range(of: token, options: .caseInsensitive) {
+                name.removeSubrange(range)
+            }
+        }
+        if let range = name.range(of: #"_\d+$"#, options: .regularExpression),
+           name.contains("_恢复录像") {
+            name.removeSubrange(range)
+        }
+        if name.hasSuffix("_") { name = String(name.dropLast()) }
+        return sanitizeFileName(name.isEmpty ? "recording" : name)
+    }
+
+    static func shareURL(for url: URL) -> URL {
+        if url.lastPathComponent.lowercased() == "index.m3u8" { return url }
+        let stem = exportFileStem(from: url)
+        let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
+        let named = url.deletingLastPathComponent().appendingPathComponent("\(stem).\(ext)")
+        if named.path == url.path { return url }
+        if FileManager.default.fileExists(atPath: named.path) { return named }
+        try? FileManager.default.copyItem(at: url, to: named)
+        return FileManager.default.fileExists(atPath: named.path) ? named : url
+    }
+
+    static func sanitizeFileName(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|\n\r")
+            .union(.controlCharacters)
+        s = s.components(separatedBy: invalid).joined(separator: "_")
+        while s.contains("__") { s = s.replacingOccurrences(of: "__", with: "_") }
+        s = s.trimmingCharacters(in: CharacterSet(charactersIn: " ._"))
+        if s.isEmpty { s = "recording" }
+        if s.count > 80 { s = String(s.prefix(80)) }
+        return s
+    }
+
+    private static func uniqueStem(_ stem: String) -> String {
+        let fm = FileManager.default
+        func exists(_ base: String) -> Bool {
+            fm.fileExists(atPath: directory.appendingPathComponent(base + ".part").path)
+                || fm.fileExists(atPath: directory.appendingPathComponent(base + ".mp4").path)
+                || fm.fileExists(atPath: directory.appendingPathComponent(base + "_恢复录像").path)
+        }
+        if !exists(stem) { return stem }
+        var n = 2
+        while exists("\(stem)_\(n)") { n += 1 }
+        return "\(stem)_\(n)"
+    }
+
+    private static func isActivePart(_ filename: String, usernames: [String], stems: [String]) -> Bool {
+        let name = filename.lowercased()
+        guard name.hasSuffix(".part") else { return false }
+        let stem = String(name.dropLast(5))
+        if stems.contains(where: { $0.lowercased() == stem }) { return true }
+        return usernames.contains { stem.hasPrefix($0.lowercased() + "_") }
     }
 
     static func delete(_ url: URL) {
@@ -75,28 +143,24 @@ enum RecordingStore {
     }
 
     /// 删除全部已保存录像及遗留的录制缓存；仍在录制的 .part 目录会被保留。
-    static func clearAll(excludingActiveUsernames active: [String]) {
+    static func clearAll(excludingActiveUsernames active: [String], excludingStems stems: [String] = []) {
         let fm = FileManager.default
-        let activeNames = Set(active.map { $0.lowercased() })
         let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         for url in urls {
-            let name = url.lastPathComponent.lowercased()
-            let isActivePart = name.hasSuffix(".part") && activeNames.contains { name.hasPrefix("\($0)_") }
-            if !isActivePart { try? fm.removeItem(at: url) }
+            if isActivePart(url.lastPathComponent, usernames: active, stems: stems) { continue }
+            try? fm.removeItem(at: url)
         }
     }
 
     /// 导出成功后清理不会出现在录像列表里的原始分片与失败封装残留。
-    /// 活跃任务的 .part 目录绝不触碰。
-    static func purgeTemporary(excludingActiveUsernames active: [String]) {
+    static func purgeTemporary(excludingActiveUsernames active: [String], excludingStems stems: [String] = []) {
         let fm = FileManager.default
-        let activeNames = Set(active.map { $0.lowercased() })
         let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         for url in urls {
             let name = url.lastPathComponent.lowercased()
-            let isActivePart = name.hasSuffix(".part") && activeNames.contains { name.hasPrefix("\($0)_") }
+            if isActivePart(name, usernames: active, stems: stems) { continue }
             let isTemporary = name.hasSuffix(".part") || name.contains(".mux.") || name.contains("_v.") || name.contains("_a.")
-            if isTemporary && !isActivePart { try? fm.removeItem(at: url) }
+            if isTemporary { try? fm.removeItem(at: url) }
         }
     }
 
@@ -106,7 +170,6 @@ enum RecordingStore {
     }
 
     /// 将列表中的恢复 HLS 录像封装为临时 MP4；普通 MP4/MOV 直接返回原文件。
-    /// 返回的 cleanup 为 true 时，相册保存成功后应删除原恢复目录和临时 MP4。
     static func prepareForAlbumExport(_ url: URL) async throws -> (file: URL, cleanup: Bool) {
         guard url.lastPathComponent.lowercased() == "index.m3u8" else {
             return (url, false)
@@ -114,12 +177,11 @@ enum RecordingStore {
         let folder = url.deletingLastPathComponent()
         finalizeRecoveredPlaylists(in: folder)
         let output = folder.deletingLastPathComponent()
-            .appendingPathComponent(folder.lastPathComponent + ".album-export.mp4")
+            .appendingPathComponent(exportFileStem(from: url) + ".mp4")
         try? FileManager.default.removeItem(at: output)
         var ok = await Task.detached(priority: .utility) {
             FFmpegLocalMuxer.mux(input: url, output: output)
         }.value
-        // 少数旧恢复目录的主清单含有不完整音频轨；至少导出完整视频而不是直接失败。
         if !ok {
             try? FileManager.default.removeItem(at: output)
             let video = folder.appendingPathComponent("video.m3u8")
@@ -133,7 +195,6 @@ enum RecordingStore {
         return (output, true)
     }
 
-    /// 系统中断时清单可能是 EVENT 且没有 ENDLIST；导出前将已有分片封口为 VOD。
     private static func finalizeRecoveredPlaylists(in folder: URL) {
         for name in ["video.m3u8", "audio.m3u8"] {
             let url = folder.appendingPathComponent(name)
@@ -144,7 +205,6 @@ enum RecordingStore {
             }
             try? text.write(to: url, atomically: true, encoding: .utf8)
         }
-        // 主清单本身也补 ENDLIST，兼容更严格的 HLS 解复用器。
         let index = folder.appendingPathComponent("index.m3u8")
         if var text = try? String(contentsOf: index, encoding: .utf8), !text.contains("#EXT-X-ENDLIST") {
             text = text.trimmingCharacters(in: .whitespacesAndNewlines) + "\n#EXT-X-ENDLIST\n"
@@ -152,7 +212,6 @@ enum RecordingStore {
         }
     }
 
-    /// 在恢复录像已保存到相册后删除原始分片和临时 MP4。
     static func finishAlbumExport(source: URL, exportedFile: URL, cleanup: Bool) {
         guard cleanup else { return }
         try? FileManager.default.removeItem(at: source.deletingLastPathComponent())

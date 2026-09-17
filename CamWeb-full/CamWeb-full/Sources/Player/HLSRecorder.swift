@@ -27,6 +27,7 @@ final class RecordingManager: ObservableObject {
     }
 
     var activeUsernames: [String] { Array(sessions.keys).sorted() }
+    var activeFileStems: [String] { sessions.values.map(\.fileStem) }
     var isAnyRecording: Bool { !sessions.isEmpty }
 
     func isRecording(_ username: String) -> Bool { sessions[username.lowercased()] != nil }
@@ -38,7 +39,9 @@ final class RecordingManager: ObservableObject {
         let name = room.username.lowercased()
         guard sessions[name] == nil else { return }
         let context = stream.requestContext
-        let session = RecordingSession(username: name, videoPlaylist: stream.videoPlaylist,
+        let session = RecordingSession(username: name,
+                                       fileStem: RecordingStore.makeRecordingStem(displayName: room.title),
+                                       videoPlaylist: stream.videoPlaylist,
                                        audioPlaylist: stream.audioPlaylist, context: context,
                                        refresh: { try await StripchatStreamSource.resolve(room: room) })
         session.onFinished = { [weak self] name, message in
@@ -56,7 +59,9 @@ final class RecordingManager: ObservableObject {
         guard sessions[name] == nil else { return }
         let context = stream.requestContext
         let captured = room
-        let session = RecordingSession(username: name, videoPlaylist: stream.videoPlaylist,
+        let session = RecordingSession(username: name,
+                                       fileStem: RecordingStore.makeRecordingStem(displayName: captured.title),
+                                       videoPlaylist: stream.videoPlaylist,
                                        audioPlaylist: stream.audioPlaylist, context: context,
                                        refresh: { try await PandaStreamSource.resolve(room: captured) })
         session.onFinished = { [weak self] name, message in
@@ -72,7 +77,12 @@ final class RecordingManager: ObservableObject {
     func start(username: String, videoPlaylist: URL, audioPlaylist: URL?, masterURL: URL) {
         let name = username.lowercased()
         guard sessions[name] == nil else { return }
-        let session = RecordingSession(username: name, videoPlaylist: videoPlaylist, audioPlaylist: audioPlaylist)
+        let session = RecordingSession(
+            username: name,
+            fileStem: RecordingStore.makeRecordingStem(displayName: username),
+            videoPlaylist: videoPlaylist,
+            audioPlaylist: audioPlaylist
+        )
 
         session.onFinished = { [weak self] name, message in
             self?.sessions[name] = nil
@@ -236,6 +246,7 @@ final class BackgroundAudioKeeper {
 final class RecordingSession: ObservableObject, Identifiable {
     var id: String { username }
     let username: String
+    let fileStem: String
     let videoPlaylist: URL
     let audioPlaylist: URL?
     let requestContext: HLSRequestContext
@@ -254,8 +265,9 @@ final class RecordingSession: ObservableObject, Identifiable {
     private var forceFinished = false
     private let progress = RecProgress()
 
-    init(username: String, videoPlaylist: URL, audioPlaylist: URL?, context: HLSRequestContext = .chaturbate, refresh: (@Sendable () async throws -> ResolvedStream)? = nil) {
+    init(username: String, fileStem: String? = nil, videoPlaylist: URL, audioPlaylist: URL?, context: HLSRequestContext = .chaturbate, refresh: (@Sendable () async throws -> ResolvedStream)? = nil) {
         self.username = username
+        self.fileStem = fileStem ?? RecordingStore.makeRecordingStem(displayName: username)
         self.videoPlaylist = videoPlaylist
         self.audioPlaylist = audioPlaylist
         requestContext = context
@@ -264,7 +276,7 @@ final class RecordingSession: ObservableObject, Identifiable {
 
     func start() {
         // .part 目录只作为中间缓存，不出现在录像列表里。
-        let dir = RecordingStore.directory.appendingPathComponent("\(username)_\(Self.stamp()).part", isDirectory: true)
+        let dir = RecordingStore.directory.appendingPathComponent("\(fileStem).part", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         isRunning = true
@@ -387,12 +399,6 @@ final class RecordingSession: ObservableObject, Identifiable {
             return String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
         }
         return String(format: "%02d:%02d", s / 60, s % 60)
-    }
-
-    private static func stamp() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyyMMdd_HHmmss"
-        return f.string(from: Date())
     }
 }
 
