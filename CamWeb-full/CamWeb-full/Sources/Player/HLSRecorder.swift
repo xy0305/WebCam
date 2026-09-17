@@ -931,6 +931,7 @@ enum HLSPackager {
         var expectURI = false
         var pendingDuration: Double = 2
         var pendingMouflon: URL?
+        var currentPkey: String?
         var seq = 0
         let lines = doc.split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -942,9 +943,11 @@ enum HLSPackager {
                 out.mediaSequence = seq
             } else if line.hasPrefix("#EXT-X-MAP:") {
                 out.map = extractURI(line, base: base)
+            } else if line.hasPrefix("#EXT-X-MOUFLON:PSCH:") {
+                currentPkey = line.split(separator: ":").last.map(String.init)
             } else if line.hasPrefix("#EXT-X-MOUFLON:URI:") {
                 let raw = String(line.dropFirst("#EXT-X-MOUFLON:URI:".count))
-                pendingMouflon = resolve(raw, base: base)
+                pendingMouflon = resolve(StripchatMouflon.decrypt(raw, pkey: currentPkey), base: base)
             } else if line.hasPrefix("#EXTINF:") {
                 let raw = line.dropFirst("#EXTINF:".count)
                 let num = raw.split(separator: ",").first.map(String.init) ?? "2"

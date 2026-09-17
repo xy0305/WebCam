@@ -702,7 +702,8 @@ struct PlayerView: View {
         } else {
             o.appendHeader([
                 "User-Agent": APIClient.userAgent,
-                "Accept": "*/*"
+                "Accept": "*/*",
+                "Referer": stream?.requestContext.referer ?? "https://zh.stripchat.com/"
             ])
         }
         KSOptions.isAutoPlay = true

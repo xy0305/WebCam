@@ -2,8 +2,8 @@ import Foundation
 import Network
 
 /// Stripchat 媒体清单用 `#EXT-X-MOUFLON:URI` 藏真实分片，公开 URI 是占位 `media.mp4`。
-/// KSPlayer 会忽略未知标签，且分片路径里的 `+` `/` 会被拆错。
-/// 这里把清单改成标准 HLS，并把 MAP/分片都走 127.0.0.1，由我们带 Referer 去拉。
+/// KSPlayer 读不懂 Mouflon，所以只把**清单**改成标准 HLS 经 127.0.0.1 交给播放器；
+/// MAP / 分片改写成绝对 CDN 地址，由播放器直连，不再把每个分片绕一遍本机。
 final class StripchatPlaylistProxy: @unchecked Sendable {
     static let shared = StripchatPlaylistProxy()
 
@@ -11,6 +11,7 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         var remote: URL
         var context: HLSRequestContext
         var keys: [String]
+        var pdkey: String?
     }
 
     private let lock = NSLock()
@@ -22,10 +23,10 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
 
     private init() {}
 
-    func playbackURL(id: String, remote: URL, context: HLSRequestContext, keys: [String] = []) async throws -> URL {
+    func playbackURL(id: String, remote: URL, context: HLSRequestContext, keys: [String] = [], pdkey: String? = nil) async throws -> URL {
         try await start()
         lock.lock()
-        sources[id] = Source(remote: remote, context: context, keys: keys)
+        sources[id] = Source(remote: remote, context: context, keys: keys, pdkey: pdkey)
         let port = self.port
         lock.unlock()
         guard port > 0, let url = URL(string: "http://127.0.0.1:\(port)/\(id).m3u8") else {
@@ -137,24 +138,17 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
     }
 
     private func respond(_ connection: NWConnection, path: String) async {
-        let parts = path.split(separator: "/").map(String.init)
-        if parts.count >= 3, parts[1] == "m" {
-            await sendSegment(connection, id: parts[0], token: parts[2])
-            return
-        }
-        let id = parts.first?.replacingOccurrences(of: ".m3u8", with: "") ?? ""
+        let id = path.split(separator: "/").first.map(String.init)?.replacingOccurrences(of: ".m3u8", with: "") ?? ""
         lock.lock()
         let source = sources[id]
-        let port = self.port
         lock.unlock()
-        guard let source, port > 0 else {
+        guard let source else {
             send(connection, status: 404, body: Data("not found".utf8), type: "text/plain")
             return
         }
         do {
             let remote = try await fetchMedia(source)
-            let local = URL(string: "http://127.0.0.1:\(port)")!
-            let rewritten = Self.rewrite(remote, base: source.remote, local: local, id: id)
+            let rewritten = Self.rewrite(remote, base: source.remote, pdkey: source.pdkey)
             guard rewritten.contains("#EXTINF:"),
                   !rewritten.contains("media.mp4"),
                   !remote.contains("#EXT-X-MOUFLON-ADVERT") else {
@@ -166,53 +160,14 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         }
     }
 
-    private func sendSegment(_ connection: NWConnection, id: String, token: String) async {
-        lock.lock()
-        let source = sources[id]
-        lock.unlock()
-        guard let source, let raw = Self.detokenize(token),
-              let url = Self.encodedRemote(raw, base: source.remote) else {
-            send(connection, status: 404, body: Data("bad segment".utf8), type: "text/plain")
-            return
-        }
-        do {
-            var req = URLRequest(url: url)
-            req.timeoutInterval = 12
-            req.cachePolicy = .reloadIgnoringLocalCacheData
-            req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
-            req.setValue("*/*", forHTTPHeaderField: "Accept")
-            req.setValue(source.context.referer, forHTTPHeaderField: "Referer")
-            let (data, response) = try await URLSession.shared.data(for: req)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
-                throw StreamSourceError.badResponse
-            }
-            let type = http.value(forHTTPHeaderField: "Content-Type") ?? "video/mp4"
-            send(connection, status: 200, body: data, type: type)
-        } catch {
-            send(connection, status: 502, body: Data("segment error".utf8), type: "text/plain")
-        }
-    }
-
     private func fetchMedia(_ source: Source) async throws -> String {
-        var urls: [URL] = []
-        for key in source.keys.reversed() {
-            if let url = StripchatStreamSource.withPkey(source.remote, key: key),
-               !urls.contains(url) {
-                urls.append(url)
+        do {
+            let text = try await StripchatStreamSource.playlistText(source.remote, context: source.context)
+            if text.contains("#EXTINF:"), !text.contains("#EXT-X-MOUFLON-ADVERT") {
+                return text
             }
-        }
-        if !urls.contains(source.remote) { urls.append(source.remote) }
-        var last: Error = StreamSourceError.badResponse
-        for url in urls {
-            do {
-                let text = try await StripchatStreamSource.playlistText(url, context: source.context)
-                if text.contains("#EXT-X-MOUFLON-ADVERT") { continue }
-                if text.contains("#EXTINF:") { return text }
-            } catch {
-                last = error
-            }
-        }
-        throw last
+        } catch {}
+        return try await StripchatStreamSource.mediaText(source.remote, keys: source.keys, context: source.context)
     }
 
     private func send(_ connection: NWConnection, status: Int, body: Data, type: String) {
@@ -240,12 +195,18 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         return String(parts[1]).split(separator: "?").first.map(String.init) ?? ""
     }
 
-    static func rewrite(_ text: String, base: URL, local: URL, id: String) -> String {
+    static func rewrite(_ text: String, base: URL, pdkey: String?) -> String {
         var pending: String?
         var expectURI = false
+        var activeKey = pdkey
         var lines: [String] = []
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("#EXT-X-MOUFLON:PSCH:") {
+                let pkey = line.split(separator: ":").last.map(String.init)
+                if let found = StripchatMouflon.pdkey(for: pkey) { activeKey = found }
+                continue
+            }
             if line.hasPrefix("#EXT-X-MOUFLON:URI:") {
                 pending = String(line.dropFirst("#EXT-X-MOUFLON:URI:".count))
                 continue
@@ -271,11 +232,11 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
                     }
                     continue
                 }
-                lines.append(localMedia(url, base: base, local: local, id: id))
+                lines.append(remoteMedia(url, base: base, pdkey: activeKey))
                 continue
             }
             if line.hasPrefix("#EXT-X-MAP:") {
-                lines.append(localMap(line, base: base, local: local, id: id))
+                lines.append(remoteMap(line, base: base, pdkey: activeKey))
                 continue
             }
             if !line.isEmpty {
@@ -288,18 +249,19 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    private static func localMap(_ line: String, base: URL, local: URL, id: String) -> String {
+    private static func remoteMap(_ line: String, base: URL, pdkey: String?) -> String {
         guard let range = line.range(of: "URI=\"") else { return line }
         let after = line[range.upperBound...]
         guard let end = after.firstIndex(of: "\"") else { return line }
         let raw = String(after[..<end])
-        let localURL = localMedia(raw, base: base, local: local, id: id)
-        return line.replacingOccurrences(of: "URI=\"\(raw)\"", with: "URI=\"\(localURL)\"")
+        let remote = remoteMedia(raw, base: base, pdkey: pdkey)
+        return line.replacingOccurrences(of: "URI=\"\(raw)\"", with: "URI=\"\(remote)\"")
     }
 
-    private static func localMedia(_ raw: String, base: URL, local: URL, id: String) -> String {
-        let abs = Self.abs(raw, base: base)
-        return "\(local.absoluteString)/\(id)/m/\(token(for: abs))"
+    private static func remoteMedia(_ raw: String, base: URL, pdkey: String?) -> String {
+        let absolute = abs(raw, base: base)
+        let decrypted = StripchatMouflon.decrypt(absolute, pdkey: pdkey)
+        return encodedRemote(decrypted, base: base)?.absoluteString ?? decrypted
     }
 
     static func encodedRemote(_ raw: String, base: URL) -> URL? {
@@ -329,27 +291,12 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
     private static func abs(_ value: String, base: URL) -> String {
         let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("http://") || text.hasPrefix("https://") { return text }
+        if text.hasPrefix("//") { return "https:" + text }
         return URL(string: text, relativeTo: base)?.absoluteString ?? text
     }
 
     private static func isPlaceholder(_ url: String) -> Bool {
         let last = url.split(separator: "?").first.map(String.init)?.lowercased() ?? url.lowercased()
         return last.hasSuffix("/media.mp4") || last.hasSuffix("media.mp4")
-    }
-
-    private static func token(for url: String) -> String {
-        Data(url.utf8).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-
-    private static func detokenize(_ token: String) -> String? {
-        var text = token
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        while text.count % 4 != 0 { text += "=" }
-        guard let data = Data(base64Encoded: text) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 }

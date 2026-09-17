@@ -166,84 +166,94 @@ enum StripchatAPI {
 }
 
 enum StripchatStreamSource {
+    private static let cdnTLDs = ["doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"]
+    private static let extraCDNs = ["saawsedge.com", "growcdnssedge.com"]
+
     static func resolve(room: Room) async throws -> ResolvedStream {
-        guard let id = room.platformRoomID, !id.isEmpty else { throw StreamSourceError.badResponse }
+        let id = try await modelID(for: room)
         let context = HLSRequestContext.stripchat(username: room.username)
-        let bases = [
-            "https://edge-hls.doppiocdn.com/hls/\(id)/master/",
-            "https://edge-hls.doppiocdn.org/hls/\(id)/master/",
-            "https://edge-hls.doppiocdn.net/hls/\(id)/master/",
-            "https://edge-hls.doppiocdn.live/hls/\(id)/master/",
-            "https://edge-hls.saawsedge.com/hls/\(id)/master/",
-            "https://edge-hls.growcdnssedge.com/hls/\(id)/master/"
-        ]
-        var last: Error = StreamSourceError.blocked
-        for base in bases {
-            do {
-                return try await resolveMaster(id: id, base: base, room: room, context: context)
-            } catch {
-                last = error
-            }
-        }
-        throw last
-    }
-
-    private static func resolveMaster(id: String, base: String, room: Room, context: HLSRequestContext) async throws -> ResolvedStream {
-        let paths = [
-            "\(id)_auto.m3u8?playlistType=standard",
-            "\(id)_auto.m3u8?playlistType=lowLatency"
-        ]
-        var last: Error = StreamSourceError.badResponse
-        for path in paths {
-            guard let master = URL(string: base + path) else { continue }
-            do {
-                return try await decodeMaster(id: id, master: master, room: room, context: context)
-            } catch {
-                last = error
-            }
-        }
-        throw last
-    }
-
-    private static func decodeMaster(id: String, master: URL, room: Room, context: HLSRequestContext) async throws -> ResolvedStream {
-        let text = try await playlistText(master, context: context)
+        async let keysTask = StripchatMouflon.keys()
+        let (master, text) = try await fetchAutoPlaylist(id: id, context: context)
         guard text.contains("#EXTM3U") else { throw StreamSourceError.badResponse }
         let keys = mouflonKeys(in: text)
+        let pdkeys = await keysTask
+        let matched = keys.first { pdkeys[$0] != nil } ?? keys.last
+        let pdkey = matched.flatMap { pdkeys[$0] }
+        let mediaURL: URL
         if text.contains("#EXT-X-STREAM-INF") {
-            let variants = parseVariants(text, base: master, pkey: keys.last)
+            let variants = parseVariants(text, base: master)
             guard let best = variants.first else { throw StreamSourceError.blocked }
-            let media = try await pickWorkingMedia(best.url, keys: keys, context: context)
-            let playURL = try await StripchatPlaylistProxy.shared.playbackURL(
-                id: id, remote: media, context: context, keys: keys
-            )
-            return ResolvedStream(
-                username: room.username,
-                requestContext: context,
-                hlsURL: playURL,
-                masterURL: master,
-                videoPlaylist: media,
-                audioPlaylist: nil,
-                status: room.roomSubject ?? "public"
-            )
+            mediaURL = try await pickWorkingMedia(best.url, keys: keys, prefer: matched, context: context)
+        } else {
+            mediaURL = try await pickWorkingMedia(master, keys: keys, prefer: matched, context: context)
         }
-        let media = try await pickWorkingMedia(master, keys: keys, context: context)
         let playURL = try await StripchatPlaylistProxy.shared.playbackURL(
-            id: id, remote: media, context: context, keys: keys
+            id: id, remote: mediaURL, context: context, keys: keys, pdkey: pdkey
         )
         return ResolvedStream(
             username: room.username,
             requestContext: context,
             hlsURL: playURL,
             masterURL: master,
-            videoPlaylist: media,
+            videoPlaylist: mediaURL,
             audioPlaylist: nil,
             status: room.roomSubject ?? "public"
         )
     }
 
+    private static func modelID(for room: Room) async throws -> String {
+        if let id = room.platformRoomID, !id.isEmpty { return id }
+        return try await fetchBroadcastID(username: room.username)
+    }
+
+    private static func fetchBroadcastID(username: String) async throws -> String {
+        let urls = [
+            "\(StripchatAPI.host)/api/front/v1/broadcasts/\(username)",
+            "https://stripchat.com/api/front/v1/broadcasts/\(username)"
+        ]
+        var last: Error = StreamSourceError.badResponse
+        for raw in urls {
+            guard let url = URL(string: raw) else { continue }
+            do {
+                var req = URLRequest(url: url)
+                StripchatAPI.headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+                req.setValue("https://zh.stripchat.com/\(username)", forHTTPHeaderField: "Referer")
+                let (data, response) = try await URLSession.shared.data(for: req)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                      let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let item = obj["item"] as? [String: Any] else {
+                    throw StreamSourceError.badResponse
+                }
+                if let name = item["streamName"] as? String, !name.isEmpty { return name }
+                if let id = item["id"] as? Int { return String(id) }
+                if let id = item["id"] as? String, !id.isEmpty { return id }
+            } catch {
+                last = error
+            }
+        }
+        throw last
+    }
+
+    private static func fetchAutoPlaylist(id: String, context: HLSRequestContext) async throws -> (URL, String) {
+        var urls: [URL] = []
+        for tld in cdnTLDs {
+            if let url = URL(string: "https://edge-hls.\(tld)/hls/\(id)/master/\(id)_auto.m3u8") {
+                urls.append(url)
+            }
+        }
+        for host in extraCDNs {
+            if let url = URL(string: "https://edge-hls.\(host)/hls/\(id)/master/\(id)_auto.m3u8") {
+                urls.append(url)
+            }
+        }
+        return try await racePlaylist(urls, context: context) { text in
+            text.contains("#EXTM3U")
+        }
+    }
+
     static func playlistText(_ url: URL, context: HLSRequestContext) async throws -> String {
         var req = URLRequest(url: url)
-        req.timeoutInterval = 15
+        req.timeoutInterval = 8
         req.cachePolicy = .reloadIgnoringLocalCacheData
         req.setValue(APIClient.userAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("*/*", forHTTPHeaderField: "Accept")
@@ -268,48 +278,67 @@ enum StripchatStreamSource {
         return keys
     }
 
-    static func mouflonKey(in text: String) -> String? {
-        mouflonKeys(in: text).last
-    }
-
     static func withPkey(_ url: URL, key: String) -> URL? {
         decorate(url.absoluteString, base: url, pkey: key)
     }
 
-    static func pickWorkingMedia(_ url: URL, keys: [String], context: HLSRequestContext) async throws -> URL {
+    static func mediaText(_ url: URL, keys: [String], context: HLSRequestContext) async throws -> String {
+        let media = try await pickWorkingMedia(url, keys: keys, prefer: keys.last, context: context)
+        return try await playlistText(media, context: context)
+    }
+
+    static func pickWorkingMedia(_ url: URL, keys: [String], prefer: String?, context: HLSRequestContext) async throws -> URL {
+        func usable(_ text: String) -> Bool {
+            if text.contains("#EXT-X-MOUFLON-ADVERT") { return false }
+            if text.contains("#EXT-X-MOUFLON:URI:") { return true }
+            return text.contains("#EXTINF:") && text.contains("media.mp4") == false
+        }
+        if let prefer, let candidate = withPkey(url, key: prefer),
+           let text = try? await playlistText(candidate, context: context), usable(text) {
+            return candidate
+        }
         var candidates: [URL] = []
         func add(_ item: URL?) {
             guard let item, candidates.contains(item) == false else { return }
             candidates.append(item)
         }
-        for key in keys.reversed() {
-            add(withPkey(url, key: key))
-        }
+        if let last = keys.last { add(withPkey(url, key: last)) }
         add(url)
-        var last: Error = StreamSourceError.badResponse
-        for candidate in candidates {
-            do {
-                let text = try await playlistText(candidate, context: context)
-                if text.contains("#EXT-X-MOUFLON-ADVERT") { continue }
-                if text.contains("#EXT-X-MOUFLON:URI:") { return candidate }
-                if text.contains("#EXTINF:"), text.contains("media.mp4") == false {
-                    return candidate
-                }
-            } catch {
-                last = error
-            }
-        }
-        throw last
+        let (picked, _) = try await racePlaylist(candidates, context: context, accept: usable)
+        return picked
     }
 
-    private static func parseVariants(_ text: String, base: URL, pkey: String?) -> [(bandwidth: Int, url: URL)] {
+    private static func racePlaylist(_ urls: [URL], context: HLSRequestContext, accept: @escaping @Sendable (String) -> Bool) async throws -> (URL, String) {
+        try await withThrowingTaskGroup(of: (URL, String).self) { group in
+            for url in urls {
+                group.addTask {
+                    let text = try await playlistText(url, context: context)
+                    guard accept(text) else { throw StreamSourceError.badResponse }
+                    return (url, text)
+                }
+            }
+            var last: Error = StreamSourceError.badResponse
+            while true {
+                do {
+                    guard let value = try await group.next() else { break }
+                    group.cancelAll()
+                    return value
+                } catch {
+                    last = error
+                }
+            }
+            throw last
+        }
+    }
+
+    private static func parseVariants(_ text: String, base: URL) -> [(bandwidth: Int, url: URL)] {
         var out: [(Int, URL)] = []
         var bandwidth = 0
         for raw in text.split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.hasPrefix("#EXT-X-STREAM-INF:") {
                 bandwidth = intAttribute("BANDWIDTH=", line) ?? 0
-            } else if !line.isEmpty, !line.hasPrefix("#"), let url = decorate(line, base: base, pkey: pkey) {
+            } else if !line.isEmpty, !line.hasPrefix("#"), let url = decorate(line, base: base, pkey: nil) {
                 out.append((bandwidth, url))
                 bandwidth = 0
             }
@@ -331,7 +360,7 @@ enum StripchatStreamSource {
             set("psch", "v2")
             set("pkey", pkey)
         }
-        comps.queryItems = items
+        comps.queryItems = items.isEmpty ? nil : items
         return comps.url
     }
 
