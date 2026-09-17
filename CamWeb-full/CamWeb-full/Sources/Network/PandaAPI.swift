@@ -178,22 +178,22 @@ enum PandaStreamSource {
             if code == "castEnd" { throw StreamSourceError.offline("offline") }
             throw StreamSourceError.needLogin
         }
-        let media = PandaAPI.dict(play["media"])
-        if PandaAPI.bool(media["isLive"], true) == false {
+        let info = PandaAPI.dict(play["media"])
+        if PandaAPI.bool(info["isLive"], true) == false {
             throw StreamSourceError.offline("offline")
         }
-        if PandaAPI.bool(media["isPw"], false) {
+        if PandaAPI.bool(info["isPw"], false) {
             throw StreamSourceError.blocked
         }
         let master = try firstPlaylist(play)
         let context = HLSRequestContext.panda(roomId: userId)
-        let media = (try? await mediaPlaylist(from: master, context: context)) ?? master
+        let video = (try? await mediaPlaylist(from: master, context: context)) ?? master
         return ResolvedStream(
             username: userId,
             requestContext: context,
             hlsURL: master,
             masterURL: master,
-            videoPlaylist: media,
+            videoPlaylist: video,
             audioPlaylist: nil,
             status: "public"
         )
