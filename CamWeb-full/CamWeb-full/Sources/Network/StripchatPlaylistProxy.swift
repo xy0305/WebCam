@@ -1,9 +1,8 @@
 import Foundation
 import Network
 
-/// Stripchat 媒体清单用 `#EXT-X-MOUFLON:URI` 藏真实分片，公开 URI 是占位 `media.mp4`。
-/// KSPlayer 读不懂 Mouflon，所以只把**清单**改成标准 HLS 经 127.0.0.1 交给播放器；
-/// MAP / 分片改写成绝对 CDN 地址，由播放器直连，不再把每个分片绕一遍本机。
+/// 只把媒体清单改成标准 HLS，经 127.0.0.1 交给 AVPlayer。
+/// MAP / 分片改成绝对 CDN URL，由系统播放器直连（走 VPN）。
 final class StripchatPlaylistProxy: @unchecked Sendable {
     static let shared = StripchatPlaylistProxy()
 
@@ -163,9 +162,7 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
     private func fetchMedia(_ source: Source) async throws -> String {
         do {
             let text = try await StripchatStreamSource.playlistText(source.remote, context: source.context)
-            if text.contains("#EXTINF:"), !text.contains("#EXT-X-MOUFLON-ADVERT") {
-                return text
-            }
+            if StripchatStreamSource.isPlayableMedia(text) { return text }
         } catch {}
         return try await StripchatStreamSource.mediaText(source.remote, keys: source.keys, context: source.context)
     }
@@ -227,9 +224,7 @@ final class StripchatPlaylistProxy: @unchecked Sendable {
                 pending = nil
                 expectURI = false
                 if isPlaceholder(url) {
-                    if lines.last?.hasPrefix("#EXTINF:") == true {
-                        lines.removeLast()
-                    }
+                    if lines.last?.hasPrefix("#EXTINF:") == true { lines.removeLast() }
                     continue
                 }
                 lines.append(remoteMedia(url, base: base, pdkey: activeKey))

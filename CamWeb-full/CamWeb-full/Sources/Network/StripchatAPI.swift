@@ -166,7 +166,10 @@ enum StripchatAPI {
 }
 
 enum StripchatStreamSource {
-    private static let cdnHosts = ["saawsedge.com", "growcdnssedge.com", "doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"]
+    private static let cdnHosts = [
+        "saawsedge.com", "growcdnssedge.com",
+        "doppiocdn.com", "doppiocdn.org", "doppiocdn.live", "doppiocdn.net"
+    ]
 
     static func resolve(room: Room) async throws -> ResolvedStream {
         let id = try await modelID(for: room)
@@ -177,20 +180,25 @@ enum StripchatStreamSource {
         let keys = mouflonKeys(in: text)
         let pdkeys = await keysTask
         let matched = keys.first { pdkeys[$0] != nil } ?? keys.first
-        let mediaURL: URL
+        let pdkey = matched.flatMap { pdkeys[$0] }
+        let rawMedia: URL
         if text.contains("#EXT-X-STREAM-INF") {
             let variants = parseVariants(text, base: master)
             guard let best = variants.first else { throw StreamSourceError.blocked }
-            mediaURL = decorate(best.url.absoluteString, base: best.url, pkey: matched, lowLatency: true) ?? best.url
+            rawMedia = best.url
         } else {
-            mediaURL = decorate(master.absoluteString, base: master, pkey: matched, lowLatency: true) ?? master
+            rawMedia = master
         }
+        let media = try await pickWorkingMedia(rawMedia, keys: keys, prefer: matched, context: context)
+        let playURL = try await StripchatPlaylistProxy.shared.playbackURL(
+            id: id, remote: media, context: context, keys: keys, pdkey: pdkey
+        )
         return ResolvedStream(
             username: room.username,
             requestContext: context,
-            hlsURL: mediaURL,
+            hlsURL: playURL,
             masterURL: master,
-            videoPlaylist: mediaURL,
+            videoPlaylist: media,
             audioPlaylist: nil,
             status: room.roomSubject ?? "public"
         )
@@ -272,17 +280,19 @@ enum StripchatStreamSource {
         decorate(url.absoluteString, base: url, pkey: key)
     }
 
+    static func isPlayableMedia(_ text: String) -> Bool {
+        if text.contains("#EXT-X-MOUFLON-ADVERT") { return false }
+        if text.contains("#EXT-X-MOUFLON:URI:") { return true }
+        return text.contains("#EXTINF:") && text.contains("media.mp4") == false
+    }
+
     static func mediaText(_ url: URL, keys: [String], context: HLSRequestContext) async throws -> String {
-        let media = try await pickWorkingMedia(url, keys: keys, prefer: keys.last, context: context)
+        let media = try await pickWorkingMedia(url, keys: keys, prefer: keys.first, context: context)
         return try await playlistText(media, context: context)
     }
 
     static func pickWorkingMedia(_ url: URL, keys: [String], prefer: String?, context: HLSRequestContext) async throws -> URL {
-        func usable(_ text: String) -> Bool {
-            if text.contains("#EXT-X-MOUFLON-ADVERT") { return false }
-            if text.contains("#EXT-X-MOUFLON:URI:") { return true }
-            return text.contains("#EXTINF:") && text.contains("media.mp4") == false
-        }
+        func usable(_ text: String) -> Bool { isPlayableMedia(text) }
         if let prefer, let candidate = withPkey(url, key: prefer),
            let text = try? await playlistText(candidate, context: context), usable(text) {
             return candidate
