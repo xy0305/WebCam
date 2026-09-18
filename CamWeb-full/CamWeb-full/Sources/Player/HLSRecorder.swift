@@ -148,10 +148,19 @@ final class RecordingManager: ObservableObject {
         }
     }
 
-    private func extendBackground() {
+    /// 系统即将杀后台时先把分片变成可见恢复录像，避免唯一副本还在隐藏 .part 里。
+    func preserveOnBackgroundExpiration() {
+        for session in sessions.values {
+            session.preserveNow()
+        }
+        recoverOrphans()
         endBackground()
+    }
+
+    private func extendBackground() {
+        if bgTask != .invalid { return }
         bgTask = UIApplication.shared.beginBackgroundTask(withName: "hls-record") { [weak self] in
-            self?.endBackground()
+            self?.preserveOnBackgroundExpiration()
         }
     }
 
@@ -325,6 +334,14 @@ final class RecordingSession: ObservableObject, Identifiable {
         }
     }
 
+    /// 系统即将杀后台：立刻把已有分片变成列表可见的恢复录像。
+    func preserveNow() {
+        guard let dir = currentDirectory else { return }
+        progress.requestStop()
+        isRunning = false
+        _ = RecordingStore.promotePartDirectory(dir)
+    }
+
     /// 第一次调用优雅停止；封装/排空期间再次调用则立即结束并保留当前分片。
     func stop(userInitiated: Bool) {
         if isRunning {
@@ -372,14 +389,15 @@ final class RecordingSession: ObservableObject, Identifiable {
         let size = bytesText
         Task.detached(priority: .utility) { [weak self] in
             let ok = FFmpegLocalMuxer.mux(input: index, output: mp4)
+            let usable = ok && RecordingStore.isUsableVideoFile(mp4)
             await MainActor.run {
                 guard let self else { return }
-                if ok, FileManager.default.fileExists(atPath: mp4.path) {
+                if usable {
                     try? FileManager.default.removeItem(at: recovered)
                     self.onFinished?(name, "\(name) 已保存 MP4 · \(duration) · \(size)")
                 } else {
                     try? FileManager.default.removeItem(at: mp4)
-                    self.onFinished?(name, "\(name) 封装 MP4 失败，已保留恢复录像")
+                    self.onFinished?(name, "\(name) 封装未完成，已保留恢复录像")
                 }
             }
         }
@@ -509,10 +527,8 @@ enum FFmpegLocalMuxer {
         result = avio_open(&(outputContext.pointee.pb), output.path, AVIO_FLAG_WRITE)
         guard result >= 0 else { return false }
         defer { avio_closep(&(outputContext.pointee.pb)) }
-        var muxOptions: OpaquePointer?
-        av_dict_set(&muxOptions, "movflags", "+faststart", 0)
-        result = avformat_write_header(outputContext, &muxOptions)
-        av_dict_free(&muxOptions)
+        // 不要 +faststart：后台会被杀，第二遍重写会留下半成品 MP4，再把 HLS 当成功删掉。
+        result = avformat_write_header(outputContext, nil)
         guard result >= 0 else { return false }
 
         var packet = av_packet_alloc()
@@ -1208,12 +1224,25 @@ enum HLSPackager {
 
         private func writeFile(_ name: String, data: Data) {
             let url = dir.appendingPathComponent(name)
-            try? data.write(to: url, options: .atomic)
+            persist(data, to: url)
             _bytes += Int64(data.count)
         }
 
         private func writeText(_ name: String, _ text: String) {
-            try? text.data(using: .utf8)?.write(to: dir.appendingPathComponent(name), options: .atomic)
+            persist(Data(text.utf8), to: dir.appendingPathComponent(name))
+        }
+
+        /// 锁屏/后台时 atomic 可能失败；失败立刻重试非原子写入，避免分片只在内存里。
+        private func persist(_ data: Data, to url: URL) {
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                try? data.write(to: url, options: [])
+            }
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var mutable = url
+            try? mutable.setResourceValues(values)
         }
     }
 }

@@ -141,6 +141,20 @@ enum RecordingStore {
         exportFileStem(from: url)
     }
 
+    /// 封装后必须能播才允许删 HLS。半成品 MP4（缺 moov）不能当成功。
+    static func isUsableVideoFile(_ url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size > 64 * 1024 else { return false }
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]), data.count >= 8 else {
+            return false
+        }
+        let ftyp = Data("ftyp".utf8)
+        let moov = Data("moov".utf8)
+        guard data.subdata(in: 4..<8) == ftyp else { return false }
+        return data.range(of: moov) != nil
+    }
+
     /// 录像 / 分享 / 相册：`主播名_yyyy-MM-dd_HHmmss`
     static func makeRecordingStem(displayName: String, date: Date = Date()) -> String {
         let f = DateFormatter()

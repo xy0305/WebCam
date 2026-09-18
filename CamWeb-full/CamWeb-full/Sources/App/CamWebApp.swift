@@ -90,6 +90,7 @@ struct RootFlow: View {
                 RecordingManager.shared.recoverOrphans()
             case .background:
                 RecordingManager.shared.keepBackgroundAlive()
+                RecordingManager.shared.recoverOrphans()
             default:
                 break
             }
