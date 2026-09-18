@@ -106,14 +106,14 @@ final class Pan115Uploader: NSObject, ObservableObject {
                 if cancelledIDs.contains(job.id) { return }
             }
             update(job.id) { $0.status = .uploading; $0.message = "初始化上传" }
-            let init = try await Pan115API.initUpload(
+            let ticket = try await Pan115API.initUpload(
                 fileName: job.name, size: job.size, sha1: hashes.full, preSha1: hashes.head, dirID: job.cid
             )
-            if init.rapid {
+            if ticket.rapid {
                 update(job.id) { $0.status = .done; $0.sent = $0.size; $0.message = "秒传完成" }
                 return
             }
-            try await uploadForm(job: job, init: init)
+            try await uploadForm(job: job, ticket: ticket)
             if cancelledIDs.contains(job.id) { return }
             if pausedIDs.contains(job.id) {
                 update(job.id) { $0.status = .paused; $0.message = "已暂停" }
@@ -131,7 +131,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
         }
     }
 
-    private func uploadForm(job: Job, init info: Pan115API.InitUpload) async throws {
+    private func uploadForm(job: Job, ticket info: Pan115API.InitUpload) async throws {
         let boundary = "----CamWeb115\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
         let host = info.host.hasPrefix("http") ? info.host : "https://\(info.host)"
         guard let url = URL(string: host) else { throw Pan115API.APIError.badResponse }
