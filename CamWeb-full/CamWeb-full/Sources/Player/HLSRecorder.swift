@@ -30,27 +30,40 @@ final class RecordingManager: ObservableObject {
     var activeFileStems: [String] { sessions.values.map(\.fileStem) }
     var isAnyRecording: Bool { !sessions.isEmpty }
 
-    func isRecording(_ username: String) -> Bool { sessions[username.lowercased()] != nil }
+    func isRecording(_ username: String) -> Bool {
+        let name = username.lowercased()
+        return sessions[name] != nil || preparing.contains(name)
+    }
     func session(for username: String) -> RecordingSession? { sessions[username.lowercased()] }
+
+    private var preparing: Set<String> = []
 
     /// Stripchat 独立网络规则：媒体 playlist + Stripchat 请求头 + Stripchat 重连解析；
     /// 本地 HLS 存档、初始化段与 MP4 封装复用已验证的通用打包器。
     func startStripchat(room: Room, stream: ResolvedStream) {
         let name = room.username.lowercased()
-        guard sessions[name] == nil else { return }
-        let context = stream.requestContext
-        let session = RecordingSession(username: name,
-                                       fileStem: RecordingStore.makeRecordingStem(displayName: room.title),
-                                       videoPlaylist: stream.videoPlaylist,
-                                       audioPlaylist: stream.audioPlaylist, context: context,
-                                       refresh: { try await StripchatStreamSource.resolve(room: room) })
-        session.onFinished = { [weak self] name, message in
-            self?.sessions[name] = nil; self?.banner = message
-            self?.libraryRevision += 1; self?.refreshIdle()
+        guard sessions[name] == nil, !preparing.contains(name) else { return }
+        preparing.insert(name)
+        let captured = room
+        Task { @MainActor in
+            defer { preparing.remove(name) }
+            guard sessions[name] == nil else { return }
+            let rec = (try? await StripchatStreamSource.resolveForRecording(room: captured)) ?? stream
+            guard sessions[name] == nil else { return }
+            let context = rec.requestContext
+            let session = RecordingSession(username: name,
+                                           fileStem: RecordingStore.makeRecordingStem(displayName: captured.title),
+                                           videoPlaylist: rec.videoPlaylist,
+                                           audioPlaylist: rec.audioPlaylist, context: context,
+                                           refresh: { try await StripchatStreamSource.resolveForRecording(room: captured) })
+            session.onFinished = { [weak self] name, message in
+                self?.sessions[name] = nil; self?.banner = message
+                self?.libraryRevision += 1; self?.refreshIdle()
+            }
+            sessions[name] = session
+            session.start()
+            refreshIdle(masterURL: rec.videoPlaylist)
         }
-        sessions[name] = session
-        session.start()
-        refreshIdle(masterURL: stream.videoPlaylist)
     }
 
     /// PandaTV：19+ / 登录房必须把 sessKey Cookie、Origin、Referer 带到 playlist 和分片。

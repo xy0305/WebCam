@@ -174,19 +174,33 @@ enum StripchatStreamSource {
     static func resolve(room: Room) async throws -> ResolvedStream {
         let id = try await modelID(for: room)
         let context = HLSRequestContext.stripchat(username: room.username)
-        let host = cdnHosts[0]
-        // StripCam getPlayback：开播前不拉 CDN，直接把 _auto.m3u8 交给播放器。
-        let master = playlistURL(id: id, host: host, file: "\(id)_auto.m3u8", lowLatency: false)
-        let media = (try? await recordingPlaylist(id: id, master: master, room: room, context: context))
-            ?? playlistURL(id: id, host: host, file: "\(id)_\(preferredQuality(room.presets)).m3u8", lowLatency: true)
+        // StripCam getPlayback：开播前不拉 CDN / pkey / Mouflon，直接把 _auto.m3u8 交给播放器。
+        let master = playlistURL(id: id, host: cdnHosts[0], file: "\(id)_auto.m3u8", lowLatency: false)
         return ResolvedStream(
             username: room.username,
             requestContext: context,
             hlsURL: master,
             masterURL: master,
-            videoPlaylist: media,
+            videoPlaylist: master,
             audioPlaylist: nil,
             status: room.roomSubject ?? "public"
+        )
+    }
+
+    /// 录制才解析带 pkey 的真实媒体清单；不要挡在开播前面。
+    static func resolveForRecording(room: Room) async throws -> ResolvedStream {
+        let playback = try await resolve(room: room)
+        let id = try await modelID(for: room)
+        let media = (try? await recordingPlaylist(id: id, master: playback.masterURL, room: room, context: playback.requestContext))
+            ?? playlistURL(id: id, host: cdnHosts[0], file: "\(id)_\(preferredQuality(room.presets)).m3u8", lowLatency: true)
+        return ResolvedStream(
+            username: playback.username,
+            requestContext: playback.requestContext,
+            hlsURL: playback.hlsURL,
+            masterURL: playback.masterURL,
+            videoPlaylist: media,
+            audioPlaylist: nil,
+            status: playback.status
         )
     }
 

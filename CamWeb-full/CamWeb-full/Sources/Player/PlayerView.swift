@@ -103,14 +103,11 @@ struct PlayerView: View {
         .navigationBarHidden(true)
         .task(id: username) {
             recommended = []
+            let name = username
+            let platform = displayRoom.platform
+            async let recs = fetchRecommended(platform: platform, username: name)
             await resolve()
-            if displayRoom.platform == .stripchat {
-                recommended = await StripchatAPI.fetchRecommended(excluding: username)
-            } else if displayRoom.platform == .panda {
-                recommended = await PandaAPI.fetchRecommended(excluding: username)
-            } else {
-                recommended = await RoomAPI.fetchRecommended(username: username)
-            }
+            recommended = await recs
         }
         .onAppear {
             coordinator.isMaskShow = false
@@ -706,8 +703,9 @@ struct PlayerView: View {
     private var playerOptions: KSOptions {
         let o = KSOptions()
         if displayRoom.platform == .stripchat {
-            KSOptions.firstPlayerType = KSMEPlayer.self
-            KSOptions.secondPlayerType = KSAVPlayer.self
+            // 直出 _auto.m3u8：AVPlayer 走系统 VPN，首帧比 FFmpeg 快。
+            KSOptions.firstPlayerType = KSAVPlayer.self
+            KSOptions.secondPlayerType = KSMEPlayer.self
             o.appendHeader([
                 "User-Agent": APIClient.userAgent,
                 "Accept": "*/*",
@@ -794,6 +792,14 @@ struct PlayerView: View {
     private func startSystemPiP() {
         coordinator.playerLayer?.isPipActive.toggle()
         scheduleAutoHide()
+    }
+
+    private func fetchRecommended(platform: CamPlatform, username: String) async -> [Room] {
+        switch platform {
+        case .stripchat: return await StripchatAPI.fetchRecommended(excluding: username)
+        case .panda: return await PandaAPI.fetchRecommended(excluding: username)
+        case .chaturbate: return await RoomAPI.fetchRecommended(username: username)
+        }
     }
 
     private func resolve() async {
