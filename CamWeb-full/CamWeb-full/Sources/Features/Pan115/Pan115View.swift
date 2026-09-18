@@ -14,9 +14,15 @@ struct Pan115View: View {
     @State private var photos: [PhotosPickerItem] = []
     @State private var newFolder = ""
     @State private var showFolder = false
-    @State private var pickingPhotos = false
+    @State private var tab: Pane = .upload
+
+    private enum Pane: String, CaseIterable {
+        case upload = "上传"
+        case files = "网盘"
+    }
 
     private var cid: String { path.last?.id ?? "0" }
+    private var folderName: String { path.map(\.name).joined(separator: " / ") }
     private var folders: [Pan115API.Node] { nodes.filter(\.isDir) }
     private var files: [Pan115API.Node] { nodes.filter { !$0.isDir } }
 
@@ -27,103 +33,29 @@ struct Pan115View: View {
                     ContentUnavailableView {
                         Label("115 未登录", systemImage: "externaldrive.badge.person.crop")
                     } description: {
-                        Text("对照 OpenList：Cookie 含 UID / CID / SEID。登录后可浏览目录、上传相册和文件，支持暂停与取消。")
+                        Text("Cookie 需含 UID / CID / SEID。登录后可选文件夹上传相册和文件，锁屏后台也会继续。")
                     } actions: {
                         Button("登录 115") { showLogin = true }.buttonStyle(.borderedProminent)
                     }
                 } else {
-                    List {
-                        Section("当前目录") {
-                            HStack {
-                                Text(path.map(\.name).joined(separator: " / "))
-                                    .font(.subheadline)
-                                Spacer()
-                                if path.count > 1 {
-                                    Button("上级") { path.removeLast(); Task { await reload() } }
-                                }
-                            }
-                            if loading { ProgressView() }
-                            if let errorText { Text(errorText).foregroundStyle(.red).font(.footnote) }
-                            ForEach(folders) { node in
-                                Button {
-                                    path.append((node.id, node.name))
-                                    Task { await reload() }
-                                } label: {
-                                    Label(node.name, systemImage: "folder.fill")
-                                }
-                            }
-                            ForEach(files) { node in
-                                Label {
-                                    VStack(alignment: .leading) {
-                                        Text(node.name).lineLimit(1)
-                                        Text(byteText(node.size)).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                } icon: {
-                                    Image(systemName: "doc.fill")
-                                }
-                            }
+                    VStack(spacing: 0) {
+                        Picker("", selection: $tab) {
+                            ForEach(Pane.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                         }
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
 
-                        Section("上传队列 \(uploader.jobs.count)") {
-                            if uploader.jobs.isEmpty {
-                                Text("从相册或文件加入上传").foregroundStyle(.secondary)
-                            } else {
-                                ForEach(uploader.jobs) { job in
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        HStack {
-                                            Text(job.name).lineLimit(1)
-                                            Spacer()
-                                            Text(job.status.rawValue == "done" ? "完成" : statusText(job))
-                                                .font(.caption).foregroundStyle(.secondary)
-                                        }
-                                        ProgressView(value: job.progress)
-                                        Text(job.message).font(.caption2).foregroundStyle(.secondary)
-                                        HStack {
-                                            if job.status == .uploading || job.status == .waiting || job.status == .hashing {
-                                                Button("暂停") { uploader.pause(job.id) }
-                                            }
-                                            if job.status == .paused {
-                                                Button("继续") { uploader.resume(job.id) }
-                                            }
-                                            if job.status != .done && job.status != .cancelled {
-                                                Button("取消", role: .destructive) { uploader.cancel(job.id) }
-                                            }
-                                        }
-                                        .font(.caption)
-                                    }
-                                    .padding(.vertical, 4)
-                                }
-                            }
+                        if tab == .upload {
+                            uploadPane
+                        } else {
+                            drivePane
                         }
                     }
-                    .refreshable { await reload() }
                 }
             }
             .navigationTitle("115")
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if session.hasCookie {
-                        PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
-                            Image(systemName: "photo.on.rectangle")
-                        }
-                        Button { showFiles = true } label: { Image(systemName: "folder.badge.plus") }
-                        Menu {
-                            Button("新建文件夹") { showFolder = true }
-                            Button("设为上传目录") { session.setTargetCID(cid) }
-                            Button("暂停全部") { uploader.pauseAll() }
-                            Button("继续全部") { uploader.resumeAll() }
-                            Button("取消全部", role: .destructive) { uploader.cancelAll() }
-                            Button("清除已完成") { uploader.removeFinished() }
-                            Button("重新登录") { showLogin = true }
-                            Button("退出 115", role: .destructive) { session.clear() }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-                    } else {
-                        Button("登录") { showLogin = true }
-                    }
-                }
-            }
+            .toolbar { toolbar }
             .sheet(isPresented: $showLogin) { Pan115LoginView() }
             .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result { enqueueFiles(urls) }
@@ -140,17 +72,212 @@ struct Pan115View: View {
                     Task { await makeFolder(name) }
                 }
             }
-            .task {
-                if session.hasCookie { await reload() }
-            }
+            .task { if session.hasCookie { await reload() } }
             .onChange(of: session.hasCookie) { _, ok in
-                if ok {
-                    Task { await reload() }
+                if ok { Task { await reload() } } else { nodes = [] }
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            if session.hasCookie {
+                PhotosPicker(selection: $photos, maxSelectionCount: 30, matching: .any(of: [.images, .videos])) {
+                    Image(systemName: "photo.on.rectangle")
+                }
+                Button { showFiles = true } label: { Image(systemName: "folder.badge.plus") }
+                Menu {
+                    Button("新建文件夹") { showFolder = true }
+                    Button("暂停全部") { uploader.pauseAll() }
+                    Button("继续全部") { uploader.resumeAll() }
+                    Button("取消全部", role: .destructive) { uploader.cancelAll() }
+                    Button("清除完成记录") { uploader.removeHistory() }
+                    Button("重新登录") { showLogin = true }
+                    Button("退出 115", role: .destructive) { session.clear() }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            } else {
+                Button("登录") { showLogin = true }
+            }
+        }
+    }
+
+    private var uploadPane: some View {
+        List {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("上传到")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(folderName)
+                        .font(.headline)
+                    Text("在「网盘」里点进目标文件夹，再选相册或文件。锁屏和后台会继续传，完成后删除 App 本地副本。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            let active = uploader.activeJobs
+            if !active.isEmpty {
+                Section {
+                    ForEach(active) { job in
+                        jobRow(job, showControls: true)
+                    }
+                } header: {
+                    HStack {
+                        Text("正在上传 (\(active.count))")
+                        Spacer()
+                        Button("全部暂停") { uploader.pauseAll() }
+                            .font(.caption)
+                    }
+                }
+            }
+
+            let failed = uploader.failedJobs
+            if !failed.isEmpty {
+                Section("失败 (\(failed.count))") {
+                    ForEach(failed) { job in
+                        jobRow(job, showControls: true)
+                    }
+                }
+            }
+
+            let history = uploader.historyJobs
+            Section("上传完成 (\(history.count))") {
+                if history.isEmpty {
+                    Text("还没有完成记录").foregroundStyle(.secondary)
                 } else {
-                    nodes = []
+                    ForEach(history) { job in
+                        jobRow(job, showControls: false)
+                    }
                 }
             }
         }
+        .listStyle(.insetGrouped)
+    }
+
+    private var drivePane: some View {
+        List {
+            Section("当前目录") {
+                HStack {
+                    Text(folderName).font(.subheadline)
+                    Spacer()
+                    if path.count > 1 {
+                        Button("上级") { path.removeLast(); Task { await reload() } }
+                    }
+                }
+                if loading { ProgressView() }
+                if let errorText { Text(errorText).foregroundStyle(.red).font(.footnote) }
+                ForEach(folders) { node in
+                    Button {
+                        path.append((node.id, node.name))
+                        Task { await reload() }
+                    } label: {
+                        Label(node.name, systemImage: "folder.fill")
+                    }
+                }
+                ForEach(files) { node in
+                    Label {
+                        VStack(alignment: .leading) {
+                            Text(node.name).lineLimit(1)
+                            Text(byteText(node.size)).font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "doc.fill")
+                    }
+                }
+            }
+        }
+        .refreshable { await reload() }
+    }
+
+    @ViewBuilder
+    private func jobRow(_ job: Pan115Uploader.Job, showControls: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                Image(systemName: icon(for: job))
+                    .font(.title3)
+                    .foregroundStyle(.purple)
+                    .frame(width: 36, height: 36)
+                    .background(Color.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(job.name).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    Text(detailLine(job)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if job.status == .uploading || job.status == .hashing {
+                    ZStack {
+                        Circle().stroke(.quaternary, lineWidth: 3)
+                        Circle().trim(from: 0, to: job.progress)
+                            .stroke(Color.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                        Text("\(Int(job.progress * 100))%")
+                            .font(.caption2.monospacedDigit())
+                    }
+                    .frame(width: 44, height: 44)
+                }
+            }
+            if showControls && (job.status == .uploading || job.status == .waiting || job.status == .hashing || job.status == .paused || job.status == .failed) {
+                if job.status == .uploading || job.status == .waiting || job.status == .hashing {
+                    ProgressView(value: job.progress)
+                }
+                HStack {
+                    if job.status == .uploading || job.status == .waiting || job.status == .hashing {
+                        Button("暂停") { uploader.pause(job.id) }
+                    }
+                    if job.status == .paused || job.status == .failed {
+                        Button("继续") { uploader.resume(job.id) }
+                    }
+                    Button("取消", role: .destructive) { uploader.cancel(job.id) }
+                    Spacer()
+                }
+                .font(.caption)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func icon(for job: Pan115Uploader.Job) -> String {
+        let n = job.name.lowercased()
+        if n.hasSuffix(".mp4") || n.hasSuffix(".mov") || n.hasSuffix(".m4v") { return "film" }
+        if n.hasSuffix(".jpg") || n.hasSuffix(".jpeg") || n.hasSuffix(".png") || n.hasSuffix(".heic") { return "photo" }
+        return "doc"
+    }
+
+    private func detailLine(_ job: Pan115Uploader.Job) -> String {
+        switch job.status {
+        case .uploading:
+            return "\(byteText(job.size))  \(speedText(job.speedBps))  → \(job.folderName)"
+        case .waiting:
+            return "排队 · \(byteText(job.size))  → \(job.folderName)"
+        case .hashing:
+            return "计算 SHA1 · \(byteText(job.size))"
+        case .paused:
+            return "已暂停 · \(byteText(job.size))"
+        case .failed:
+            return job.message
+        case .cancelled:
+            return "已取消"
+        case .done:
+            return "\(dateText(job.finishedAt ?? job.createdAt))  ·  \(byteText(job.size))"
+        }
+    }
+
+    private func speedText(_ bps: Double) -> String {
+        if bps < 1 { return "0 B/s" }
+        if bps >= 1_073_741_824 { return String(format: "%.1f GB/s", bps / 1_073_741_824) }
+        if bps >= 1_048_576 { return String(format: "%.1f MB/s", bps / 1_048_576) }
+        if bps >= 1024 { return String(format: "%.0f KB/s", bps / 1024) }
+        return String(format: "%.0f B/s", bps)
+    }
+
+    private func dateText(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "yyyy年M月d日 HH:mm:ss"
+        return f.string(from: date)
     }
 
     private func reload() async {
@@ -183,7 +310,7 @@ struct Pan115View: View {
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             let dest = copyToInbox(url)
             let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
-            uploader.enqueue(fileURL: dest, name: dest.lastPathComponent, size: size, cid: cid)
+            uploader.enqueue(fileURL: dest, name: dest.lastPathComponent, size: size, cid: cid, folderName: folderName, ownsFile: true)
         }
     }
 
@@ -191,14 +318,21 @@ struct Pan115View: View {
         for item in items {
             guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
             let ext = item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) ? "mov" : "jpg"
-            let name = "IMG_\(Int(Date().timeIntervalSince1970))_\(UUID().uuidString.prefix(6)).\(ext)"
+            let name = suggestedPhotoName(item, ext: ext)
             let dest = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("115Inbox", isDirectory: true)
             try? FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
             let file = dest.appendingPathComponent(name)
             try? data.write(to: file)
-            uploader.enqueue(fileURL: file, name: name, size: Int64(data.count), cid: cid)
+            uploader.enqueue(fileURL: file, name: name, size: Int64(data.count), cid: cid, folderName: folderName, ownsFile: true)
         }
+    }
+
+    private func suggestedPhotoName(_ item: PhotosPickerItem, ext: String) -> String {
+        if let id = item.itemIdentifier, !id.isEmpty {
+            return "IMG_\(id.prefix(12)).\(ext)"
+        }
+        return "IMG_\(Int(Date().timeIntervalSince1970))_\(UUID().uuidString.prefix(6)).\(ext)"
     }
 
     private func copyToInbox(_ url: URL) -> URL {
@@ -209,18 +343,6 @@ struct Pan115View: View {
         try? FileManager.default.removeItem(at: dest)
         try? FileManager.default.copyItem(at: url, to: dest)
         return FileManager.default.fileExists(atPath: dest.path) ? dest : url
-    }
-
-    private func statusText(_ job: Pan115Uploader.Job) -> String {
-        switch job.status {
-        case .waiting: return "排队"
-        case .hashing: return "校验"
-        case .uploading: return String(format: "%.0f%%", job.progress * 100)
-        case .paused: return "暂停"
-        case .done: return "完成"
-        case .failed: return "失败"
-        case .cancelled: return "取消"
-        }
     }
 
     private func byteText(_ n: Int64) -> String {

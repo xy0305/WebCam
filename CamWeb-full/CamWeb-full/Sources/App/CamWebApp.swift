@@ -41,6 +41,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication,
+                     handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        _ = Pan115Uploader.shared
+        Pan115Uploader.shared.handleBackgroundEvents(identifier: identifier, completion: completionHandler)
+    }
+
+    func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         return KSOptions.supportedInterfaceOrientations
     }
@@ -91,6 +98,7 @@ struct RootFlow: View {
             case .background:
                 RecordingManager.shared.keepBackgroundAlive()
                 RecordingManager.shared.recoverOrphans()
+                Pan115Uploader.shared.keepAlive()
             default:
                 break
             }
