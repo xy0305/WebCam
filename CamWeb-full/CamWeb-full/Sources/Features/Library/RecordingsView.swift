@@ -220,7 +220,11 @@ struct RecordingsView: View {
             )) {
                 Button("好", role: .cancel) { exportBanner = nil }
             } message: { Text(exportBanner ?? "") }
-            .onAppear { files = RecordingStore.list(); monitor.startMonitoring() }
+            .onAppear {
+                RecordingManager.shared.recoverOrphans()
+                files = RecordingStore.list()
+                monitor.startMonitoring()
+            }
             .onChange(of: recs.activeUsernames.count) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
             .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }

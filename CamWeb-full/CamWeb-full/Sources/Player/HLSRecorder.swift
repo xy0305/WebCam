@@ -22,8 +22,13 @@ final class RecordingManager: ObservableObject {
     private let audioKeeper = BackgroundAudioKeeper()
 
     private init() {
-        // 上次在后台被系统中断时，保留已有 HLS 分片为可查看的恢复录像，不能静默丢弃。
-        RecordingStore.recoverInterruptedRecordings()
+        recoverOrphans()
+    }
+
+    /// 进前台 / 冷启动：把杀进程或封装中断留下的 .part 变成列表可见的恢复录像。
+    func recoverOrphans() {
+        RecordingStore.recoverInterruptedRecordings(excludingStems: activeFileStems)
+        libraryRevision += 1
     }
 
     var activeUsernames: [String] { Array(sessions.keys).sorted() }
@@ -288,7 +293,7 @@ final class RecordingSession: ObservableObject, Identifiable {
     }
 
     func start() {
-        // .part 目录只作为中间缓存，不出现在录像列表里。
+        // .part 目录只作为中间缓存，不出现在录像列表里；中断后必须 promote 才会可见。
         let dir = RecordingStore.directory.appendingPathComponent("\(fileStem).part", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
@@ -332,12 +337,11 @@ final class RecordingSession: ObservableObject, Identifiable {
         forceFinished = true
         workTask?.cancel()
         stopTimer()
-        if currentDirectory != nil {
+        if let dir = currentDirectory {
             Task { @MainActor [weak self] in
-                // 等网络任务响应 cancellation 后再移动目录，避免与写分片竞争。
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 guard let self, self.forceFinished else { return }
-                RecordingStore.recoverInterruptedRecordings()
+                _ = RecordingStore.promotePartDirectory(dir)
                 self.onFinished?(self.username, "\(self.username) 已结束并保留恢复录像")
             }
         } else {
@@ -349,17 +353,18 @@ final class RecordingSession: ObservableObject, Identifiable {
         stopTimer()
         isRunning = false
         tick()
-        guard result.success, let index = result.indexURL,
-              FileManager.default.fileExists(atPath: index.path) else {
-            // 退出后台或网络被系统中断时保留已写入分片；下次启动会恢复成可播放录像。
-            RecordingStore.recoverInterruptedRecordings()
+        // 先变成列表可见的恢复录像，再尝试封装。后台杀进程时至少还能看到分片。
+        guard let recovered = RecordingStore.promotePartDirectory(dir) else {
+            onFinished?(name, "\(name) 录制未完成")
+            return
+        }
+        let index = recovered.appendingPathComponent("index.m3u8")
+        guard result.success, FileManager.default.fileExists(atPath: index.path) else {
             onFinished?(name, "\(name) 录制未完成，已保留恢复文件")
             return
         }
 
-        let base = dir.lastPathComponent.hasSuffix(".part")
-            ? String(dir.lastPathComponent.dropLast(5)) : dir.lastPathComponent
-        let mp4 = dir.deletingLastPathComponent().appendingPathComponent(base + ".mp4")
+        let mp4 = recovered.deletingLastPathComponent().appendingPathComponent("\(fileStem).mp4")
         try? FileManager.default.removeItem(at: mp4)
         bannerMuxing(name)
 
@@ -370,11 +375,11 @@ final class RecordingSession: ObservableObject, Identifiable {
             await MainActor.run {
                 guard let self else { return }
                 if ok, FileManager.default.fileExists(atPath: mp4.path) {
-                    try? FileManager.default.removeItem(at: dir)
+                    try? FileManager.default.removeItem(at: recovered)
                     self.onFinished?(name, "\(name) 已保存 MP4 · \(duration) · \(size)")
                 } else {
                     try? FileManager.default.removeItem(at: mp4)
-                    self.onFinished?(name, "\(name) 封装 MP4 失败，中间文件已保留")
+                    self.onFinished?(name, "\(name) 封装 MP4 失败，已保留恢复录像")
                 }
             }
         }
@@ -780,7 +785,7 @@ enum HLSPackager {
         audio?.flushGaps()
         writer.rewrite(ended: true)
         progress.set(seconds: writer.videoDuration, bytes: writer.bytes)
-        guard writer.videoDuration > 0.5, writer.bytes > 1024 else {
+        guard writer.bytes > 256 else {
             return Result(success: false, indexURL: nil, error: "没有收到视频分片")
         }
         return Result(success: true, indexURL: writer.indexURL, error: nil)

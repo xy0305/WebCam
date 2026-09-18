@@ -18,6 +18,7 @@ enum RecordingStore {
         for url in urls {
             let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             if isDir {
+                // 仍在写入的 .part 不进列表；已中断的会在恢复后去掉 .part 后缀。
                 if url.pathExtension.lowercased() == "part" { continue }
                 let index = url.appendingPathComponent("index.m3u8")
                 if fm.fileExists(atPath: index.path) {
@@ -39,22 +40,101 @@ enum RecordingStore {
     }
 
     /// 将系统中断后遗留的 .part HLS 目录变成可播放、可导出、可删除的恢复录像。
-    static func recoverInterruptedRecordings() {
+    /// 正在录制的目录必须排除，否则会把还在写盘的分片挪走，看起来像录像丢了。
+    static func recoverInterruptedRecordings(excludingStems stems: [String] = []) {
         let fm = FileManager.default
+        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
         let dirs = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        let skip = Set(stems.map { $0.lowercased() })
         for dir in dirs where dir.pathExtension.lowercased() == "part" {
-            let index = dir.appendingPathComponent("index.m3u8")
-            guard fm.fileExists(atPath: index.path),
-                  ((try? index.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 else { continue }
-            let base = String(dir.lastPathComponent.dropLast(5))
-            var destination = dir.deletingLastPathComponent().appendingPathComponent(base + "_恢复录像", isDirectory: true)
-            var suffix = 2
-            while fm.fileExists(atPath: destination.path) {
-                destination = dir.deletingLastPathComponent().appendingPathComponent("\(base)_恢复录像_\(suffix)", isDirectory: true)
-                suffix += 1
-            }
-            try? fm.moveItem(at: dir, to: destination)
+            let stem = String(dir.lastPathComponent.dropLast(5)).lowercased()
+            if skip.contains(stem) { continue }
+            _ = promotePartDirectory(dir)
         }
+    }
+
+    /// 停止/封装/杀进程前先把 `.part` 变成列表可见的恢复录像，避免唯一副本藏在隐藏目录里。
+    @discardableResult
+    static func promotePartDirectory(_ dir: URL) -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir.path) else { return nil }
+        let isPart = dir.pathExtension.lowercased() == "part"
+        let work = isPart ? dir : dir
+        guard ensurePlayableIndex(in: work) else { return isPart ? nil : dir }
+        guard isPart else { return dir }
+
+        let base = String(dir.lastPathComponent.dropLast(5))
+        var destination = dir.deletingLastPathComponent().appendingPathComponent(base + "_恢复录像", isDirectory: true)
+        var suffix = 2
+        while fm.fileExists(atPath: destination.path) {
+            destination = dir.deletingLastPathComponent().appendingPathComponent("\(base)_恢复录像_\(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        do {
+            try fm.moveItem(at: dir, to: destination)
+            return destination
+        } catch {
+            return fm.fileExists(atPath: destination.path) ? destination : dir
+        }
+    }
+
+    /// 有分片但没主清单时补一份，让恢复录像能进列表。
+    @discardableResult
+    static func ensurePlayableIndex(in dir: URL) -> Bool {
+        let fm = FileManager.default
+        let index = dir.appendingPathComponent("index.m3u8")
+        let video = dir.appendingPathComponent("video.m3u8")
+        if fileHasBytes(index) || fileHasBytes(video) {
+            if !fileHasBytes(index) {
+                writeFallbackIndex(in: dir, hasAudio: fm.fileExists(atPath: dir.appendingPathComponent("audio.m3u8").path))
+            }
+            return true
+        }
+        let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        let clips = files.filter {
+            let n = $0.lastPathComponent.lowercased()
+            return n.hasPrefix("v-") && (n.hasSuffix(".m4s") || n.hasSuffix(".ts") || n.hasSuffix(".mp4"))
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !clips.isEmpty else { return false }
+
+        var body = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+        let initFile = dir.appendingPathComponent("v-init.mp4")
+        if fm.fileExists(atPath: initFile.path) {
+            body += "#EXT-X-MAP:URI=\"v-init.mp4\"\n"
+        }
+        for clip in clips {
+            body += "#EXTINF:2.000,\n\(clip.lastPathComponent)\n"
+        }
+        body += "#EXT-X-ENDLIST\n"
+        try? body.write(to: video, atomically: true, encoding: .utf8)
+        writeFallbackIndex(in: dir, hasAudio: false)
+        return fileHasBytes(index) || fileHasBytes(video)
+    }
+
+    private static func writeFallbackIndex(in dir: URL, hasAudio: Bool) {
+        let text: String
+        if hasAudio {
+            text = """
+            #EXTM3U
+            #EXT-X-INDEPENDENT-SEGMENTS
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio",DEFAULT=YES,AUTOSELECT=YES,URI="audio.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,AUDIO="aud"
+            video.m3u8
+
+            """
+        } else {
+            text = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000
+            video.m3u8
+
+            """
+        }
+        try? text.write(to: dir.appendingPathComponent("index.m3u8"), atomically: true, encoding: .utf8)
+    }
+
+    private static func fileHasBytes(_ url: URL) -> Bool {
+        ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
     }
 
     static func displayName(_ url: URL) -> String {

@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 struct RootFlow: View {
     @EnvironmentObject var auth: AuthManager
     @EnvironmentObject var appState: AppState
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -81,6 +82,17 @@ struct RootFlow: View {
         .task {
             await auth.restore()
             AutoRecordMonitor.shared.startMonitoring()
+            RecordingManager.shared.recoverOrphans()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                RecordingManager.shared.recoverOrphans()
+            case .background:
+                RecordingManager.shared.keepBackgroundAlive()
+            default:
+                break
+            }
         }
     }
 }
