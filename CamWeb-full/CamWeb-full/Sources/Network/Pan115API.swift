@@ -78,20 +78,48 @@ enum Pan115API {
             throw APIError.message(string(obj["error"]) ?? "列出目录失败")
         }
         let rows = obj["data"] as? [[String: Any]] ?? []
-        return rows.compactMap { item in
-            let fid = string(item["fid"]) ?? ""
-            let dirID = string(item["cid"]) ?? ""
-            let isDir = fid.isEmpty && !dirID.isEmpty
-            let id = isDir ? dirID : fid
-            guard !id.isEmpty else { return nil }
-            return Node(
-                id: id,
-                name: string(item["n"]) ?? string(item["fn"]) ?? id,
-                isDir: isDir,
-                size: Int64(string(item["s"]) ?? "0") ?? 0,
-                pickCode: string(item["pc"]) ?? ""
-            )
+        return rows.compactMap { parseNode($0) }
+    }
+
+    private static func parseNode(_ item: [String: Any]) -> Node? {
+        let fid = string(item["fid"]) ?? ""
+        let dirID = string(item["cid"]) ?? ""
+        let fileCategory = string(item["fc"]) ?? string(item["file_category"])
+        let isDir = fid.isEmpty || fileCategory == "0"
+        let id = isDir ? (dirID.isEmpty ? fid : dirID) : fid
+        guard !id.isEmpty else { return nil }
+        return Node(
+            id: id,
+            name: string(item["n"]) ?? string(item["fn"]) ?? string(item["file_name"]) ?? id,
+            isDir: isDir,
+            size: Int64(string(item["s"]) ?? string(item["file_size"]) ?? "0") ?? 0,
+            pickCode: string(item["pc"]) ?? string(item["pick_code"]) ?? ""
+        )
+    }
+
+    /// 全盘搜文件夹/文件。`search_file=2` 只搜目录；不传则文件+目录。
+    static func search(keyword: String, cid: String = "0", foldersOnly: Bool = true) async throws -> [Node] {
+        let q = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 1 else { return [] }
+        var c = URLComponents(string: "https://webapi.115.com/files/search")!
+        var items = [
+            URLQueryItem(name: "search_value", value: q),
+            URLQueryItem(name: "aid", value: "1"),
+            URLQueryItem(name: "cid", value: cid),
+            URLQueryItem(name: "offset", value: "0"),
+            URLQueryItem(name: "limit", value: "115"),
+            URLQueryItem(name: "format", value: "json")
+        ]
+        if foldersOnly {
+            items.append(URLQueryItem(name: "search_file", value: "2"))
         }
+        c.queryItems = items
+        let obj = try await json(c.url!)
+        if let state = obj["state"] as? Bool, state == false {
+            throw APIError.message(string(obj["error"]) ?? "搜索失败")
+        }
+        let rows = obj["data"] as? [[String: Any]] ?? []
+        return rows.compactMap { parseNode($0) }
     }
 
     static func mkdir(parent: String, name: String) async throws -> String {

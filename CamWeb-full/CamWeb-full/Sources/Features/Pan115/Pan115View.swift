@@ -10,11 +10,14 @@ struct Pan115View: View {
     @State private var loading = false
     @State private var errorText: String?
     @State private var showLogin = false
-    @State private var showFiles = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var newFolder = ""
     @State private var showFolder = false
     @State private var tab: Pane = .upload
+    @State private var searchText = ""
+    @State private var searchHits: [Pan115API.Node] = []
+    @State private var searching = false
+    @State private var pickNotice: String?
 
     private enum Pane: String, CaseIterable {
         case upload = "上传"
@@ -57,9 +60,6 @@ struct Pan115View: View {
             .navigationTitle("115")
             .toolbar { toolbar }
             .sheet(isPresented: $showLogin) { Pan115LoginView() }
-            .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-                if case .success(let urls) = result { enqueueFiles(urls) }
-            }
             .onChange(of: photos) { _, items in
                 Task { await enqueuePhotos(items); photos = [] }
             }
@@ -72,9 +72,15 @@ struct Pan115View: View {
                     Task { await makeFolder(name) }
                 }
             }
+            .alert("提示", isPresented: Binding(get: { pickNotice != nil }, set: { if !$0 { pickNotice = nil } })) {
+                Button("好", role: .cancel) { pickNotice = nil }
+            } message: { Text(pickNotice ?? "") }
             .task { if session.hasCookie { await reload() } }
             .onChange(of: session.hasCookie) { _, ok in
-                if ok { Task { await reload() } } else { nodes = [] }
+                if ok { Task { await reload() } } else { nodes = []; searchHits = [] }
+            }
+            .onChange(of: searchText) { _, q in
+                Task { await runSearch(q) }
             }
         }
     }
@@ -86,7 +92,11 @@ struct Pan115View: View {
                 PhotosPicker(selection: $photos, maxSelectionCount: 30, matching: .any(of: [.images, .videos])) {
                     Image(systemName: "photo.on.rectangle")
                 }
-                Button { showFiles = true } label: { Image(systemName: "folder.badge.plus") }
+                Button {
+                    Pan115FilePicker.present { urls in
+                        enqueueFiles(urls)
+                    }
+                } label: { Image(systemName: "folder.badge.plus") }
                 Menu {
                     Button("新建文件夹") { showFolder = true }
                     Button("暂停全部") { uploader.pauseAll() }
@@ -113,7 +123,7 @@ struct Pan115View: View {
                         .foregroundStyle(.secondary)
                     Text(folderName)
                         .font(.headline)
-                    Text("在「网盘」里点进目标文件夹，再选相册或文件。锁屏和后台会继续传，完成后删除 App 本地副本。")
+                    Text("在「网盘」搜索或点进目标文件夹，再选相册或文件。点「打开」即可加入队列。锁屏和后台会继续传，完成后删除 App 本地副本。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -160,32 +170,65 @@ struct Pan115View: View {
 
     private var drivePane: some View {
         List {
-            Section("当前目录") {
+            Section {
                 HStack {
-                    Text(folderName).font(.subheadline)
-                    Spacer()
-                    if path.count > 1 {
-                        Button("上级") { path.removeLast(); Task { await reload() } }
-                    }
-                }
-                if loading { ProgressView() }
-                if let errorText { Text(errorText).foregroundStyle(.red).font(.footnote) }
-                ForEach(folders) { node in
-                    Button {
-                        path.append((node.id, node.name))
-                        Task { await reload() }
-                    } label: {
-                        Label(node.name, systemImage: "folder.fill")
-                    }
-                }
-                ForEach(files) { node in
-                    Label {
-                        VStack(alignment: .leading) {
-                            Text(node.name).lineLimit(1)
-                            Text(byteText(node.size)).font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("搜索文件夹", text: $searchText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                            searchHits = []
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                         }
-                    } icon: {
-                        Image(systemName: "doc.fill")
+                    }
+                    if searching { ProgressView().controlSize(.small) }
+                }
+            }
+
+            if !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                Section("搜索结果") {
+                    if searchHits.isEmpty, !searching {
+                        Text("没有找到「\(searchText)」").foregroundStyle(.secondary)
+                    }
+                    ForEach(searchHits) { node in
+                        Button {
+                            openSearchHit(node)
+                        } label: {
+                            Label(node.name, systemImage: node.isDir ? "folder.fill" : "doc.fill")
+                        }
+                    }
+                }
+            } else {
+                Section("当前目录") {
+                    HStack {
+                        Text(folderName).font(.subheadline)
+                        Spacer()
+                        if path.count > 1 {
+                            Button("上级") { path.removeLast(); Task { await reload() } }
+                        }
+                    }
+                    if loading { ProgressView() }
+                    if let errorText { Text(errorText).foregroundStyle(.red).font(.footnote) }
+                    ForEach(folders) { node in
+                        Button {
+                            path.append((node.id, node.name))
+                            Task { await reload() }
+                        } label: {
+                            Label(node.name, systemImage: "folder.fill")
+                        }
+                    }
+                    ForEach(files) { node in
+                        Label {
+                            VStack(alignment: .leading) {
+                                Text(node.name).lineLimit(1)
+                                Text(byteText(node.size)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "doc.fill")
+                        }
                     }
                 }
             }
@@ -305,13 +348,46 @@ struct Pan115View: View {
     }
 
     private func enqueueFiles(_ urls: [URL]) {
-        for url in urls {
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            let dest = copyToInbox(url)
-            let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
-            uploader.enqueue(fileURL: dest, name: dest.lastPathComponent, size: size, cid: cid, folderName: folderName, ownsFile: true)
+        let items = Pan115Inbox.ingest(urls)
+        guard !items.isEmpty else {
+            pickNotice = "没有读到可上传的文件，请再试一次「打开」"
+            return
         }
+        for item in items {
+            uploader.enqueue(fileURL: item.url, name: item.name, size: item.size, cid: cid, folderName: folderName, ownsFile: true)
+        }
+        tab = .upload
+        pickNotice = "已加入 \(items.count) 个文件，上传到 \(folderName)"
+    }
+
+    private func runSearch(_ raw: String) async {
+        let q = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 1 else {
+            searchHits = []
+            searching = false
+            return
+        }
+        searching = true
+        defer { searching = false }
+        do {
+            let hits = try await Pan115API.search(keyword: q, cid: "0", foldersOnly: true)
+            if searchText.trimmingCharacters(in: .whitespacesAndNewlines) == q {
+                searchHits = hits
+            }
+        } catch {
+            if searchText.trimmingCharacters(in: .whitespacesAndNewlines) == q {
+                errorText = error.localizedDescription
+                searchHits = []
+            }
+        }
+    }
+
+    private func openSearchHit(_ node: Pan115API.Node) {
+        searchText = ""
+        searchHits = []
+        path = [("0", "根目录"), (node.id, node.name)]
+        tab = .files
+        Task { await reload() }
     }
 
     private func enqueuePhotos(_ items: [PhotosPickerItem]) async {
@@ -333,16 +409,6 @@ struct Pan115View: View {
             return "IMG_\(id.prefix(12)).\(ext)"
         }
         return "IMG_\(Int(Date().timeIntervalSince1970))_\(UUID().uuidString.prefix(6)).\(ext)"
-    }
-
-    private func copyToInbox(_ url: URL) -> URL {
-        let destDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("115Inbox", isDirectory: true)
-        try? FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
-        let dest = destDir.appendingPathComponent(url.lastPathComponent)
-        try? FileManager.default.removeItem(at: dest)
-        try? FileManager.default.copyItem(at: url, to: dest)
-        return FileManager.default.fileExists(atPath: dest.path) ? dest : url
     }
 
     private func byteText(_ n: Int64) -> String {
