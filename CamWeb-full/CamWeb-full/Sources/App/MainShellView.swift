@@ -57,6 +57,9 @@ struct MainShellView: View {
             Tab("录像", systemImage: "folder", value: AppTab.library) {
                 RecordingsView()
             }
+            Tab("115", systemImage: "externaldrive", value: AppTab.pan115) {
+                Pan115View()
+            }
             Tab("搜索", systemImage: "magnifyingglass", value: AppTab.search) {
                 SearchView()
             }
@@ -78,6 +81,9 @@ struct MainShellView: View {
             RecordingsView()
                 .tabItem { Label("录像", systemImage: "folder") }
                 .tag(AppTab.library)
+            Pan115View()
+                .tabItem { Label("115", systemImage: "externaldrive") }
+                .tag(AppTab.pan115)
             SearchView()
                 .tabItem { Label("搜索", systemImage: "magnifyingglass") }
                 .tag(AppTab.search)

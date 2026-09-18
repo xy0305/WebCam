@@ -5,9 +5,11 @@ struct SettingsView: View {
     @State private var loggingOut = false
     @ObservedObject private var stripchat = StripchatSession.shared
     @ObservedObject private var panda = PandaSession.shared
+    @ObservedObject private var pan115 = Pan115Session.shared
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
+    @State private var showPan115Login = false
     @State private var pasteKind: CookiePasteKind?
     @State private var pastedCookie = ""
     @State private var cookieAlert: CookieAlert?
@@ -19,6 +21,7 @@ struct SettingsView: View {
                 chaturbateSection
                 stripchatSection
                 pandaSection
+                pan115Section
                 playbackSection
                 logoutSection
                 footerSection
@@ -32,6 +35,7 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showStripchatLogin) { StripchatLoginView() }
             .sheet(isPresented: $showPandaLogin) { PandaLoginView() }
+            .sheet(isPresented: $showPan115Login) { Pan115LoginView() }
             .alert(
                 pasteKind?.title ?? "粘贴 Cookie",
                 isPresented: Binding(
@@ -105,6 +109,18 @@ struct SettingsView: View {
         }
     }
 
+    private var pan115Section: some View {
+        Section("115 网盘") {
+            LabeledContent("状态", value: pan115Status)
+            Button("网页登录 / 粘贴 Cookie") { showPan115Login = true }
+            if pan115.hasCookie {
+                Button("断开 115", role: .destructive) { pan115.clear() }
+            }
+            Text("对照 OpenList：Cookie 需含 UID、CID、SEID。登录后可在「115」页浏览目录、上传相册和文件，支持暂停与取消。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
     private var playbackSection: some View {
         Section("播放") {
             LabeledContent("播放器", value: "KSPlayer")
@@ -157,6 +173,12 @@ struct SettingsView: View {
     private var pandaStatus: String {
         if let name = panda.userName, panda.hasCookie { return "已登录 \(name)" }
         if panda.hasCookie { return "Cookie 已保存" }
+        return "未连接"
+    }
+
+    private var pan115Status: String {
+        if pan115.hasCookie, !pan115.userName.isEmpty { return "已登录 \(pan115.userName)" }
+        if pan115.hasCookie { return "Cookie 已保存" }
         return "未连接"
     }
 

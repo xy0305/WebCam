@@ -52,6 +52,13 @@
 		<string>wnu.com</string>
 		<string>paygarden.com</string>
 		<string>cbxyz.com</string>
+		<string>115.com</string>
+		<string>115cdn.net</string>
+		<string>anxia.com</string>
+		<string>captchaapi.115.com</string>
+		<string>passportapi.115.com</string>
+		<string>webapi.115.com</string>
+		<string>my.115.com</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
@@ -75,7 +82,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Broadcasting from the website requires microphone access.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>将录像导出到相册。</string>
+	<string>读取相册以上传到 115。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>将录像导出到相册。</string>
 </dict>

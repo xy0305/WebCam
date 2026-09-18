@@ -99,7 +99,7 @@ struct RootFlow: View {
 }
 
 enum AppTab: Hashable {
-    case channels, favorites, library, settings, search
+    case channels, favorites, library, pan115, settings, search
 }
 
 @MainActor
