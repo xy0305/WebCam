@@ -462,7 +462,7 @@ struct Pan115FolderPicker: View {
         loading = true
         errorText = nil
         defer { loading = false }
-        do { nodes = try await Pan115API.list(cid: cid) }
+        do { nodes = try await Pan115API.listAll(cid: cid) }
         catch { errorText = error.localizedDescription }
     }
 }

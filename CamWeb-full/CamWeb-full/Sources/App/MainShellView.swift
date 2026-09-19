@@ -4,7 +4,7 @@ struct MainShellView: View {
     @EnvironmentObject var appState: AppState
 
     private var isCoverPresented: Bool {
-        appState.playingUsername != nil || appState.playingRecordingURL != nil || appState.playing115URL != nil
+        appState.playingUsername != nil || appState.playingRecordingURL != nil || appState.playing115URL != nil || appState.playing115ImageURL != nil
     }
 
     var body: some View {
@@ -35,6 +35,11 @@ struct MainShellView: View {
             Pan115PlayerView(url: url, title: appState.playing115Title)
                 .id(url.absoluteString)
                 .environmentObject(appState)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+        } else if let url = appState.playing115ImageURL {
+            Pan115ImagePreview(url: url, title: appState.playing115Title)
+                .id(url.absoluteString)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
         }

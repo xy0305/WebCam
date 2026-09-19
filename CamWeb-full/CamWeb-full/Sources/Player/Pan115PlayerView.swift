@@ -28,7 +28,7 @@ struct Pan115PlayerView: View {
                     .onPlay { cur, tot in
                         if !isSeeking {
                             current = max(0, cur)
-                            total = max(tot, 1)
+                            if tot > 1.5 { total = tot }
                         }
                     }
                     .onStateChanged { _, state in
@@ -42,6 +42,7 @@ struct Pan115PlayerView: View {
                     .ignoresSafeArea()
 
                 gestureLayer(size: geo.size)
+                    .allowsHitTesting(!showChrome || swipeKind != nil)
 
                 if isBuffering && current < 0.4 {
                     ProgressView().tint(.white).scaleEffect(1.2)
@@ -263,7 +264,8 @@ struct Pan115PlayerView: View {
     }
 
     private func seekBy(_ delta: Double) {
-        let t = min(max(0, current + delta), total)
+        let span = max(total, current + abs(delta), 1)
+        let t = min(max(0, current + delta), span)
         current = t
         coordinator.seek(time: t)
         scheduleHide()

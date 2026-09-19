@@ -61,39 +61,70 @@ enum Pan115API {
         return UserInfo(id: id, name: name)
     }
 
-    static func list(cid: String, offset: Int = 0) async throws -> [Node] {
-        var c = URLComponents(string: "https://webapi.115.com/files")!
-        c.queryItems = [
-            URLQueryItem(name: "aid", value: "1"),
-            URLQueryItem(name: "cid", value: cid),
-            URLQueryItem(name: "o", value: "user_ptime"),
-            URLQueryItem(name: "asc", value: "0"),
-            URLQueryItem(name: "offset", value: "\(offset)"),
-            URLQueryItem(name: "limit", value: "115"),
-            URLQueryItem(name: "show_dir", value: "1"),
-            URLQueryItem(name: "format", value: "json")
+    static func list(cid: String, offset: Int = 0, limit: Int = 1150) async throws -> [Node] {
+        let query = "aid=1&cid=\(encode(cid))&o=user_ptime&asc=0&offset=\(offset)&show_dir=1&limit=\(limit)&natsort=1&format=json"
+        let urls = [
+            "https://aps.115.com/natsort/files.php?\(query)",
+            "https://proapi.115.com/android/2.0/ufile/files?\(query)",
+            "https://webapi.115.com/files?\(query)"
         ]
-        let obj = try await json(c.url!)
-        if let state = obj["state"] as? Bool, state == false {
-            throw APIError.message(string(obj["error"]) ?? "列出目录失败")
+        var last: Error = APIError.badResponse
+        for raw in urls {
+            guard let url = URL(string: raw) else { continue }
+            do {
+                let obj = try await json(url)
+                if let state = obj["state"] as? Bool, state == false {
+                    last = APIError.message(string(obj["error"]) ?? "列出目录失败")
+                    continue
+                }
+                let rows = extractRows(obj)
+                let nodes = rows.compactMap(parseNode)
+                if !nodes.isEmpty { return nodes }
+                if obj["state"] as? Bool == true { return [] }
+            } catch {
+                last = error
+            }
         }
-        let rows = obj["data"] as? [[String: Any]] ?? []
-        return rows.compactMap { parseNode($0) }
+        throw last
+    }
+
+    private static func extractRows(_ obj: [String: Any]) -> [[String: Any]] {
+        func array(from value: Any?) -> [[String: Any]]? {
+            if let arr = value as? [[String: Any]] { return arr }
+            if let dict = value as? [String: Any] {
+                for key in ["data", "list", "files", "items"] {
+                    if let arr = dict[key] as? [[String: Any]] { return arr }
+                }
+            }
+            return nil
+        }
+        return array(from: obj["data"]) ?? array(from: obj["list"]) ?? array(from: obj["files"]) ?? []
     }
 
     private static func parseNode(_ item: [String: Any]) -> Node? {
-        let fid = string(item["fid"]) ?? ""
-        let dirID = string(item["cid"]) ?? ""
-        let fileCategory = string(item["fc"]) ?? string(item["file_category"])
-        let isDir = fid.isEmpty || fileCategory == "0"
-        let id = isDir ? (dirID.isEmpty ? fid : dirID) : fid
+        let fid = string(item["fid"] ?? item["file_id"]) ?? ""
+        let dirID = string(item["cid"] ?? item["pid"]) ?? ""
+        let pc = string(item["pc"] ?? item["pick_code"] ?? item["pickcode"]) ?? ""
+        let fc = string(item["fc"] ?? item["file_category"]) ?? ""
+        let sha = string(item["sha"] ?? item["sha1"]) ?? ""
+        // 115 文件 fid 常是 JSON 数字；以前只认 String，fid 空了就把文件当成文件夹，
+        // 而且 id 全变成父目录 cid，ForEach 直接把文件挤掉。
+        let isDir: Bool
+        if fc == "0" {
+            isDir = true
+        } else if fc == "1" || !pc.isEmpty || !sha.isEmpty || !fid.isEmpty {
+            isDir = false
+        } else {
+            isDir = true
+        }
+        let id = isDir ? (dirID.isEmpty ? fid : dirID) : (fid.isEmpty ? pc : fid)
         guard !id.isEmpty else { return nil }
         return Node(
             id: id,
-            name: string(item["n"]) ?? string(item["fn"]) ?? string(item["file_name"]) ?? id,
+            name: string(item["n"] ?? item["fn"] ?? item["file_name"] ?? item["name"]) ?? id,
             isDir: isDir,
-            size: Int64(string(item["s"]) ?? string(item["file_size"]) ?? "0") ?? 0,
-            pickCode: string(item["pc"]) ?? string(item["pick_code"]) ?? ""
+            size: Int64(string(item["s"] ?? item["file_size"] ?? item["fs"] ?? item["size"]) ?? "0") ?? 0,
+            pickCode: pc
         )
     }
 
@@ -118,17 +149,18 @@ enum Pan115API {
         if let state = obj["state"] as? Bool, state == false {
             throw APIError.message(string(obj["error"]) ?? "搜索失败")
         }
-        let rows = obj["data"] as? [[String: Any]] ?? []
-        return rows.compactMap { parseNode($0) }
+        let rows = extractRows(obj)
+        return rows.compactMap(parseNode)
     }
 
     static func listAll(cid: String) async throws -> [Node] {
         var offset = 0
         var all: [Node] = []
+        let pageSize = 1150
         for _ in 0..<40 {
-            let page = try await list(cid: cid, offset: offset)
+            let page = try await list(cid: cid, offset: offset, limit: pageSize)
             all.append(contentsOf: page)
-            if page.count < 115 { break }
+            if page.count < pageSize { break }
             offset += page.count
         }
         return all
@@ -288,8 +320,34 @@ enum Pan115API {
         return h
     }
 
-    /// AVDB 同款：优先 `115.com/api/video/m3u8/{pc}.m3u8` 最高码率，失败再 video 直链。
+    /// 原文件直链（可 seek）。转码没完成的 m3u8 只有 1 秒，进度条会废掉。
+    static func downloadURL(pickCode: String) async throws -> URL {
+        let pc = encode(pickCode)
+        guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
+        let candidates = [
+            "https://webapi.115.com/files/download?pickcode=\(pc)",
+            "https://proapi.115.com/android/2.0/ufile/download?pickcode=\(pc)",
+            "https://webapi.115.com/files/download?pick_code=\(pc)"
+        ]
+        for raw in candidates {
+            guard let url = URL(string: raw) else { continue }
+            var r = URLRequest(url: url)
+            r.httpMethod = "GET"
+            r.timeoutInterval = 20
+            playHeaders().forEach { r.setValue($1, forHTTPHeaderField: $0) }
+            r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
+            r.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+            guard let obj = try? await playJSON(r) else { continue }
+            if let u = firstHTTPURL(obj) { return u }
+        }
+        throw APIError.message("拿不到直链")
+    }
+
+    /// 优先原文件；没有再退 m3u8 / video。
     static func playURL(pickCode: String) async throws -> URL {
+        if let url = try? await downloadURL(pickCode: pickCode) {
+            return url
+        }
         let pc = encode(pickCode)
         guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
         let m3u8URL = URL(string: "https://115.com/api/video/m3u8/\(pc).m3u8")!
@@ -299,13 +357,11 @@ enum Pan115API {
         playHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
         if let (data, _) = try? await URLSession.shared.data(for: req),
            let text = String(data: data, encoding: .utf8),
-           text.contains("#EXTM3U") {
-            if let best = parseMaster(text).first, let url = URL(string: best) {
-                return url
-            }
-            if !text.contains("#EXT-X-STREAM-INF") {
-                return m3u8URL
-            }
+           text.contains("#EXTM3U"),
+           text.contains("#EXT-X-STREAM-INF"),
+           let best = parseMaster(text).first,
+           let url = URL(string: best) {
+            return url
         }
         let candidates = [
             "https://115vod.com/webapi/files/video?pickcode=\(pc)&local=1",
@@ -319,21 +375,33 @@ enum Pan115API {
             playHeaders().forEach { r.setValue($1, forHTTPHeaderField: $0) }
             r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
             r.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-            guard let obj = try? await playJSON(r) else { continue }
-            let data = obj["data"] as? [String: Any] ?? [:]
-            let direct = string(obj["download_url"] ?? obj["video_url"] ?? obj["url"]
-                ?? data["download_url"] ?? data["video_url"] ?? data["url"])
-            if let direct, direct.hasPrefix("http"), let u = URL(string: direct) {
-                return u
-            }
+            guard let obj = try? await playJSON(r), let u = firstHTTPURL(obj) else { continue }
+            return u
         }
         throw APIError.message("拿不到播放地址")
     }
 
+    private static func firstHTTPURL(_ obj: [String: Any]) -> URL? {
+        let data = obj["data"] as? [String: Any] ?? [:]
+        let keys = ["file_url", "download_url", "video_url", "url", "file_download_url"]
+        for key in keys {
+            if let s = string(obj[key]) ?? string(data[key]), s.hasPrefix("http"), let u = URL(string: s) {
+                return u
+            }
+        }
+        return nil
+    }
+
     static func isPlayable(_ name: String) -> Bool {
-        let n = name.lowercased()
-        let ext = (n as NSString).pathExtension
-        return ["mp4", "m4v", "mov", "mkv", "avi", "wmv", "flv", "webm", "ts", "m2ts", "m3u8"].contains(ext)
+        ["mp4", "m4v", "mov", "mkv", "avi", "wmv", "flv", "webm", "ts", "m2ts", "m3u8", "iso"].contains(fileExt(name))
+    }
+
+    static func isImage(_ name: String) -> Bool {
+        ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"].contains(fileExt(name))
+    }
+
+    static func fileExt(_ name: String) -> String {
+        (name as NSString).pathExtension.lowercased()
     }
 
     private static func parseMaster(_ text: String) -> [String] {
@@ -447,8 +515,10 @@ enum Pan115API {
 
     private static func string(_ any: Any?) -> String? {
         if let s = any as? String, !s.isEmpty { return s }
+        if let n = any as? NSNumber { return n.stringValue }
         if let n = any as? Int { return String(n) }
         if let n = any as? Int64 { return String(n) }
+        if let n = any as? Double { return String(Int64(n)) }
         return nil
     }
 

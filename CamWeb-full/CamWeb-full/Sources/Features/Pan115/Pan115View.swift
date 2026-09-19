@@ -266,7 +266,7 @@ struct Pan115View: View {
                     }
                     ForEach(files) { node in
                         Button {
-                            playFile(node)
+                            openFile(node)
                         } label: {
                             Label {
                                 VStack(alignment: .leading) {
@@ -274,7 +274,7 @@ struct Pan115View: View {
                                     Text(playHint(node)).font(.caption).foregroundStyle(.secondary)
                                 }
                             } icon: {
-                                Image(systemName: Pan115API.isPlayable(node.name) ? "play.circle.fill" : "doc.fill")
+                                Image(systemName: fileIcon(node.name))
                             }
                         }
                         .disabled(playBusy)
@@ -415,7 +415,7 @@ struct Pan115View: View {
         errorText = nil
         defer { loading = false }
         do {
-            nodes = try await Pan115API.list(cid: cid)
+            nodes = try await Pan115API.listAll(cid: cid)
         } catch {
             errorText = error.localizedDescription
         }
@@ -475,24 +475,46 @@ struct Pan115View: View {
             tab = .files
             Task { await reload() }
         } else {
-            playFile(node)
+            openFile(node)
         }
+    }
+
+    private func fileIcon(_ name: String) -> String {
+        if Pan115API.isPlayable(name) { return "play.circle.fill" }
+        if Pan115API.isImage(name) { return "photo.fill" }
+        return "doc.fill"
     }
 
     private func playHint(_ node: Pan115API.Node) -> String {
         if Pan115API.isPlayable(node.name) {
             return "点按播放 · \(byteText(node.size))"
         }
+        if Pan115API.isImage(node.name) {
+            return "点按查看 · \(byteText(node.size))"
+        }
         return byteText(node.size)
     }
 
-    private func playFile(_ node: Pan115API.Node) {
-        guard Pan115API.isPlayable(node.name) else {
-            pickNotice = "这个文件不能直接播放"
+    private func openFile(_ node: Pan115API.Node) {
+        guard !node.pickCode.isEmpty else {
+            pickNotice = "缺少 pickcode，无法打开"
             return
         }
-        guard !node.pickCode.isEmpty else {
-            pickNotice = "缺少 pickcode，无法拿直链"
+        if Pan115API.isImage(node.name) {
+            playBusy = true
+            Task {
+                defer { playBusy = false }
+                do {
+                    let url = try await Pan115API.downloadURL(pickCode: node.pickCode)
+                    AppState.shared.open115Image(url: url, title: node.name)
+                } catch {
+                    pickNotice = error.localizedDescription
+                }
+            }
+            return
+        }
+        guard Pan115API.isPlayable(node.name) else {
+            pickNotice = "这个文件不能直接打开"
             return
         }
         playBusy = true
