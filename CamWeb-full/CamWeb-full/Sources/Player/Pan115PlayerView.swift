@@ -1,89 +1,158 @@
 import KSPlayer
 import SwiftUI
+import UIKit
 
-/// 115 网盘原画播放：Cookie + Safari UA，与 AVDB 一致。
+/// 115 网盘原画：可横屏，毛玻璃控件，左右滑亮度/音量。
 struct Pan115PlayerView: View {
     let url: URL
     let title: String
     @Environment(\.nativeDismiss) private var nativeDismiss
     @StateObject private var coordinator = KSVideoPlayer.Coordinator()
     @State private var isPlaying = false
+    @State private var isBuffering = true
     @State private var showChrome = true
     @State private var current: Double = 0
     @State private var total: Double = 1
     @State private var isSeeking = false
     @State private var hideTask: Task<Void, Never>?
+    @State private var swipeKind: EdgeSwipeKind?
+    @State private var swipeValue: CGFloat = 0
+    @State private var swipeBase: CGFloat = 0
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            KSVideoPlayer(coordinator: coordinator, url: url, options: options)
-                .onPlay { cur, tot in
-                    if !isSeeking {
-                        current = max(0, cur)
-                        total = max(tot, 1)
+        GeometryReader { geo in
+            let land = geo.size.width > geo.size.height
+            ZStack {
+                Color.black.ignoresSafeArea()
+                KSVideoPlayer(coordinator: coordinator, url: url, options: options)
+                    .onPlay { cur, tot in
+                        if !isSeeking {
+                            current = max(0, cur)
+                            total = max(tot, 1)
+                        }
                     }
+                    .onStateChanged { _, state in
+                        isPlaying = state.isPlaying
+                        isBuffering = !state.isPlaying && current < 0.3 && state != .playedToTheEnd
+                        if state == .playedToTheEnd {
+                            isPlaying = false
+                            showChrome = true
+                        }
+                    }
+                    .ignoresSafeArea()
+
+                gestureLayer(size: geo.size)
+
+                if isBuffering && current < 0.4 {
+                    ProgressView().tint(.white).scaleEffect(1.2)
                 }
-                .onStateChanged { _, state in
-                    isPlaying = state.isPlaying
-                    if state == .playedToTheEnd { isPlaying = false }
+
+                if let swipeKind {
+                    EdgeSwipeHud(kind: swipeKind, value: swipeValue)
                 }
-                .ignoresSafeArea()
-            Color.black.opacity(0.001)
-                .ignoresSafeArea()
-                .onTapGesture { toggleChrome() }
-            if showChrome {
-                VStack {
-                    topBar
-                    Spacer()
-                    bottomBar
+
+                if showChrome {
+                    LinearGradient(colors: [.black.opacity(0.62), .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 140)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                    LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 180)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                    VStack(spacing: 0) {
+                        topBar(land: land, safeTop: geo.safeAreaInsets.top)
+                        Spacer()
+                        centerControls
+                        Spacer()
+                        bottomBar(land: land, safeBottom: geo.safeAreaInsets.bottom)
+                    }
+                    .transition(.opacity)
                 }
-                .transition(.opacity)
             }
+            .statusBarHidden(land)
         }
-        .statusBarHidden(true)
+        .background(Color.black)
         .onAppear {
             coordinator.isMaskShow = false
+            OrientationLock.unlock()
             scheduleHide()
         }
         .onDisappear {
             hideTask?.cancel()
             coordinator.playerLayer?.pause()
+            OrientationLock.set(.portrait, keepLocked: true)
         }
     }
 
-    private var topBar: some View {
-        HStack {
+    private func topBar(land: Bool, safeTop: CGFloat) -> some View {
+        HStack(spacing: 12) {
             Button {
                 coordinator.playerLayer?.pause()
-                nativeDismiss()
+                if land {
+                    OrientationLock.set(.portrait)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { nativeDismiss() }
+                } else {
+                    nativeDismiss()
+                }
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 40, height: 40)
                     .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text("115 原画")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.65))
+            }
             Spacer()
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-            Spacer()
-            Color.clear.frame(width: 40, height: 40)
+            Button { OrientationLock.toggle() } label: {
+                Image(systemName: land ? "rectangle.portrait.rotate" : "rectangle.landscape.rotate")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.horizontal, land ? 28 : 16)
+        .padding(.top, land ? max(10, safeTop * 0.35) : max(8, safeTop * 0.2))
     }
 
-    private var bottomBar: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                Text(format(current))
-                    .font(.caption.monospacedDigit())
+    private var centerControls: some View {
+        HStack(spacing: 44) {
+            controlButton("gobackward.10") { seekBy(-10) }
+            Button {
+                togglePlay()
+            } label: {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 44, alignment: .leading)
+                    .frame(width: 72, height: 72)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            controlButton("goforward.10") { seekBy(10) }
+        }
+    }
+
+    private func bottomBar(land: Bool, safeBottom: CGFloat) -> some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Text(format(current))
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 52, alignment: .leading)
                 Slider(
                     value: $current,
                     in: 0...max(total, 1),
@@ -99,30 +168,62 @@ struct Pan115PlayerView: View {
                 )
                 .tint(.white)
                 Text(format(total))
-                    .font(.caption.monospacedDigit())
+                    .font(.caption.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 44, alignment: .trailing)
+                    .frame(width: 52, alignment: .trailing)
             }
-            Button {
-                if isPlaying {
-                    coordinator.playerLayer?.pause()
-                    isPlaying = false
-                } else {
-                    coordinator.playerLayer?.play()
-                    isPlaying = true
-                }
-                scheduleHide()
-            } label: {
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 56, height: 56)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 24)
+        .padding(.horizontal, land ? 32 : 18)
+        .padding(.bottom, land ? max(16, safeBottom + 8) : 28)
+    }
+
+    private func gestureLayer(size: CGSize) -> some View {
+        Color.black.opacity(0.001)
+            .ignoresSafeArea()
+            .gesture(
+                DragGesture(minimumDistance: 16)
+                    .onChanged { value in
+                        let edge = size.width * 0.28
+                        if swipeKind == nil {
+                            if abs(value.translation.height) < abs(value.translation.width) { return }
+                            if value.startLocation.x < edge {
+                                swipeKind = .brightness
+                                swipeBase = ScreenBrightness.current
+                            } else if value.startLocation.x > size.width - edge {
+                                swipeKind = .volume
+                                swipeBase = CGFloat(SystemVolume.current)
+                            } else {
+                                return
+                            }
+                            hideTask?.cancel()
+                        }
+                        let delta = -value.translation.height / 220
+                        let next = min(1, max(0, swipeBase + delta))
+                        swipeValue = next
+                        if swipeKind == .brightness {
+                            ScreenBrightness.set(next)
+                        } else if swipeKind == .volume {
+                            SystemVolume.set(Float(next))
+                        }
+                    }
+                    .onEnded { _ in
+                        swipeKind = nil
+                        scheduleHide()
+                    }
+            )
+            .onTapGesture(count: 2) { togglePlay() }
+            .onTapGesture { toggleChrome() }
+    }
+
+    private func controlButton(_ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 52, height: 52)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var options: KSOptions {
@@ -135,6 +236,24 @@ struct Pan115PlayerView: View {
         return o
     }
 
+    private func togglePlay() {
+        if isPlaying {
+            coordinator.playerLayer?.pause()
+            isPlaying = false
+        } else {
+            coordinator.playerLayer?.play()
+            isPlaying = true
+        }
+        scheduleHide()
+    }
+
+    private func seekBy(_ delta: Double) {
+        let t = min(max(0, current + delta), total)
+        current = t
+        coordinator.seek(time: t)
+        scheduleHide()
+    }
+
     private func toggleChrome() {
         withAnimation(.easeInOut(duration: 0.2)) { showChrome.toggle() }
         if showChrome { scheduleHide() }
@@ -142,15 +261,20 @@ struct Pan115PlayerView: View {
 
     private func scheduleHide() {
         hideTask?.cancel()
+        guard isPlaying else { return }
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard !Task.isCancelled, !isSeeking else { return }
+            guard !Task.isCancelled, !isSeeking, swipeKind == nil else { return }
             withAnimation(.easeInOut(duration: 0.2)) { showChrome = false }
         }
     }
 
     private func format(_ t: Double) -> String {
         let s = max(0, Int(t))
-        return String(format: "%02d:%02d", s / 60, s % 60)
+        let h = s / 3600
+        let m = (s % 3600) / 60
+        let sec = s % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, sec) }
+        return String(format: "%02d:%02d", m, sec)
     }
 }
