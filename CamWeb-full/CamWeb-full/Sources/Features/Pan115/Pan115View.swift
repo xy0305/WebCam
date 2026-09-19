@@ -47,116 +47,134 @@ struct Pan115View: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if !session.hasCookie {
-                    ContentUnavailableView {
-                        Label("115 未登录", systemImage: "externaldrive.badge.person.crop")
-                    } description: {
-                        Text("Cookie 需含 UID / CID / SEID。登录后可选文件夹上传相册和文件，锁屏后台也会继续。")
-                    } actions: {
-                        Button("登录 115") { showLogin = true }.buttonStyle(.borderedProminent)
+            rootContent
+                .navigationTitle("115")
+                .toolbar { toolbar }
+                .sheet(isPresented: $showLogin) { Pan115LoginView() }
+                .sheet(isPresented: $showBackupEditor, content: backupEditorSheet)
+                .sheet(isPresented: $showUploadFolder, content: uploadFolderSheet)
+                .sheet(isPresented: $showShare, content: shareSheet)
+                .sheet(isPresented: $showRecycle, content: recycleSheet)
+                .sheet(isPresented: $showMove, content: moveSheet)
+                .alert("新建文件夹", isPresented: $showFolder) {
+                    TextField("名称", text: $newFolder)
+                    Button("取消", role: .cancel) {}
+                    Button("创建") {
+                        let name = newFolder
+                        newFolder = ""
+                        Task { await makeFolder(name) }
                     }
-                } else {
-                    VStack(spacing: 0) {
-                        Picker("", selection: $tab) {
-                            ForEach(Pane.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
+                }
+                .alert("重命名", isPresented: $showRename) {
+                    TextField("名称", text: $renameText)
+                    Button("取消", role: .cancel) { renameTarget = nil }
+                    Button("保存") {
+                        let name = renameText
+                        let target = renameTarget
+                        renameTarget = nil
+                        Task { await rename(target, name) }
+                    }
+                }
+                .alert("提示", isPresented: Binding(get: { pickNotice != nil }, set: { if !$0 { pickNotice = nil } })) {
+                    Button("好", role: .cancel) { pickNotice = nil }
+                } message: { Text(pickNotice ?? "") }
+                .onChange(of: photos) { _, items in
+                    Task { await enqueuePhotos(items); photos = [] }
+                }
+                .task { if session.hasCookie { await reload() } }
+                .onChange(of: session.hasCookie) { _, ok in
+                    if ok { Task { await reload() } } else { nodes = []; searchHits = [] }
+                }
+                .onChange(of: searchText) { _, q in
+                    Task { await runSearch(q) }
+                }
+        }
+    }
 
-                        if tab == .files {
-                            drivePane
-                        } else if tab == .upload {
-                            uploadPane
-                        } else if tab == .offline {
-                            Pan115OfflineView()
-                        } else {
-                            backupPane
-                        }
-                    }
-                }
+    private func backupEditorSheet() -> some View {
+        Pan115BackupEditor(
+            existing: editingBackup,
+            onSave: { task in
+                backups.save(task, isNew: editingBackup == nil)
+                showBackupEditor = false
+                tab = .backup
+            },
+            onCancel: { showBackupEditor = false }
+        )
+    }
+
+    private func uploadFolderSheet() -> some View {
+        Pan115FolderPicker { cid, name in
+            session.setUploadFolder(cid: cid, name: name)
+            showUploadFolder = false
+        } onCancel: {
+            showUploadFolder = false
+        }
+    }
+
+    private func shareSheet() -> some View {
+        NavigationStack {
+            Pan115ShareView()
+                .navigationTitle("转存分享")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showShare = false } } }
+        }
+    }
+
+    private func recycleSheet() -> some View {
+        NavigationStack {
+            Pan115RecycleView()
+                .navigationTitle("回收站")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showRecycle = false } } }
+        }
+    }
+
+    private func moveSheet() -> some View {
+        Pan115FolderPicker { dest, name in
+            showMove = false
+            let items = movingNodes
+            let copy = moveIsCopy
+            movingNodes = []
+            Task { await moveOrCopy(items, to: dest, name: name, copy: copy) }
+        } onCancel: {
+            showMove = false
+            movingNodes = []
+        }
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        if session.hasCookie {
+            loggedIn
+        } else {
+            ContentUnavailableView {
+                Label("115 未登录", systemImage: "externaldrive.badge.person.crop")
+            } description: {
+                Text("Cookie 需含 UID / CID / SEID。登录后可选文件夹上传相册和文件，锁屏后台也会继续。")
+            } actions: {
+                Button("登录 115") { showLogin = true }.buttonStyle(.borderedProminent)
             }
-            .navigationTitle("115")
-            .toolbar { toolbar }
-            .sheet(isPresented: $showLogin) { Pan115LoginView() }
-            .onChange(of: photos) { _, items in
-                Task { await enqueuePhotos(items); photos = [] }
+        }
+    }
+
+    private var loggedIn: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(Pane.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .alert("新建文件夹", isPresented: $showFolder) {
-                TextField("名称", text: $newFolder)
-                Button("取消", role: .cancel) {}
-                Button("创建") {
-                    let name = newFolder
-                    newFolder = ""
-                    Task { await makeFolder(name) }
-                }
-            }
-            .alert("重命名", isPresented: $showRename) {
-                TextField("名称", text: $renameText)
-                Button("取消", role: .cancel) { renameTarget = nil }
-                Button("保存") {
-                    let name = renameText
-                    let target = renameTarget
-                    renameTarget = nil
-                    Task { await rename(target, name) }
-                }
-            }
-            .alert("提示", isPresented: Binding(get: { pickNotice != nil }, set: { if !$0 { pickNotice = nil } })) {
-                Button("好", role: .cancel) { pickNotice = nil }
-            } message: { Text(pickNotice ?? "") }
-            .sheet(isPresented: $showBackupEditor) {
-                Pan115BackupEditor(
-                    existing: editingBackup,
-                    onSave: { task in
-                        backups.save(task, isNew: editingBackup == nil)
-                        showBackupEditor = false
-                        tab = .backup
-                    },
-                    onCancel: { showBackupEditor = false }
-                )
-            }
-            .sheet(isPresented: $showUploadFolder) {
-                Pan115FolderPicker { cid, name in
-                    session.setUploadFolder(cid: cid, name: name)
-                    showUploadFolder = false
-                } onCancel: {
-                    showUploadFolder = false
-                }
-            }
-            .sheet(isPresented: $showShare) {
-                NavigationStack {
-                    Pan115ShareView()
-                        .navigationTitle("转存分享")
-                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showShare = false } } }
-                }
-            }
-            .sheet(isPresented: $showRecycle) {
-                NavigationStack {
-                    Pan115RecycleView()
-                        .navigationTitle("回收站")
-                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showRecycle = false } } }
-                }
-            }
-            .sheet(isPresented: $showMove) {
-                Pan115FolderPicker { dest, name in
-                    showMove = false
-                    let items = movingNodes
-                    let copy = moveIsCopy
-                    movingNodes = []
-                    Task { await moveOrCopy(items, to: dest, name: name, copy: copy) }
-                } onCancel: {
-                    showMove = false
-                    movingNodes = []
-                }
-            }
-            .task { if session.hasCookie { await reload() } }
-            .onChange(of: session.hasCookie) { _, ok in
-                if ok { Task { await reload() } } else { nodes = []; searchHits = [] }
-            }
-            .onChange(of: searchText) { _, q in
-                Task { await runSearch(q) }
-            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            tabContent
+        }
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch tab {
+        case .files: drivePane
+        case .upload: uploadPane
+        case .offline: Pan115OfflineView()
+        case .backup: backupPane
         }
     }
 
