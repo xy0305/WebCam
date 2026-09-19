@@ -19,28 +19,41 @@ struct Pan115PlayerView: View {
     @State private var swipeKind: EdgeSwipeKind?
     @State private var swipeValue: CGFloat = 0
     @State private var swipeBase: CGFloat = 0
+    @State private var videoSize: CGSize = .zero
 
     var body: some View {
         GeometryReader { geo in
             let land = geo.size.width > geo.size.height
-            ZStack {
+            let verticalVideo = videoSize.width > 1 && videoSize.height > 1 && videoSize.width < videoSize.height
+            let fill = land || verticalVideo
+            let aspect: CGFloat = {
+                if videoSize.width > 1, videoSize.height > 1 {
+                    return videoSize.height / videoSize.width
+                }
+                return 9.0 / 16.0
+            }()
+            let playerHeight = fill ? geo.size.height : min(geo.size.width * aspect, geo.size.height)
+            ZStack(alignment: fill ? .center : .top) {
                 Color.black.ignoresSafeArea()
                 KSVideoPlayer(coordinator: coordinator, url: url, options: options)
                     .onPlay { cur, tot in
                         if !isSeeking {
                             current = max(0, cur)
-                            total = max(tot, 1)
+                            if tot > 1.5 { total = tot }
                         }
                     }
-                    .onStateChanged { _, state in
+                    .onStateChanged { layer, state in
                         isPlaying = state.isPlaying
                         isBuffering = !state.isPlaying && current < 0.3 && state != .playedToTheEnd
+                        let size = layer.player.naturalSize
+                        if size.width > 1, size.height > 1 { videoSize = size }
                         if state == .playedToTheEnd {
                             isPlaying = false
                             showChrome = true
                         }
                     }
-                    .ignoresSafeArea()
+                    .frame(width: geo.size.width, height: playerHeight)
+                    .clipped()
 
                 gestureLayer(size: geo.size)
                     .allowsHitTesting(!showChrome || swipeKind != nil)
@@ -75,11 +88,21 @@ struct Pan115PlayerView: View {
                     .transition(.opacity)
                 }
             }
-            .statusBarHidden(true)
+            .statusBarHidden(land)
         }
         .background(Color.black)
         .onAppear {
             coordinator.isMaskShow = false
+            coordinator.onStateChanged = { layer, state in
+                isPlaying = state.isPlaying
+                isBuffering = !state.isPlaying && current < 0.3 && state != .playedToTheEnd
+                let size = layer.player.naturalSize
+                if size.width > 1, size.height > 1 { videoSize = size }
+                if state == .playedToTheEnd {
+                    isPlaying = false
+                    showChrome = true
+                }
+            }
             OrientationLock.unlock()
             scheduleHide()
         }
