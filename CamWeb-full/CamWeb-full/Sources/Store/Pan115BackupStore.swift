@@ -9,6 +9,20 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
 
     @Published private(set) var tasks: [Pan115BackupTask] = []
     @Published private(set) var scanningIDs: Set<UUID> = []
+    @Published private(set) var progress: [UUID: ScanProgress] = [:]
+
+    struct ScanProgress: Equatable {
+        var phase: String = "准备"
+        var total: Int = 0
+        var index: Int = 0
+        var queued: Int = 0
+        var skipped: Int = 0
+        var current: String = ""
+        var fraction: Double {
+            guard total > 0 else { return 0 }
+            return min(1, Double(index) / Double(total))
+        }
+    }
 
     private var monitors: [UUID: DispatchSourceFileSystemObject] = [:]
     private var access: [UUID: URL] = [:]
@@ -104,7 +118,8 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         guard let task = tasks.first(where: { $0.id == id }), task.enabled else { return }
         guard !scanningIDs.contains(id) else { return }
         scanningIDs.insert(id)
-        update(id) { $0.lastMessage = reason }
+        progress[id] = ScanProgress(phase: reason, total: 0, index: 0, queued: 0, skipped: 0, current: "")
+        update(id, persistNow: false) { $0.lastMessage = reason; $0.lastError = nil }
         extendBackground()
         Task { await scan(id) }
     }
@@ -112,16 +127,17 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     private func scan(_ id: UUID) async {
         defer {
             scanningIDs.remove(id)
+            progress.removeValue(forKey: id)
             persist()
         }
         guard var task = tasks.first(where: { $0.id == id }) else { return }
         guard Pan115Session.shared.hasCookie else {
-            update(id) { $0.lastError = "115 未登录" }
+            update(id) { $0.lastError = "115 未登录"; $0.lastMessage = "115 未登录" }
             return
         }
         let dests = task.enabledDestinations
         guard !dests.isEmpty else {
-            update(id) { $0.lastError = "未配置目标位置" }
+            update(id) { $0.lastError = "未配置目标位置"; $0.lastMessage = "未配置目标位置" }
             return
         }
         var manifest = loadManifest(id)
@@ -129,26 +145,32 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         let photoCopies: Bool
         if task.sourceKind == .photos {
             do {
-                locals = try await listPhotos(task: task)
+                try await scanPhotoLibrary(id: id, task: task, dests: dests, manifest: &manifest)
             } catch {
-                update(id) { $0.lastError = error.localizedDescription }
-                return
+                update(id) { $0.lastError = error.localizedDescription; $0.lastMessage = error.localizedDescription }
             }
-            photoCopies = true
+            return
         } else {
             guard let root = resolve(task) else {
-                update(id) { $0.lastError = "无法打开源文件夹，请重新选择" }
+                update(id) { $0.lastError = "无法打开源文件夹，请重新选择"; $0.lastMessage = "无法打开源文件夹" }
                 return
             }
+            setProgress(id, phase: "列举文件", total: 0, index: 0, queued: 0, skipped: 0, current: root.lastPathComponent)
             locals = listLocal(root: root)
             photoCopies = false
         }
         var uploaded = 0
         var skipped = 0
         var lastErr: String?
+        setProgress(id, phase: "扫描文件夹", total: locals.count, index: 0, queued: 0, skipped: 0, current: "")
 
-        for file in locals {
-            guard task.allows(fileName: file.rel) else { continue }
+        for (offset, file) in locals.enumerated() {
+            setProgress(id, index: offset + 1, current: file.name)
+            guard task.allows(fileName: file.rel) else {
+                skipped += 1
+                setProgress(id, skipped: skipped)
+                continue
+            }
             let key = file.rel
             let prev = manifest.items[key]
             let unchanged = prev != nil && prev?.size == file.size && abs((prev?.mtime ?? 0) - file.mtime) < 1
@@ -178,6 +200,7 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                     }
                     if Pan115Uploader.shared.isQueued(name: name, cid: cid) {
                         skipped += 1
+                        setProgress(id, skipped: skipped)
                         continue
                     }
                     Pan115Uploader.shared.enqueue(
@@ -189,6 +212,7 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                         ownsFile: photoCopies
                     )
                     uploaded += 1
+                    setProgress(id, queued: uploaded)
                     var item = Pan115BackupManifest.Item(relativePath: key, size: file.size, mtime: file.mtime, destIDs: prev?.destIDs ?? [])
                     if !item.destIDs.contains(dest.id.uuidString) { item.destIDs.append(dest.id.uuidString) }
                     manifest.items[key] = item
@@ -288,7 +312,8 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         return out
     }
 
-    private func listPhotos(task: Pan115BackupTask) async throws -> [LocalFile] {
+    private func scanPhotoLibrary(id: UUID, task: Pan115BackupTask, dests: [Pan115BackupTask.Destination], manifest: inout Pan115BackupManifest) async throws {
+        setProgress(id, phase: "请求相册权限", total: 0, index: 0, queued: 0, skipped: 0, current: "")
         let status = await withCheckedContinuation { (cont: CheckedContinuation<PHAuthorizationStatus, Never>) in
             PHPhotoLibrary.requestAuthorization(for: .readWrite) { cont.resume(returning: $0) }
         }
@@ -298,33 +323,109 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         let opts = PHFetchOptions()
         opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         let result = PHAsset.fetchAssets(with: opts)
+        let total = result.count
+        setProgress(id, phase: "扫描相册", total: total, index: 0, queued: 0, skipped: 0, current: "共 \(total) 项")
         let dir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("115Photo-\(task.id.uuidString)", isDirectory: true)
+            .appendingPathComponent("115Photo-\(id.uuidString)", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let manifest = loadManifest(task.id)
-        var out: [LocalFile] = []
-        let limit = min(result.count, 5000)
+        var queued = 0
+        var skipped = 0
+        var lastErr: String?
+        let limit = min(total, 8000)
         for i in 0..<limit {
+            await Task.yield()
             let asset = result.object(at: i)
             let resources = PHAssetResource.assetResources(for: asset)
-            guard let resource = preferredResource(resources) else { continue }
+            guard let resource = preferredResource(resources) else {
+                skipped += 1
+                setProgress(id, index: i + 1, skipped: skipped, current: "跳过无资源项")
+                continue
+            }
             let name = resource.originalFilename
-            guard task.allows(fileName: name) else { continue }
+            setProgress(id, phase: "扫描相册", total: total, index: i + 1, queued: queued, skipped: skipped, current: name)
+            guard task.allows(fileName: name) else {
+                skipped += 1
+                setProgress(id, skipped: skipped)
+                continue
+            }
             let mtime = (asset.modificationDate ?? asset.creationDate ?? Date()).timeIntervalSince1970
-            if let prev = manifest.items[name], abs(prev.mtime - mtime) < 2 {
+            let key = "\(asset.localIdentifier)|\(name)"
+            if let prev = manifest.items[key], abs(prev.mtime - mtime) < 2, task.existPolicy == .skip {
+                skipped += 1
+                setProgress(id, skipped: skipped, current: "已备份 \(name)")
                 continue
             }
-            let dest = dir.appendingPathComponent("\(asset.localIdentifier.replacingOccurrences(of: "/", with: "_"))-\(name)")
+            let fileURL = dir.appendingPathComponent("\(asset.localIdentifier.replacingOccurrences(of: "/", with: "_"))-\(name)")
             do {
-                try await writePhotoResource(resource, to: dest)
+                try await writePhotoResource(resource, to: fileURL)
             } catch {
+                lastErr = error.localizedDescription
+                skipped += 1
+                setProgress(id, skipped: skipped, current: "导出失败 \(name)")
                 continue
             }
-            let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
-            guard size > 0 else { continue }
-            out.append(LocalFile(url: dest, rel: name, name: name, folders: [], size: size, mtime: mtime))
+            let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+            guard size > 0 else {
+                skipped += 1
+                continue
+            }
+            for dest in dests {
+                if Pan115Uploader.shared.isQueued(name: name, cid: dest.cid) {
+                    skipped += 1
+                    continue
+                }
+                var uploadName = name
+                if task.existPolicy == .rename, manifest.items[key]?.destIDs.contains(dest.id.uuidString) == true {
+                    uploadName = rename(name)
+                }
+                Pan115Uploader.shared.enqueue(
+                    fileURL: fileURL,
+                    name: uploadName,
+                    size: size,
+                    cid: dest.cid,
+                    folderName: dest.name,
+                    ownsFile: dests.count == 1
+                )
+                queued += 1
+                var item = Pan115BackupManifest.Item(relativePath: key, size: size, mtime: mtime, destIDs: manifest.items[key]?.destIDs ?? [])
+                if !item.destIDs.contains(dest.id.uuidString) { item.destIDs.append(dest.id.uuidString) }
+                manifest.items[key] = item
+            }
+            setProgress(id, queued: queued, skipped: skipped, current: name)
+            if i % 15 == 0 { saveManifest(id, manifest) }
         }
-        return out
+        saveManifest(id, manifest)
+        update(id) {
+            $0.lastScanAt = Date()
+            $0.lastError = lastErr
+            $0.lastMessage = lastErr ?? "扫描完成：加入上传 \(queued)，跳过 \(skipped)，共 \(total) 项"
+            $0.uploadedCount += queued
+            $0.skippedCount += skipped
+        }
+    }
+
+    private func setProgress(_ id: UUID, phase: String? = nil, total: Int? = nil, index: Int? = nil, queued: Int? = nil, skipped: Int? = nil, current: String? = nil) {
+        var p = progress[id] ?? ScanProgress()
+        if let phase { p.phase = phase }
+        if let total { p.total = total }
+        if let index { p.index = index }
+        if let queued { p.queued = queued }
+        if let skipped { p.skipped = skipped }
+        if let current { p.current = current }
+        progress[id] = p
+        update(id, persistNow: false) {
+            $0.lastError = nil
+            $0.lastMessage = progressLine(p)
+        }
+    }
+
+    private func progressLine(_ p: ScanProgress) -> String {
+        if p.total > 0 {
+            let pct = Int(p.fraction * 100)
+            let now = p.current.isEmpty ? "" : " · \(p.current)"
+            return "\(p.phase) \(p.index)/\(p.total) (\(pct)%) · 已加入 \(p.queued) · 跳过 \(p.skipped)\(now)"
+        }
+        return p.phase + (p.current.isEmpty ? "" : " · \(p.current)")
     }
 
     private func preferredResource(_ resources: [PHAssetResource]) -> PHAssetResource? {
@@ -431,12 +532,12 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         }
     }
 
-    private func update(_ id: UUID, _ body: (inout Pan115BackupTask) -> Void) {
+    private func update(_ id: UUID, persistNow: Bool = true, _ body: (inout Pan115BackupTask) -> Void) {
         guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
         var t = tasks[i]
         body(&t)
         tasks[i] = t
-        persist()
+        if persistNow { persist() }
     }
 
     private func persist() {

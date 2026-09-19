@@ -282,6 +282,7 @@ struct Pan115View: View {
                         Pan115BackupTaskRow(
                             task: backups.tasks[index],
                             scanning: backups.scanningIDs.contains(backups.tasks[index].id),
+                            progress: backups.progress[backups.tasks[index].id],
                             onToggle: { backups.setEnabled(backups.tasks[index].id, $0) },
                             onScan: { backups.scanNow(backups.tasks[index].id) },
                             onEdit: {
@@ -483,6 +484,7 @@ struct Pan115View: View {
 private struct Pan115BackupTaskRow: View {
     let task: Pan115BackupTask
     let scanning: Bool
+    let progress: Pan115BackupStore.ScanProgress?
     let onToggle: (Bool) -> Void
     let onScan: () -> Void
     let onEdit: () -> Void
@@ -505,8 +507,27 @@ private struct Pan115BackupTaskRow: View {
                 Toggle("", isOn: Binding(get: { task.enabled }, set: onToggle))
                     .labelsHidden()
             }
-            if scanning {
-                ProgressView("正在扫描…")
+            if scanning, let p = progress {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        ProgressView()
+                        Text(p.total > 0 ? "\(p.index)/\(p.total)  \(Int(p.fraction * 100))%" : p.phase)
+                            .font(.caption.monospacedDigit().weight(.semibold))
+                        Spacer()
+                        Text("上传 \(p.queued) · 跳过 \(p.skipped)")
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                    }
+                    if p.total > 0 {
+                        ProgressView(value: p.fraction)
+                    }
+                    if !p.current.isEmpty {
+                        Text(p.current)
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .lineLimit(2)
+                    }
+                }
             } else if let msg = task.lastMessage {
                 Text(msg).font(.caption).foregroundStyle(task.lastError == nil ? Color.secondary : Color.red)
             }
