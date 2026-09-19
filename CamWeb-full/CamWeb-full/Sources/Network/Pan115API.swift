@@ -320,13 +320,22 @@ enum Pan115API {
         return h
     }
 
+    /// 115 CDN 直链：再带 Cookie / Origin 经常 403。
+    static func cdnHeaders() -> [String: String] {
+        [
+            "User-Agent": playUA,
+            "Accept": "*/*",
+            "Referer": "https://115.com/"
+        ]
+    }
+
     /// 原文件直链（可 seek）。转码没完成的 m3u8 只有 1 秒，进度条会废掉。
     static func downloadURL(pickCode: String) async throws -> URL {
-        let pc = encode(pickCode)
         guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
+        let pc = uriEncode(pickCode)
         let candidates = [
-            "https://webapi.115.com/files/download?pickcode=\(pc)",
             "https://proapi.115.com/android/2.0/ufile/download?pickcode=\(pc)",
+            "https://webapi.115.com/files/download?pickcode=\(pc)",
             "https://webapi.115.com/files/download?pick_code=\(pc)"
         ]
         for raw in candidates {
@@ -334,11 +343,11 @@ enum Pan115API {
             var r = URLRequest(url: url)
             r.httpMethod = "GET"
             r.timeoutInterval = 20
-            playHeaders().forEach { r.setValue($1, forHTTPHeaderField: $0) }
+            headers().forEach { r.setValue($1, forHTTPHeaderField: $0) }
             r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
             r.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-            guard let obj = try? await playJSON(r) else { continue }
-            if let u = firstHTTPURL(obj) { return u }
+            guard let obj = try? await playJSON(r), let u = firstHTTPURL(obj) else { continue }
+            return u
         }
         throw APIError.message("拿不到直链")
     }
@@ -351,22 +360,12 @@ enum Pan115API {
 
     static func playSource(pickCode: String, filename: String = "") async throws -> (url: URL, ffmpeg: Bool) {
         guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
-        let pc = uriEncode(pickCode)
-        // 对照 115playback.js：只有解析出 master 子流才用 m3u8。
-        // 没 #EXT-X-STREAM-INF 的媒体清单经常只有 1 秒，不能当播放地址。
-        let m3u8URL = URL(string: "https://115.com/api/video/m3u8/\(pc).m3u8")!
-        var req = URLRequest(url: m3u8URL)
-        req.httpMethod = "GET"
-        req.timeoutInterval = 15
-        playHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        if let (data, http) = try? await URLSession.shared.data(for: req),
-           (http as? HTTPURLResponse).map({ (200..<400).contains($0.statusCode) }) != false,
-           let text = String(data: data, encoding: .utf8),
-           text.contains("#EXTM3U"),
-           let best = parseMaster(text).first,
-           let url = URL(string: best) {
-            return (url, false)
+        let ffmpeg = needsFFmpeg(filename)
+        // ts/avi/mkv 的转码 m3u8 经常只有 1 秒。直接原文件 + FFmpeg。
+        if !ffmpeg, let hls = try? await transcodedStream(pickCode: pickCode) {
+            return (hls, false)
         }
+        let pc = uriEncode(pickCode)
         let candidates = [
             "https://115vod.com/webapi/files/video?pickcode=\(pc)&local=1",
             "https://webapi.115.com/files/video?pickcode=\(pc)&local=1"
@@ -387,13 +386,34 @@ enum Pan115API {
         throw APIError.message("拿不到播放地址")
     }
 
+    private static func transcodedStream(pickCode: String) async throws -> URL? {
+        let pc = uriEncode(pickCode)
+        let m3u8URL = URL(string: "https://115.com/api/video/m3u8/\(pc).m3u8")!
+        var req = URLRequest(url: m3u8URL)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 15
+        playHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<400).contains(http.statusCode),
+              let text = String(data: data, encoding: .utf8),
+              text.contains("#EXTM3U"),
+              let best = parseMaster(text).first else { return nil }
+        return URL(string: best)
+    }
+
     private static func firstHTTPURL(_ obj: [String: Any]) -> URL? {
-        let data = obj["data"] as? [String: Any] ?? [:]
-        let keys = ["file_url", "download_url", "video_url", "url", "file_download_url"]
-        for key in keys {
-            if let s = string(obj[key]) ?? string(data[key]), s.hasPrefix("http"), let u = URL(string: s) {
-                return u
+        func from(_ value: Any?) -> URL? {
+            if let s = string(value), s.hasPrefix("http") { return URL(string: s) }
+            if let dict = value as? [String: Any] {
+                for key in ["url", "file_url", "download_url", "video_url"] {
+                    if let s = string(dict[key]), s.hasPrefix("http") { return URL(string: s) }
+                }
             }
+            return nil
+        }
+        let data = obj["data"] as? [String: Any] ?? [:]
+        for key in ["file_url", "download_url", "video_url", "url", "file_download_url"] {
+            if let u = from(obj[key]) ?? from(data[key]) { return u }
         }
         return nil
     }

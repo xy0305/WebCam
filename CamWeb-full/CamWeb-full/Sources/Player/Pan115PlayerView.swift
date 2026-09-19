@@ -2,7 +2,7 @@ import KSPlayer
 import SwiftUI
 import UIKit
 
-/// 115 网盘原画：可横屏，毛玻璃控件，左右滑亮度/音量。
+/// 115 网盘原画：可横屏。HLS 走 AVPlayer；ts/avi/mkv 走 FFmpeg。
 struct Pan115PlayerView: View {
     let url: URL
     let title: String
@@ -19,41 +19,36 @@ struct Pan115PlayerView: View {
     @State private var swipeKind: EdgeSwipeKind?
     @State private var swipeValue: CGFloat = 0
     @State private var swipeBase: CGFloat = 0
-    @State private var videoSize: CGSize = .zero
+    @State private var playerOptions: KSOptions
+
+    init(url: URL, title: String, useFFmpeg: Bool = false) {
+        self.url = url
+        self.title = title
+        self.useFFmpeg = useFFmpeg
+        _playerOptions = State(initialValue: Self.makeOptions(ffmpeg: useFFmpeg))
+    }
 
     var body: some View {
         GeometryReader { geo in
             let land = geo.size.width > geo.size.height
-            let verticalVideo = videoSize.width > 1 && videoSize.height > 1 && videoSize.width < videoSize.height
-            let fill = land || verticalVideo
-            let aspect: CGFloat = {
-                if videoSize.width > 1, videoSize.height > 1 {
-                    return videoSize.height / videoSize.width
-                }
-                return 9.0 / 16.0
-            }()
-            let playerHeight = fill ? geo.size.height : min(geo.size.width * aspect, geo.size.height)
-            ZStack(alignment: fill ? .center : .top) {
+            ZStack {
                 Color.black.ignoresSafeArea()
-                KSVideoPlayer(coordinator: coordinator, url: url, options: options)
+                KSVideoPlayer(coordinator: coordinator, url: url, options: playerOptions)
                     .onPlay { cur, tot in
                         if !isSeeking {
                             current = max(0, cur)
                             if tot > 1.5 { total = tot }
                         }
                     }
-                    .onStateChanged { layer, state in
+                    .onStateChanged { _, state in
                         isPlaying = state.isPlaying
                         isBuffering = !state.isPlaying && current < 0.3 && state != .playedToTheEnd
-                        let size = layer.player.naturalSize
-                        if size.width > 1, size.height > 1 { videoSize = size }
                         if state == .playedToTheEnd {
                             isPlaying = false
                             showChrome = true
                         }
                     }
-                    .frame(width: geo.size.width, height: playerHeight)
-                    .clipped()
+                    .ignoresSafeArea()
 
                 gestureLayer(size: geo.size)
                     .allowsHitTesting(!showChrome || swipeKind != nil)
@@ -88,21 +83,11 @@ struct Pan115PlayerView: View {
                     .transition(.opacity)
                 }
             }
-            .statusBarHidden(land)
+            .statusBarHidden(true)
         }
         .background(Color.black)
         .onAppear {
             coordinator.isMaskShow = false
-            coordinator.onStateChanged = { layer, state in
-                isPlaying = state.isPlaying
-                isBuffering = !state.isPlaying && current < 0.3 && state != .playedToTheEnd
-                let size = layer.player.naturalSize
-                if size.width > 1, size.height > 1 { videoSize = size }
-                if state == .playedToTheEnd {
-                    isPlaying = false
-                    showChrome = true
-                }
-            }
             OrientationLock.unlock()
             scheduleHide()
         }
@@ -137,7 +122,7 @@ struct Pan115PlayerView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                Text("115 原画")
+                Text(useFFmpeg ? "115 原文件" : "115 原画")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.65))
             }
@@ -266,18 +251,19 @@ struct Pan115PlayerView: View {
         .buttonStyle(.plain)
     }
 
-    private var options: KSOptions {
+    private static func makeOptions(ffmpeg: Bool) -> KSOptions {
         let o = KSOptions()
-        if useFFmpeg {
+        if ffmpeg {
             KSOptions.firstPlayerType = KSMEPlayer.self
             KSOptions.secondPlayerType = KSAVPlayer.self
+            o.appendHeader(Pan115API.cdnHeaders())
         } else {
             KSOptions.firstPlayerType = KSAVPlayer.self
             KSOptions.secondPlayerType = KSMEPlayer.self
+            o.appendHeader(Pan115API.playHeaders())
         }
         KSOptions.isAutoPlay = true
         o.videoAdaptable = false
-        o.appendHeader(Pan115API.playHeaders())
         return o
     }
 
