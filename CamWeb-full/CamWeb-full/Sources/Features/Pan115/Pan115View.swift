@@ -21,6 +21,7 @@ struct Pan115View: View {
     @State private var pickNotice: String?
     @State private var showBackupEditor = false
     @State private var editingBackup: Pan115BackupTask?
+    @State private var showUploadFolder = false
 
     private enum Pane: String, CaseIterable {
         case upload = "上传"
@@ -92,6 +93,14 @@ struct Pan115View: View {
                     onCancel: { showBackupEditor = false }
                 )
             }
+            .sheet(isPresented: $showUploadFolder) {
+                Pan115FolderPicker { cid, name in
+                    session.setUploadFolder(cid: cid, name: name)
+                    showUploadFolder = false
+                } onCancel: {
+                    showUploadFolder = false
+                }
+            }
             .task { if session.hasCookie { await reload() } }
             .onChange(of: session.hasCookie) { _, ok in
                 if ok { Task { await reload() } } else { nodes = []; searchHits = [] }
@@ -142,16 +151,25 @@ struct Pan115View: View {
     private var uploadPane: some View {
         List {
             Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("上传到")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(folderName)
-                        .font(.headline)
-                    Text("在「网盘」搜索或点进目标文件夹，再选相册或文件。点「打开」即可加入队列。锁屏和后台会继续传，完成后删除 App 本地副本。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                Button { showUploadFolder = true } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("上传到")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(session.uploadFolderName)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+                        Spacer()
+                        Text("更改")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                    }
                 }
+                Text("这里只影响手动上传相册/文件，和备份任务的目标互不影响。备份请在「备份」里单独选目录。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             let active = uploader.activeJobs
@@ -392,7 +410,6 @@ struct Pan115View: View {
         defer { loading = false }
         do {
             nodes = try await Pan115API.list(cid: cid)
-            session.setTargetCID(cid)
         } catch {
             errorText = error.localizedDescription
         }
@@ -416,10 +433,10 @@ struct Pan115View: View {
             return
         }
         for item in items {
-            uploader.enqueue(fileURL: item.url, name: item.name, size: item.size, cid: cid, folderName: folderName, ownsFile: true)
+            uploader.enqueue(fileURL: item.url, name: item.name, size: item.size, cid: session.uploadCID, folderName: session.uploadFolderName, ownsFile: true)
         }
         tab = .upload
-        pickNotice = "已加入 \(items.count) 个文件，上传到 \(folderName)"
+        pickNotice = "已加入 \(items.count) 个文件，上传到 \(session.uploadFolderName)"
     }
 
     private func runSearch(_ raw: String) async {
@@ -462,7 +479,7 @@ struct Pan115View: View {
             try? FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
             let file = dest.appendingPathComponent(name)
             try? data.write(to: file)
-            uploader.enqueue(fileURL: file, name: name, size: Int64(data.count), cid: cid, folderName: folderName, ownsFile: true)
+            uploader.enqueue(fileURL: file, name: name, size: Int64(data.count), cid: session.uploadCID, folderName: session.uploadFolderName, ownsFile: true)
         }
     }
 

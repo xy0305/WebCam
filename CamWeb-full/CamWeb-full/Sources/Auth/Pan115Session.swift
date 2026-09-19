@@ -8,6 +8,8 @@ final class Pan115Session: ObservableObject {
     @Published var userID: String = ""
     @Published var userName: String = ""
     @Published var targetCID: String = UserDefaults.standard.string(forKey: "camweb.115.cid") ?? "0"
+    @Published var uploadCID: String = UserDefaults.standard.string(forKey: "camweb.115.upload.cid") ?? "0"
+    @Published var uploadFolderName: String = UserDefaults.standard.string(forKey: "camweb.115.upload.folder") ?? "根目录"
 
     private let service = "com.xy0305.WebCam.115"
     private let account = "cookie"
@@ -31,6 +33,14 @@ final class Pan115Session: ObservableObject {
         let value = cid.trimmingCharacters(in: .whitespacesAndNewlines)
         targetCID = value.isEmpty ? "0" : value
         UserDefaults.standard.set(targetCID, forKey: "camweb.115.cid")
+    }
+
+    func setUploadFolder(cid: String, name: String) {
+        let value = cid.trimmingCharacters(in: .whitespacesAndNewlines)
+        uploadCID = value.isEmpty ? "0" : value
+        uploadFolderName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "根目录" : name
+        UserDefaults.standard.set(uploadCID, forKey: "camweb.115.upload.cid")
+        UserDefaults.standard.set(uploadFolderName, forKey: "camweb.115.upload.folder")
     }
 
     @discardableResult
