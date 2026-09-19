@@ -350,22 +350,22 @@ enum Pan115API {
     }
 
     static func playSource(pickCode: String, filename: String = "") async throws -> (url: URL, ffmpeg: Bool) {
-        let pc = encode(pickCode)
         guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
+        let pc = uriEncode(pickCode)
+        // 对照 115playback.js：只有解析出 master 子流才用 m3u8。
+        // 没 #EXT-X-STREAM-INF 的媒体清单经常只有 1 秒，不能当播放地址。
         let m3u8URL = URL(string: "https://115.com/api/video/m3u8/\(pc).m3u8")!
         var req = URLRequest(url: m3u8URL)
         req.httpMethod = "GET"
-        req.timeoutInterval = 25
+        req.timeoutInterval = 15
         playHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        if let (data, _) = try? await URLSession.shared.data(for: req),
+        if let (data, http) = try? await URLSession.shared.data(for: req),
+           (http as? HTTPURLResponse).map({ (200..<400).contains($0.statusCode) }) != false,
            let text = String(data: data, encoding: .utf8),
-           text.contains("#EXTM3U") {
-            if let best = parseMaster(text).first, let url = URL(string: best) {
-                return (url, false)
-            }
-            if !text.contains("#EXT-X-STREAM-INF") {
-                return (m3u8URL, false)
-            }
+           text.contains("#EXTM3U"),
+           let best = parseMaster(text).first,
+           let url = URL(string: best) {
+            return (url, false)
         }
         let candidates = [
             "https://115vod.com/webapi/files/video?pickcode=\(pc)&local=1",
@@ -375,12 +375,11 @@ enum Pan115API {
             guard let url = URL(string: raw) else { continue }
             var r = URLRequest(url: url)
             r.httpMethod = "GET"
-            r.timeoutInterval = 20
+            r.timeoutInterval = 15
             playHeaders().forEach { r.setValue($1, forHTTPHeaderField: $0) }
             r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
-            r.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
             guard let obj = try? await playJSON(r), let u = firstHTTPURL(obj) else { continue }
-            return (u, needsFFmpeg(filename) || needsFFmpeg(u.lastPathComponent))
+            return (u, true)
         }
         if let url = try? await downloadURL(pickCode: pickCode) {
             return (url, true)
@@ -543,5 +542,12 @@ enum Pan115API {
 
     private static func encode(_ s: String) -> String {
         s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+    }
+
+    /// 对齐 JS `encodeURIComponent`。
+    private static func uriEncode(_ s: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-_.!~*'()")
+        return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s
     }
 }
