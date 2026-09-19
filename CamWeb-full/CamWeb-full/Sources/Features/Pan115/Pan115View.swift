@@ -277,8 +277,8 @@ struct Pan115View: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Section("任务 (\(backups.tasks.count))") {
-                    ForEach(backups.tasks) { task in
+                Section {
+                    ForEach(Array(backups.tasks), id: \.id) { task in
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
