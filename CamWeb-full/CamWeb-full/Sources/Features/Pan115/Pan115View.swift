@@ -508,7 +508,7 @@ private struct Pan115BackupTaskRow: View {
             if scanning {
                 ProgressView("正在扫描…")
             } else if let msg = task.lastMessage {
-                Text(msg).font(.caption).foregroundStyle(task.lastError == nil ? .secondary : .red)
+                Text(msg).font(.caption).foregroundStyle(task.lastError == nil ? Color.secondary : Color.red)
             }
             HStack {
                 Button("立即扫描", action: onScan)
