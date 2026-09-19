@@ -8,10 +8,22 @@ enum Pan115FilePicker {
         present(types: [.item, .content, .data, .folder, .directory, .movie, .video, .image, .audio], asCopy: true, multiple: true) { onPicked($0) }
     }
 
+    /// 文件夹选择：点进目录后文件不再灰掉。选中文件则用它所在文件夹；选中文件夹则用该文件夹。
     static func presentFolder(onPicked: @escaping (URL) -> Void) {
-        present(types: [.folder, .directory], asCopy: false, multiple: false) { urls in
-            if let url = urls.first { onPicked(url) }
+        present(types: [.folder, .directory, .item], asCopy: false, multiple: true) { urls in
+            guard let folder = folderURL(from: urls) else { return }
+            onPicked(folder)
         }
+    }
+
+    private static func folderURL(from urls: [URL]) -> URL? {
+        guard let first = urls.first else { return nil }
+        let access = first.startAccessingSecurityScopedResource()
+        defer { if access { first.stopAccessingSecurityScopedResource() } }
+        var isDir: ObjCBool = false
+        FileManager.default.fileExists(atPath: first.path, isDirectory: &isDir)
+        if urls.count == 1 && isDir.boolValue { return first }
+        return first.deletingLastPathComponent()
     }
 
     private static func present(types: [UTType], asCopy: Bool, multiple: Bool, onPicked: @escaping ([URL]) -> Void) {

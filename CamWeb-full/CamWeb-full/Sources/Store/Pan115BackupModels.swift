@@ -4,6 +4,7 @@ struct Pan115BackupTask: Identifiable, Codable, Equatable {
     var id: UUID
     var name: String
     var enabled: Bool
+    var sourceKind: SourceKind
     var sourceBookmark: Data
     var sourcePath: String
     var sourceName: String
@@ -56,6 +57,11 @@ struct Pan115BackupTask: Identifiable, Codable, Equatable {
         var pattern: String
     }
 
+    enum SourceKind: String, Codable, CaseIterable {
+        case folder, photos
+        var title: String { self == .photos ? "系统相册" : "文件夹" }
+    }
+
     enum ExistPolicy: String, Codable, CaseIterable {
         case skip, overwrite, rename
         var title: String {
@@ -97,6 +103,7 @@ struct Pan115BackupTask: Identifiable, Codable, Equatable {
             id: UUID(),
             name: "未命名备份",
             enabled: true,
+            sourceKind: .folder,
             sourceBookmark: Data(),
             sourcePath: "",
             sourceName: "",

@@ -1,9 +1,10 @@
 import Darwin
 import Foundation
+import Photos
 import UIKit
 
 @MainActor
-final class Pan115BackupStore: ObservableObject {
+final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
     static let shared = Pan115BackupStore()
 
     @Published private(set) var tasks: [Pan115BackupTask] = []
@@ -14,6 +15,7 @@ final class Pan115BackupStore: ObservableObject {
     private var scanTimer: Timer?
     private var scheduleTimer: Timer?
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
+    private var photoObserverOn = false
     private let fm = FileManager.default
 
     private var storeURL: URL {
@@ -25,7 +27,8 @@ final class Pan115BackupStore: ObservableObject {
             .appendingPathComponent("115-backup-\(id.uuidString).json")
     }
 
-    private init() {
+    private override init() {
+        super.init()
         tasks = Self.load(storeURL)
         startTimers()
         tasks.filter(\.enabled).forEach { startMonitor($0) }
@@ -116,17 +119,30 @@ final class Pan115BackupStore: ObservableObject {
             update(id) { $0.lastError = "115 未登录" }
             return
         }
-        guard let root = resolve(task) else {
-            update(id) { $0.lastError = "无法打开源文件夹，请重新选择" }
-            return
-        }
         let dests = task.enabledDestinations
         guard !dests.isEmpty else {
             update(id) { $0.lastError = "未配置目标位置" }
             return
         }
         var manifest = loadManifest(id)
-        let locals = listLocal(root: root)
+        let locals: [LocalFile]
+        let photoCopies: Bool
+        if task.sourceKind == .photos {
+            do {
+                locals = try await listPhotos(task: task)
+            } catch {
+                update(id) { $0.lastError = error.localizedDescription }
+                return
+            }
+            photoCopies = true
+        } else {
+            guard let root = resolve(task) else {
+                update(id) { $0.lastError = "无法打开源文件夹，请重新选择" }
+                return
+            }
+            locals = listLocal(root: root)
+            photoCopies = false
+        }
         var uploaded = 0
         var skipped = 0
         var lastErr: String?
@@ -170,13 +186,13 @@ final class Pan115BackupStore: ObservableObject {
                         size: file.size,
                         cid: cid,
                         folderName: dest.name,
-                        ownsFile: false
+                        ownsFile: photoCopies
                     )
                     uploaded += 1
                     var item = Pan115BackupManifest.Item(relativePath: key, size: file.size, mtime: file.mtime, destIDs: prev?.destIDs ?? [])
                     if !item.destIDs.contains(dest.id.uuidString) { item.destIDs.append(dest.id.uuidString) }
                     manifest.items[key] = item
-                    if task.afterBackup == .deleteSource {
+                    if task.afterBackup == .deleteSource, task.sourceKind != .photos {
                         try? fm.removeItem(at: file.url)
                     }
                 } catch {
@@ -185,7 +201,7 @@ final class Pan115BackupStore: ObservableObject {
             }
         }
 
-        if task.sourceDeletedPolicy == .deleteRemote {
+        if task.sourceDeletedPolicy == .deleteRemote, task.sourceKind != .photos {
             let localKeys = Set(locals.map(\.rel))
             for (key, item) in manifest.items where !localKeys.contains(key) {
                 for dest in dests {
@@ -207,7 +223,7 @@ final class Pan115BackupStore: ObservableObject {
             }
         }
 
-        if task.syncDeleteFromDest {
+        if task.syncDeleteFromDest, task.sourceKind != .photos {
             for file in locals {
                 for dest in dests {
                     do {
@@ -272,6 +288,70 @@ final class Pan115BackupStore: ObservableObject {
         return out
     }
 
+    private func listPhotos(task: Pan115BackupTask) async throws -> [LocalFile] {
+        let status = await withCheckedContinuation { (cont: CheckedContinuation<PHAuthorizationStatus, Never>) in
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { cont.resume(returning: $0) }
+        }
+        guard status == .authorized || status == .limited else {
+            throw Pan115API.APIError.message("没有相册权限，请在系统设置里允许读取照片")
+        }
+        let opts = PHFetchOptions()
+        opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        let result = PHAsset.fetchAssets(with: opts)
+        let dir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("115Photo-\(task.id.uuidString)", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let manifest = loadManifest(task.id)
+        var out: [LocalFile] = []
+        let limit = min(result.count, 5000)
+        for i in 0..<limit {
+            let asset = result.object(at: i)
+            let resources = PHAssetResource.assetResources(for: asset)
+            guard let resource = preferredResource(resources) else { continue }
+            let name = resource.originalFilename
+            guard task.allows(fileName: name) else { continue }
+            let mtime = (asset.modificationDate ?? asset.creationDate ?? Date()).timeIntervalSince1970
+            if let prev = manifest.items[name], abs(prev.mtime - mtime) < 2 {
+                continue
+            }
+            let dest = dir.appendingPathComponent("\(asset.localIdentifier.replacingOccurrences(of: "/", with: "_"))-\(name)")
+            do {
+                try await writePhotoResource(resource, to: dest)
+            } catch {
+                continue
+            }
+            let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+            guard size > 0 else { continue }
+            out.append(LocalFile(url: dest, rel: name, name: name, folders: [], size: size, mtime: mtime))
+        }
+        return out
+    }
+
+    private func preferredResource(_ resources: [PHAssetResource]) -> PHAssetResource? {
+        resources.first(where: { $0.type == .fullSizeVideo || $0.type == .video })
+            ?? resources.first(where: { $0.type == .fullSizePhoto || $0.type == .photo })
+            ?? resources.first
+    }
+
+    private func writePhotoResource(_ resource: PHAssetResource, to url: URL) async throws {
+        if fm.fileExists(atPath: url.path) { return }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let opts = PHAssetResourceRequestOptions()
+            opts.isNetworkAccessAllowed = true
+            PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: opts) { error in
+                if let error { cont.resume(throwing: error) } else { cont.resume() }
+            }
+        }
+    }
+
+    nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
+        Task { @MainActor in
+            for task in self.tasks where task.enabled && task.sourceKind == .photos && task.fsMonitor {
+                self.enqueueScan(task.id, reason: "相册更改")
+            }
+        }
+    }
+
     private func rename(_ name: String) -> String {
         let ns = name as NSString
         let base = ns.deletingPathExtension
@@ -283,6 +363,13 @@ final class Pan115BackupStore: ObservableObject {
     private func startMonitor(_ task: Pan115BackupTask) {
         stopMonitor(task.id)
         guard task.enabled, task.fsMonitor else { return }
+        if task.sourceKind == .photos {
+            if !photoObserverOn {
+                PHPhotoLibrary.shared().register(self)
+                photoObserverOn = true
+            }
+            return
+        }
         guard let url = resolve(task) else { return }
         let fd = open(url.path, O_EVTONLY)
         guard fd >= 0 else { return }
@@ -359,9 +446,16 @@ final class Pan115BackupStore: ObservableObject {
     }
 
     private static func load(_ url: URL) -> [Pan115BackupTask] {
-        guard let data = try? Data(contentsOf: url),
-              let items = try? JSONDecoder().decode([Pan115BackupTask].self, from: data) else { return [] }
-        return items
+        guard var data = try? Data(contentsOf: url) else { return [] }
+        if var arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            arr = arr.map { row in
+                var row = row
+                if row["sourceKind"] == nil { row["sourceKind"] = "folder" }
+                return row
+            }
+            if let patched = try? JSONSerialization.data(withJSONObject: arr) { data = patched }
+        }
+        return (try? JSONDecoder().decode([Pan115BackupTask].self, from: data)) ?? []
     }
 
     private func loadManifest(_ id: UUID) -> Pan115BackupManifest {

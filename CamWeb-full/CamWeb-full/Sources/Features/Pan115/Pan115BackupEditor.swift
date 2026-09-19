@@ -20,7 +20,8 @@ struct Pan115BackupEditor: View {
     }
 
     private var canCreate: Bool {
-        !task.sourceBookmark.isEmpty && task.destinations.contains(where: \.enabled)
+        let hasSource = task.sourceKind == .photos || !task.sourceBookmark.isEmpty
+        return hasSource && task.destinations.contains(where: \.enabled)
     }
 
     var body: some View {
@@ -71,27 +72,67 @@ struct Pan115BackupEditor: View {
             .alert("提示", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
                 Button("好") { notice = nil }
             } message: { Text(notice ?? "") }
+            .onChange(of: task.sourceKind) { _, kind in
+                if kind == .photos {
+                    task.sourceName = "系统相册"
+                    task.sourcePath = "photos"
+                    task.sourceBookmark = Data()
+                    if task.name == "未命名备份" { task.name = "系统相册" }
+                }
+            }
         }
     }
 
     private var sourceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             label("folder", "来源")
-            Button { pickSource() } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("源路径").font(.subheadline).foregroundStyle(.secondary)
-                        Text(task.sourceName.isEmpty ? "选择源文件夹..." : task.sourceName)
-                            .foregroundStyle(task.sourceName.isEmpty ? .secondary : .primary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
+            VStack(spacing: 0) {
+                Picker("来源类型", selection: $task.sourceKind) {
+                    Text("文件夹").tag(Pan115BackupTask.SourceKind.folder)
+                    Text("系统相册").tag(Pan115BackupTask.SourceKind.photos)
                 }
-                .padding(14)
-                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .pickerStyle(.segmented)
+                .padding(12)
+                Divider()
+                if task.sourceKind == .photos {
+                    Button {
+                        task.sourceName = "系统相册"
+                        task.sourcePath = "photos"
+                        task.sourceBookmark = Data()
+                        task.fsMonitor = true
+                        if task.name == "未命名备份" { task.name = "系统相册" }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("源路径").font(.subheadline).foregroundStyle(.secondary)
+                                Text("系统相册")
+                            }
+                            Spacer()
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        }
+                        .padding(14)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button { pickSource() } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("源路径").font(.subheadline).foregroundStyle(.secondary)
+                                Text(task.sourceName.isEmpty ? "选择源文件夹..." : task.sourceName)
+                                    .foregroundStyle(task.sourceName.isEmpty ? Color.secondary : Color.primary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
+                        }
+                        .padding(14)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
-            caption("要备份的文件夹。所有文件和子文件夹都将被监控更改。")
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            caption(task.sourceKind == .photos
+                    ? "备份系统相册里的照片和视频。相册有新增时会自动扫描。"
+                    : "点进文件夹后勾选任意文件再点「打开」，会备份该文件夹（含子目录）。也可以直接选中文件夹再打开。")
         }
     }
 
