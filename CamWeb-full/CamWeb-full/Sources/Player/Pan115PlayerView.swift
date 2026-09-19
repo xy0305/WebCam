@@ -63,16 +63,17 @@ struct Pan115PlayerView: View {
                         .ignoresSafeArea()
                         .allowsHitTesting(false)
                     VStack(spacing: 0) {
-                        topBar(land: land, safeTop: geo.safeAreaInsets.top)
+                        topBar(land: land, safeTop: windowSafeTop(geo))
                         Spacer()
                         centerControls
                         Spacer()
-                        bottomBar(land: land, safeBottom: geo.safeAreaInsets.bottom)
+                        bottomBar(land: land, safeBottom: windowSafeBottom(geo))
                     }
+                    .zIndex(2)
                     .transition(.opacity)
                 }
             }
-            .statusBarHidden(land)
+            .statusBarHidden(true)
         }
         .background(Color.black)
         .onAppear {
@@ -126,7 +127,21 @@ struct Pan115PlayerView: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, land ? 28 : 16)
-        .padding(.top, land ? max(10, safeTop * 0.35) : max(8, safeTop * 0.2))
+        .padding(.top, land ? max(12, safeTop) : max(54, safeTop + 6))
+    }
+
+    private func windowSafeTop(_ geo: GeometryProxy) -> CGFloat {
+        max(geo.safeAreaInsets.top, keyWindowInsets.top)
+    }
+
+    private func windowSafeBottom(_ geo: GeometryProxy) -> CGFloat {
+        max(geo.safeAreaInsets.bottom, keyWindowInsets.bottom)
+    }
+
+    private var keyWindowInsets: UIEdgeInsets {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap(\.windows).first { $0.isKeyWindow } ?? scenes.flatMap(\.windows).first
+        return window?.safeAreaInsets ?? UIEdgeInsets(top: 59, left: 0, bottom: 34, right: 0)
     }
 
     private var centerControls: some View {
@@ -174,7 +189,7 @@ struct Pan115PlayerView: View {
             }
         }
         .padding(.horizontal, land ? 32 : 18)
-        .padding(.bottom, land ? max(16, safeBottom + 8) : 28)
+        .padding(.bottom, max(land ? 16 : 24, safeBottom + 8))
     }
 
     private func gestureLayer(size: CGSize) -> some View {
