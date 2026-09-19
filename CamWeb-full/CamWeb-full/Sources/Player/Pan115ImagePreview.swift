@@ -56,7 +56,7 @@ struct Pan115ImagePreview: View {
         defer { loading = false }
         var req = URLRequest(url: url)
         req.timeoutInterval = 40
-        Pan115API.cdnHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        Pan115API.fileHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
         do {
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {

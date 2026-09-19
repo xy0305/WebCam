@@ -645,14 +645,18 @@ enum Pan115API {
         )
     }
 
-    /// 必须与播放器 UA 一致，否则 115 按 UA 绑定的 m3u8 会 403。
-    static let playUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+    /// 对照 OpenList：下载直链按 UA 绑定，播放/看图必须同一 UA。
+    static let playUA = userAgent
 
     static func playHeaders() -> [String: String] {
+        fileHeaders()
+    }
+
+    /// OpenList Link 头：同一 115Browser UA，不带 Origin。
+    static func fileHeaders() -> [String: String] {
         var h = [
-            "User-Agent": playUA,
+            "User-Agent": userAgent,
             "Accept": "*/*",
-            "Origin": origin,
             "Referer": "https://115.com/"
         ]
         if let cookie = Pan115Session.shared.cookieHeader {
@@ -661,18 +665,23 @@ enum Pan115API {
         return h
     }
 
-    /// 115 CDN 直链：再带 Cookie / Origin 经常 403。
     static func cdnHeaders() -> [String: String] {
-        [
-            "User-Agent": playUA,
-            "Accept": "*/*",
-            "Referer": "https://115.com/"
-        ]
+        fileHeaders()
     }
 
-    /// 原文件直链（可 seek）。转码没完成的 m3u8 只有 1 秒，进度条会废掉。
+    /// 对照 OpenList `DownloadWithUA`：原文件直链，视频/图片共用。
     static func downloadURL(pickCode: String) async throws -> URL {
+        try await fileLink(pickCode: pickCode).url
+    }
+
+    static func fileLink(pickCode: String) async throws -> (url: URL, headers: [String: String]) {
         guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
+        if let u = try? await downloadWithUA(pickCode: pickCode, android: false) {
+            return (u, fileHeaders())
+        }
+        if let u = try? await downloadWithUA(pickCode: pickCode, android: true) {
+            return (u, fileHeaders())
+        }
         let pc = uriEncode(pickCode)
         let candidates = [
             "https://proapi.115.com/android/2.0/ufile/download?pickcode=\(pc)",
@@ -684,47 +693,81 @@ enum Pan115API {
             var r = URLRequest(url: url)
             r.httpMethod = "GET"
             r.timeoutInterval = 20
-            headers().forEach { r.setValue($1, forHTTPHeaderField: $0) }
+            fileHeaders().forEach { r.setValue($1, forHTTPHeaderField: $0) }
             r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
             r.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
             guard let obj = try? await playJSON(r), let u = firstHTTPURL(obj) else { continue }
-            return u
+            return (u, fileHeaders())
         }
         throw APIError.message("拿不到直链")
     }
 
-    /// 对齐 build 36 / AVDB：先 115 转码 m3u8（完整时长、可 seek），再 video，最后才原文件。
-    /// 原文件直链给 AVPlayer 时常只有 1 秒，ts/mkv 也播不了。
+    /// OpenList：POST proapi chrome/android downurl，body 为 m115 加密 pickcode。
+    private static func downloadWithUA(pickCode: String, android: Bool) async throws -> URL {
+        let key = Pan115M115.generateKey()
+        let payloadObj: [String: String] = android
+            ? ["pick_code": pickCode]
+            : ["pickcode": pickCode]
+        let payload = try JSONSerialization.data(withJSONObject: payloadObj)
+        let encoded = Pan115M115.encode(payload, key: key)
+        let t = Int(Date().timeIntervalSince1970)
+        let endpoint = android
+            ? "https://proapi.115.com/android/2.0/ufile/download?t=\(t)"
+            : "https://proapi.115.com/app/chrome/downurl?t=\(t)"
+        guard let url = URL(string: endpoint) else { throw APIError.badResponse }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 20
+        fileHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        req.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
+        req.httpBody = "data=\(uriEncode(encoded))".data(using: .utf8)
+        let obj = try await playJSON(req)
+        if let state = obj["state"] as? Bool, state == false {
+            throw APIError.message(string(obj["error"]) ?? "downurl 失败")
+        }
+        let blob: Data
+        if let s = obj["data"] as? String, !s.isEmpty {
+            blob = try Pan115M115.decode(s, key: key)
+        } else if let u = firstHTTPURL(obj) {
+            return u
+        } else {
+            throw APIError.badResponse
+        }
+        guard let decoded = try JSONSerialization.jsonObject(with: blob) as? Any,
+              let u = extractDownloadURL(decoded) else {
+            throw APIError.message("解密直链失败")
+        }
+        return u
+    }
+
+    private static func extractDownloadURL(_ any: Any) -> URL? {
+        if let s = any as? String, s.hasPrefix("http") { return URL(string: s) }
+        if let dict = any as? [String: Any] {
+            if let u = firstHTTPURL(dict) { return u }
+            if let nested = dict["url"] {
+                if let u = extractDownloadURL(nested) { return u }
+            }
+            for value in dict.values {
+                if let u = extractDownloadURL(value) { return u }
+            }
+        }
+        if let arr = any as? [Any] {
+            for value in arr {
+                if let u = extractDownloadURL(value) { return u }
+            }
+        }
+        return nil
+    }
+
     static func playURL(pickCode: String, filename: String = "") async throws -> URL {
         try await playSource(pickCode: pickCode, filename: filename).url
     }
 
+    /// 对照 OpenList：始终播原文件。mp4 也优先 FFmpeg，系统播放器兜底。
     static func playSource(pickCode: String, filename: String = "") async throws -> (url: URL, ffmpeg: Bool) {
-        guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
-        let ffmpeg = needsFFmpeg(filename)
-        // ts/avi/mkv 的转码 m3u8 经常只有 1 秒。直接原文件 + FFmpeg。
-        if !ffmpeg, let hls = try? await transcodedStream(pickCode: pickCode) {
-            return (hls, false)
-        }
-        let pc = uriEncode(pickCode)
-        let candidates = [
-            "https://115vod.com/webapi/files/video?pickcode=\(pc)&local=1",
-            "https://webapi.115.com/files/video?pickcode=\(pc)&local=1"
-        ]
-        for raw in candidates {
-            guard let url = URL(string: raw) else { continue }
-            var r = URLRequest(url: url)
-            r.httpMethod = "GET"
-            r.timeoutInterval = 15
-            playHeaders().forEach { r.setValue($1, forHTTPHeaderField: $0) }
-            r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
-            guard let obj = try? await playJSON(r), let u = firstHTTPURL(obj) else { continue }
-            return (u, true)
-        }
-        if let url = try? await downloadURL(pickCode: pickCode) {
-            return (url, true)
-        }
-        throw APIError.message("拿不到播放地址")
+        let url = try await downloadURL(pickCode: pickCode)
+        return (url, true)
     }
 
     private static func transcodedStream(pickCode: String) async throws -> URL? {
@@ -768,11 +811,7 @@ enum Pan115API {
     }
 
     static func needsFFmpeg(_ name: String) -> Bool {
-        [
-            "ts", "m2ts", "mts", "mkv", "avi", "wmv", "flv", "webm",
-            "iso", "mpg", "mpeg", "vob", "rm", "rmvb", "f4v", "asf",
-            "3gp", "tp", "trp", "dat"
-        ].contains(fileExt(name))
+        isPlayable(name)
     }
 
     static func isImage(_ name: String) -> Bool {

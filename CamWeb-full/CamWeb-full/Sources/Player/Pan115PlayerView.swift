@@ -256,11 +256,11 @@ struct Pan115PlayerView: View {
         if ffmpeg {
             KSOptions.firstPlayerType = KSMEPlayer.self
             KSOptions.secondPlayerType = KSAVPlayer.self
-            o.appendHeader(Pan115API.cdnHeaders())
+            o.appendHeader(Pan115API.fileHeaders())
         } else {
             KSOptions.firstPlayerType = KSAVPlayer.self
             KSOptions.secondPlayerType = KSMEPlayer.self
-            o.appendHeader(Pan115API.playHeaders())
+            o.appendHeader(Pan115API.fileHeaders())
         }
         KSOptions.isAutoPlay = true
         o.videoAdaptable = false
