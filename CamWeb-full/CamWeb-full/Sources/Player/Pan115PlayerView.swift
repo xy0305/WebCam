@@ -6,6 +6,7 @@ import UIKit
 struct Pan115PlayerView: View {
     let url: URL
     let title: String
+    var useFFmpeg = false
     @Environment(\.nativeDismiss) private var nativeDismiss
     @StateObject private var coordinator = KSVideoPlayer.Coordinator()
     @State private var isPlaying = false
@@ -28,7 +29,7 @@ struct Pan115PlayerView: View {
                     .onPlay { cur, tot in
                         if !isSeeking {
                             current = max(0, cur)
-                            if tot > 1.5 { total = tot }
+                            total = max(tot, 1)
                         }
                     }
                     .onStateChanged { _, state in
@@ -244,8 +245,13 @@ struct Pan115PlayerView: View {
 
     private var options: KSOptions {
         let o = KSOptions()
-        KSOptions.firstPlayerType = KSAVPlayer.self
-        KSOptions.secondPlayerType = KSMEPlayer.self
+        if useFFmpeg {
+            KSOptions.firstPlayerType = KSMEPlayer.self
+            KSOptions.secondPlayerType = KSAVPlayer.self
+        } else {
+            KSOptions.firstPlayerType = KSAVPlayer.self
+            KSOptions.secondPlayerType = KSMEPlayer.self
+        }
         KSOptions.isAutoPlay = true
         o.videoAdaptable = false
         o.appendHeader(Pan115API.playHeaders())

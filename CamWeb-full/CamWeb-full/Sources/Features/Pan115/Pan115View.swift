@@ -521,8 +521,8 @@ struct Pan115View: View {
         Task {
             defer { playBusy = false }
             do {
-                let url = try await Pan115API.playURL(pickCode: node.pickCode)
-                AppState.shared.open115(url: url, title: node.name)
+                let src = try await Pan115API.playSource(pickCode: node.pickCode, filename: node.name)
+                AppState.shared.open115(url: src.url, title: node.name, ffmpeg: src.ffmpeg)
             } catch {
                 pickNotice = error.localizedDescription
             }

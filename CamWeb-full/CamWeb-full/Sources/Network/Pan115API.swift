@@ -343,11 +343,13 @@ enum Pan115API {
         throw APIError.message("拿不到直链")
     }
 
-    /// 优先原文件；没有再退 m3u8 / video。
-    static func playURL(pickCode: String) async throws -> URL {
-        if let url = try? await downloadURL(pickCode: pickCode) {
-            return url
-        }
+    /// 对齐 build 36 / AVDB：先 115 转码 m3u8（完整时长、可 seek），再 video，最后才原文件。
+    /// 原文件直链给 AVPlayer 时常只有 1 秒，ts/mkv 也播不了。
+    static func playURL(pickCode: String, filename: String = "") async throws -> URL {
+        try await playSource(pickCode: pickCode, filename: filename).url
+    }
+
+    static func playSource(pickCode: String, filename: String = "") async throws -> (url: URL, ffmpeg: Bool) {
         let pc = encode(pickCode)
         guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
         let m3u8URL = URL(string: "https://115.com/api/video/m3u8/\(pc).m3u8")!
@@ -357,11 +359,13 @@ enum Pan115API {
         playHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
         if let (data, _) = try? await URLSession.shared.data(for: req),
            let text = String(data: data, encoding: .utf8),
-           text.contains("#EXTM3U"),
-           text.contains("#EXT-X-STREAM-INF"),
-           let best = parseMaster(text).first,
-           let url = URL(string: best) {
-            return url
+           text.contains("#EXTM3U") {
+            if let best = parseMaster(text).first, let url = URL(string: best) {
+                return (url, false)
+            }
+            if !text.contains("#EXT-X-STREAM-INF") {
+                return (m3u8URL, false)
+            }
         }
         let candidates = [
             "https://115vod.com/webapi/files/video?pickcode=\(pc)&local=1",
@@ -376,7 +380,10 @@ enum Pan115API {
             r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
             r.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
             guard let obj = try? await playJSON(r), let u = firstHTTPURL(obj) else { continue }
-            return u
+            return (u, needsFFmpeg(filename) || needsFFmpeg(u.lastPathComponent))
+        }
+        if let url = try? await downloadURL(pickCode: pickCode) {
+            return (url, true)
         }
         throw APIError.message("拿不到播放地址")
     }
@@ -393,7 +400,19 @@ enum Pan115API {
     }
 
     static func isPlayable(_ name: String) -> Bool {
-        ["mp4", "m4v", "mov", "mkv", "avi", "wmv", "flv", "webm", "ts", "m2ts", "m3u8", "iso"].contains(fileExt(name))
+        [
+            "mp4", "m4v", "mov", "mkv", "avi", "wmv", "flv", "webm",
+            "ts", "m2ts", "mts", "m3u8", "iso", "mpg", "mpeg", "vob",
+            "rm", "rmvb", "f4v", "asf", "3gp", "tp", "trp", "dat"
+        ].contains(fileExt(name))
+    }
+
+    static func needsFFmpeg(_ name: String) -> Bool {
+        [
+            "ts", "m2ts", "mts", "mkv", "avi", "wmv", "flv", "webm",
+            "iso", "mpg", "mpeg", "vob", "rm", "rmvb", "f4v", "asf",
+            "3gp", "tp", "trp", "dat"
+        ].contains(fileExt(name))
     }
 
     static func isImage(_ name: String) -> Bool {

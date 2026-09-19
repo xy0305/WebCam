@@ -32,7 +32,7 @@ struct MainShellView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
         } else if let url = appState.playing115URL {
-            Pan115PlayerView(url: url, title: appState.playing115Title)
+            Pan115PlayerView(url: url, title: appState.playing115Title, useFFmpeg: appState.playing115FFmpeg)
                 .id(url.absoluteString)
                 .environmentObject(appState)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
