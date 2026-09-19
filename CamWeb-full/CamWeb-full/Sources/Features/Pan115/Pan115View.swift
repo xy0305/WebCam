@@ -14,7 +14,7 @@ struct Pan115View: View {
     @State private var photos: [PhotosPickerItem] = []
     @State private var newFolder = ""
     @State private var showFolder = false
-    @State private var tab: Pane = .upload
+    @State private var tab: Pane = .files
     @State private var searchText = ""
     @State private var searchHits: [Pan115API.Node] = []
     @State private var searching = false
@@ -23,10 +23,20 @@ struct Pan115View: View {
     @State private var editingBackup: Pan115BackupTask?
     @State private var showUploadFolder = false
     @State private var playBusy = false
+    @State private var showShare = false
+    @State private var showRecycle = false
+    @State private var showMove = false
+    @State private var moveIsCopy = false
+    @State private var movingNodes: [Pan115API.Node] = []
+    @State private var showRename = false
+    @State private var renameTarget: Pan115API.Node?
+    @State private var renameText = ""
+    @State private var space: Pan115API.SpaceInfo?
 
     private enum Pane: String, CaseIterable {
-        case upload = "上传"
         case files = "网盘"
+        case upload = "上传"
+        case offline = "离线"
         case backup = "备份"
     }
 
@@ -55,10 +65,12 @@ struct Pan115View: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
 
-                        if tab == .upload {
-                            uploadPane
-                        } else if tab == .files {
+                        if tab == .files {
                             drivePane
+                        } else if tab == .upload {
+                            uploadPane
+                        } else if tab == .offline {
+                            Pan115OfflineView()
                         } else {
                             backupPane
                         }
@@ -78,6 +90,16 @@ struct Pan115View: View {
                     let name = newFolder
                     newFolder = ""
                     Task { await makeFolder(name) }
+                }
+            }
+            .alert("重命名", isPresented: $showRename) {
+                TextField("名称", text: $renameText)
+                Button("取消", role: .cancel) { renameTarget = nil }
+                Button("保存") {
+                    let name = renameText
+                    let target = renameTarget
+                    renameTarget = nil
+                    Task { await rename(target, name) }
                 }
             }
             .alert("提示", isPresented: Binding(get: { pickNotice != nil }, set: { if !$0 { pickNotice = nil } })) {
@@ -100,6 +122,32 @@ struct Pan115View: View {
                     showUploadFolder = false
                 } onCancel: {
                     showUploadFolder = false
+                }
+            }
+            .sheet(isPresented: $showShare) {
+                NavigationStack {
+                    Pan115ShareView()
+                        .navigationTitle("转存分享")
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showShare = false } } }
+                }
+            }
+            .sheet(isPresented: $showRecycle) {
+                NavigationStack {
+                    Pan115RecycleView()
+                        .navigationTitle("回收站")
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showRecycle = false } } }
+                }
+            }
+            .sheet(isPresented: $showMove) {
+                Pan115FolderPicker { dest, name in
+                    showMove = false
+                    let items = movingNodes
+                    let copy = moveIsCopy
+                    movingNodes = []
+                    Task { await moveOrCopy(items, to: dest, name: name, copy: copy) }
+                } onCancel: {
+                    showMove = false
+                    movingNodes = []
                 }
             }
             .task { if session.hasCookie { await reload() } }
@@ -129,11 +177,14 @@ struct Pan115View: View {
                     showBackupEditor = true
                 } label: { Image(systemName: "plus.rectangle.on.folder") }
                 Menu {
+                    Button("新建文件夹") { showFolder = true }
+                    Button("转存分享") { showShare = true }
+                    Button("回收站") { showRecycle = true }
+                    Button("离线下载") { tab = .offline }
                     Button("新建备份") {
                         editingBackup = nil
                         showBackupEditor = true
                     }
-                    Button("新建文件夹") { showFolder = true }
                     Button("暂停全部") { uploader.pauseAll() }
                     Button("继续全部") { uploader.resumeAll() }
                     Button("取消全部", role: .destructive) { uploader.cancelAll() }
@@ -217,7 +268,7 @@ struct Pan115View: View {
             Section {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("搜索文件夹", text: $searchText)
+                    TextField("搜索文件或文件夹", text: $searchText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     if !searchText.isEmpty {
@@ -246,9 +297,16 @@ struct Pan115View: View {
                     }
                 }
             } else {
-                Section("当前目录") {
+                Section {
                     HStack {
-                        Text(folderName).font(.subheadline)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(folderName).font(.subheadline)
+                            if let space {
+                                Text("已用 \(byteText(space.used)) / \(byteText(space.total))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer()
                         if path.count > 1 {
                             Button("上级") { path.removeLast(); Task { await reload() } }
@@ -262,6 +320,10 @@ struct Pan115View: View {
                             Task { await reload() }
                         } label: {
                             Label(node.name, systemImage: "folder.fill")
+                        }
+                        .contextMenu { nodeActions(node) }
+                        .swipeActions {
+                            Button("删除", role: .destructive) { Task { await deleteNode(node) } }
                         }
                     }
                     ForEach(files) { node in
@@ -278,6 +340,10 @@ struct Pan115View: View {
                             }
                         }
                         .disabled(playBusy)
+                        .contextMenu { nodeActions(node) }
+                        .swipeActions {
+                            Button("删除", role: .destructive) { Task { await deleteNode(node) } }
+                        }
                     }
                 }
             }
@@ -416,6 +482,9 @@ struct Pan115View: View {
         defer { loading = false }
         do {
             nodes = try await Pan115API.listAll(cid: cid)
+            if let info = try? await Pan115API.spaceInfo() {
+                space = info
+            }
         } catch {
             errorText = error.localizedDescription
         }
@@ -429,6 +498,64 @@ struct Pan115View: View {
             await reload()
         } catch {
             errorText = error.localizedDescription
+        }
+    }
+
+    @ViewBuilder
+    private func nodeActions(_ node: Pan115API.Node) -> some View {
+        Button("重命名") {
+            renameTarget = node
+            renameText = node.name
+            showRename = true
+        }
+        Button("移动到…") {
+            movingNodes = [node]
+            moveIsCopy = false
+            showMove = true
+        }
+        Button("复制到…") {
+            movingNodes = [node]
+            moveIsCopy = true
+            showMove = true
+        }
+        Button("删除", role: .destructive) {
+            Task { await deleteNode(node) }
+        }
+    }
+
+    private func rename(_ node: Pan115API.Node?, _ name: String) async {
+        guard let node else { return }
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty, n != node.name else { return }
+        do {
+            try await Pan115API.rename(id: node.id, name: n)
+            await reload()
+        } catch {
+            pickNotice = error.localizedDescription
+        }
+    }
+
+    private func deleteNode(_ node: Pan115API.Node) async {
+        do {
+            try await Pan115API.delete(id: node.id, pid: cid)
+            await reload()
+        } catch {
+            pickNotice = error.localizedDescription
+        }
+    }
+
+    private func moveOrCopy(_ items: [Pan115API.Node], to dest: String, name: String, copy: Bool) async {
+        let ids = items.map(\.id)
+        do {
+            if copy {
+                try await Pan115API.copy(ids: ids, to: dest)
+            } else {
+                try await Pan115API.move(ids: ids, to: dest)
+            }
+            pickNotice = (copy ? "已复制到 " : "已移动到 ") + name
+            await reload()
+        } catch {
+            pickNotice = error.localizedDescription
         }
     }
 
@@ -455,7 +582,7 @@ struct Pan115View: View {
         searching = true
         defer { searching = false }
         do {
-            let hits = try await Pan115API.search(keyword: q, cid: "0", foldersOnly: true)
+            let hits = try await Pan115API.search(keyword: q, cid: "0", foldersOnly: false)
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines) == q {
                 searchHits = hits
             }

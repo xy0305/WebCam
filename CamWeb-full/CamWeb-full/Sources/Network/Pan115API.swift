@@ -181,13 +181,15 @@ enum Pan115API {
         return cid
     }
 
-    static func delete(id: String) async throws {
-        let obj = try await form(URL(string: "https://webapi.115.com/rb/delete")!, [
+    static func delete(id: String, pid: String? = nil) async throws {
+        var fields = [
             "fid[0]": id,
             "ignore_warn": "1"
-        ])
+        ]
+        if let pid, !pid.isEmpty { fields["pid"] = pid }
+        let obj = try await form(URL(string: "https://webapi.115.com/rb/delete")!, fields)
         if let state = obj["state"] as? Bool, state == false {
-            throw APIError.message(string(obj["error"]) ?? "删除失败")
+            throw APIError.message(string(obj["error"]) ?? string(obj["error_msg"]) ?? "删除失败")
         }
     }
 
@@ -201,6 +203,345 @@ enum Pan115API {
             throw APIError.message(string(obj["error"]) ?? "新建文件夹失败")
         }
         return string(obj["cid"]) ?? parent
+    }
+
+    /// 对照 OpenList / 115driver：POST files/batch_rename
+    static func rename(id: String, name: String) async throws {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !n.isEmpty else { throw APIError.message("名称无效") }
+        let obj = try await form(URL(string: "https://webapi.115.com/files/batch_rename")!, [
+            "fid": id,
+            "file_name": n,
+            "files_new_name[\(id)]": n
+        ])
+        guard ok(obj) else {
+            throw APIError.message(string(obj["error"]) ?? string(obj["error_msg"]) ?? "重命名失败")
+        }
+    }
+
+    /// 对照 OpenList：POST files/move，pid=目标，fid[N]=源
+    static func move(ids: [String], to destCID: String) async throws {
+        try await fileOp(URL(string: "https://webapi.115.com/files/move")!, ids: ids, destCID: destCID, fail: "移动失败")
+    }
+
+    /// 对照 OpenList：POST files/copy
+    static func copy(ids: [String], to destCID: String) async throws {
+        try await fileOp(URL(string: "https://webapi.115.com/files/copy")!, ids: ids, destCID: destCID, fail: "复制失败")
+    }
+
+    private static func fileOp(_ url: URL, ids: [String], destCID: String, fail: String) async throws {
+        let fids = ids.filter { !$0.isEmpty }
+        guard !fids.isEmpty else { throw APIError.message("没有可操作的文件") }
+        var fields = ["pid": destCID]
+        for (i, id) in fids.enumerated() { fields["fid[\(i)]"] = id }
+        let obj = try await form(url, fields)
+        guard ok(obj) else {
+            throw APIError.message(string(obj["error"]) ?? string(obj["error_msg"]) ?? fail)
+        }
+    }
+
+    struct SpaceInfo {
+        let total: Int64
+        let used: Int64
+        var remain: Int64 { max(0, total - used) }
+    }
+
+    /// 对照 OpenList GetDetails：files/index_info
+    static func spaceInfo() async throws -> SpaceInfo {
+        let obj = try await json(URL(string: "https://webapi.115.com/files/index_info")!)
+        let data = obj["data"] as? [String: Any] ?? obj
+        let space = data["space_info"] as? [String: Any] ?? data
+        func size(_ key: String) -> Int64 {
+            if let nested = space[key] as? [String: Any] {
+                return Int64(string(nested["size"]) ?? "0") ?? 0
+            }
+            return Int64(string(space[key]) ?? "0") ?? 0
+        }
+        let total = size("all_total")
+        let used = size("all_use")
+        if total > 0 || used > 0 { return SpaceInfo(total: total, used: used) }
+        throw APIError.message(string(obj["error"]) ?? "拿不到空间信息")
+    }
+
+    struct OfflineTask: Identifiable, Hashable {
+        var id: String { infoHash.isEmpty ? "\(name)-\(addTime)" : infoHash }
+        let infoHash: String
+        let name: String
+        let size: Int64
+        let url: String
+        let status: Int
+        let percent: Double
+        let fileID: String
+        let dirID: String
+        let addTime: Int64
+
+        var statusText: String {
+            switch status {
+            case 0: return "等待"
+            case 1: return "下载中"
+            case 2: return "完成"
+            case -1: return "失败"
+            default: return "未知 \(status)"
+            }
+        }
+    }
+
+    /// 对照 AVDB / OpenList：先 space 拿 sign，再 add_task_url。支持 magnet / ed2k / http。
+    static func addOffline(urls: [String], dirID: String) async throws -> String {
+        let links = urls.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !links.isEmpty else { throw APIError.message("链接为空") }
+        let uid = cookieValue("UID")?.split(separator: "_").first.map(String.init) ?? ""
+        var sign = ""
+        var time = "\(Int(Date().timeIntervalSince1970 * 1000))"
+        if let s = try? await offlineSign() {
+            sign = s.sign
+            time = s.time
+        }
+        if links.count == 1 {
+            var fields = [
+                "url": links[0],
+                "wp_path_id": dirID
+            ]
+            if !uid.isEmpty { fields["uid"] = uid }
+            if !sign.isEmpty {
+                fields["sign"] = sign
+                fields["time"] = time
+            }
+            let obj = try await form(URL(string: "https://115.com/web/lixian/?ct=lixian&ac=add_task_url")!, fields)
+            return try parseOfflineAdd(obj)
+        }
+        var fields = ["wp_path_id": dirID]
+        if !uid.isEmpty { fields["uid"] = uid }
+        if !sign.isEmpty {
+            fields["sign"] = sign
+            fields["time"] = time
+        }
+        for (i, link) in links.enumerated() { fields["url[\(i)]"] = link }
+        let obj = try await form(URL(string: "https://115.com/web/lixian/?ct=lixian&ac=add_task_urls")!, fields)
+        return try parseOfflineAdd(obj)
+    }
+
+    static func listOffline(page: Int = 1) async throws -> (tasks: [OfflineTask], quota: Int64, pageCount: Int) {
+        let urls = [
+            "https://115.com/web/lixian/?ct=lixian&ac=task_lists&page=\(page)",
+            "https://lixian.115.com/lixian/?ct=lixian&ac=task_lists&page=\(page)"
+        ]
+        var last: Error = APIError.badResponse
+        for raw in urls {
+            guard let url = URL(string: raw) else { continue }
+            do {
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                req.timeoutInterval = 30
+                headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+                req.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+                req.httpBody = "page=\(page)".data(using: .utf8)
+                let obj = try await playJSON(req)
+                if let state = obj["state"] as? Bool, state == false {
+                    last = APIError.message(string(obj["error"]) ?? string(obj["error_msg"]) ?? "离线列表失败")
+                    continue
+                }
+                let rawTasks = (obj["tasks"] as? [[String: Any]])
+                    ?? ((obj["data"] as? [String: Any])?["tasks"] as? [[String: Any]])
+                    ?? []
+                let tasks = rawTasks.map { item in
+                    OfflineTask(
+                        infoHash: string(item["info_hash"] ?? item["hash"]) ?? "",
+                        name: string(item["name"]) ?? "",
+                        size: Int64(string(item["size"]) ?? "0") ?? 0,
+                        url: string(item["url"]) ?? "",
+                        status: Int(string(item["status"]) ?? "0") ?? 0,
+                        percent: Double(string(item["percentDone"] ?? item["percent"]) ?? "0") ?? 0,
+                        fileID: string(item["file_id"] ?? item["delete_file_id"]) ?? "",
+                        dirID: string(item["wp_path_id"]) ?? "",
+                        addTime: Int64(string(item["add_time"]) ?? "0") ?? 0
+                    )
+                }
+                let quota = Int64(string(obj["quota"]) ?? "0") ?? 0
+                let pages = Int(string(obj["page_count"]) ?? "1") ?? 1
+                return (tasks, quota, pages)
+            } catch {
+                last = error
+            }
+        }
+        throw last
+    }
+
+    static func deleteOffline(hashes: [String], deleteFiles: Bool) async throws {
+        let hs = hashes.filter { !$0.isEmpty }
+        guard !hs.isEmpty else { return }
+        var fields = ["flag": deleteFiles ? "1" : "0"]
+        for (i, h) in hs.enumerated() { fields["hash[\(i)]"] = h }
+        fields["hash"] = hs[0]
+        let urls = [
+            "https://115.com/web/lixian/?ct=lixian&ac=task_del",
+            "https://lixian.115.com/lixian/?ct=lixian&ac=task_del"
+        ]
+        var last: Error = APIError.badResponse
+        for raw in urls {
+            guard let url = URL(string: raw) else { continue }
+            do {
+                let obj = try await form(url, fields)
+                if ok(obj) { return }
+                last = APIError.message(string(obj["error"]) ?? string(obj["error_msg"]) ?? "删除离线任务失败")
+            } catch {
+                last = error
+            }
+        }
+        throw last
+    }
+
+    static func clearOffline(flag: Int) async throws {
+        let obj = try await form(URL(string: "https://115.com/web/lixian/?ct=lixian&ac=task_clear")!, [
+            "flag": "\(flag)"
+        ])
+        guard ok(obj) else {
+            throw APIError.message(string(obj["error"]) ?? "清空失败")
+        }
+    }
+
+    private static func offlineSign() async throws -> (sign: String, time: String) {
+        let ts = Int(Date().timeIntervalSince1970 * 1000)
+        let obj = try await json(URL(string: "https://115.com/?ct=offline&ac=space&_=\(ts)")!)
+        guard let sign = string(obj["sign"]), !sign.isEmpty else {
+            throw APIError.message("获取离线签名失败")
+        }
+        return (sign, string(obj["time"]) ?? "\(ts)")
+    }
+
+    private static func parseOfflineAdd(_ obj: [String: Any]) throws -> String {
+        if ok(obj) { return "已加入离线任务" }
+        let msg = string(obj["error_msg"]) ?? string(obj["error"]) ?? string(obj["msg"]) ?? ""
+        let code = Int(string(obj["errcode"] ?? obj["errno"]) ?? "0") ?? 0
+        if code == 10008 || msg.contains("已存在") || msg.contains("重复") {
+            return "任务已存在"
+        }
+        throw APIError.message(msg.isEmpty ? "添加离线任务失败" : msg)
+    }
+
+    struct RecycleItem: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let isDir: Bool
+        let size: Int64
+    }
+
+    static func recycleList() async throws -> [RecycleItem] {
+        let obj = try await json(URL(string: "https://webapi.115.com/rb?aid=1&cid=0&offset=0&limit=1150&format=json")!)
+        if let state = obj["state"] as? Bool, state == false {
+            throw APIError.message(string(obj["error"]) ?? "回收站失败")
+        }
+        let rows = extractRows(obj)
+        return rows.compactMap { item in
+            let id = string(item["id"] ?? item["rid"] ?? item["fid"]) ?? ""
+            guard !id.isEmpty else { return nil }
+            let fc = string(item["fc"] ?? item["file_category"] ?? item["type"]) ?? ""
+            let isDir = fc == "0" || string(item["is_dir"]) == "1"
+            return RecycleItem(
+                id: id,
+                name: string(item["n"] ?? item["file_name"] ?? item["name"]) ?? id,
+                isDir: isDir,
+                size: Int64(string(item["s"] ?? item["file_size"] ?? item["size"]) ?? "0") ?? 0
+            )
+        }
+    }
+
+    static func recycleRevert(ids: [String]) async throws {
+        var fields: [String: String] = [:]
+        for (i, id) in ids.enumerated() { fields["rid[\(i)]"] = id }
+        let obj = try await form(URL(string: "https://webapi.115.com/rb/revert")!, fields)
+        guard ok(obj) else {
+            throw APIError.message(string(obj["error"]) ?? "还原失败")
+        }
+    }
+
+    static func recycleClean() async throws {
+        let obj = try await form(URL(string: "https://webapi.115.com/rb/clean")!, ["password": ""])
+        guard ok(obj) else {
+            throw APIError.message(string(obj["error"]) ?? "清空回收站失败")
+        }
+    }
+
+    static func parseShare(_ raw: String) -> (code: String, receive: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var code = ""
+        var receive = ""
+        if let url = URL(string: text), let host = url.host?.lowercased(),
+           host.contains("115") || host.contains("anxia") {
+            let parts = url.path.split(separator: "/").map(String.init)
+            if let i = parts.firstIndex(of: "s"), i + 1 < parts.count {
+                code = parts[i + 1].filter { $0.isLetter || $0.isNumber }
+            }
+            if let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems {
+                receive = items.first(where: { ["password", "receive_code", "pwd"].contains($0.name) })?.value ?? ""
+            }
+        } else {
+            let token = text.split(whereSeparator: { $0.isWhitespace || $0 == "/" }).first.map(String.init) ?? ""
+            code = token.filter { $0.isLetter || $0.isNumber }
+        }
+        return (code, receive)
+    }
+
+    /// 对照 OpenList 115_share：GET share/snap
+    static func shareSnap(code: String, receive: String, cid: String = "0") async throws -> [Node] {
+        guard !code.isEmpty else { throw APIError.message("缺少分享码") }
+        var c = URLComponents(string: "https://webapi.115.com/share/snap")!
+        c.queryItems = [
+            URLQueryItem(name: "share_code", value: code),
+            URLQueryItem(name: "receive_code", value: receive),
+            URLQueryItem(name: "cid", value: cid),
+            URLQueryItem(name: "limit", value: "1150"),
+            URLQueryItem(name: "offset", value: "0"),
+            URLQueryItem(name: "asc", value: "0"),
+            URLQueryItem(name: "format", value: "json")
+        ]
+        var req = URLRequest(url: c.url!)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 30
+        headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        req.setValue("https://115cdn.com/s/\(code)?password=\(receive)&", forHTTPHeaderField: "Referer")
+        let obj = try await playJSON(req)
+        if let state = obj["state"] as? Bool, state == false {
+            let fallback = URL(string: "https://115cdn.com/webapi/share/snap?share_code=\(encode(code))&receive_code=\(encode(receive))&cid=\(encode(cid))&limit=1150&offset=0&format=json")!
+            var r2 = URLRequest(url: fallback)
+            r2.httpMethod = "GET"
+            headers().forEach { r2.setValue($1, forHTTPHeaderField: $0) }
+            let obj2 = try await playJSON(r2)
+            if let state2 = obj2["state"] as? Bool, state2 == false {
+                throw APIError.message(string(obj["error"]) ?? string(obj2["error"]) ?? "打开分享失败")
+            }
+            return extractRows(obj2["data"] as? [String: Any] ?? obj2).compactMap(parseNode)
+        }
+        let data = obj["data"] as? [String: Any] ?? obj
+        return extractRows(data).compactMap(parseNode)
+    }
+
+    /// 对照 115 网页：把分享文件转存到自己的目录
+    static func shareReceive(code: String, receive: String, fileIDs: [String], destCID: String) async throws {
+        var fields = [
+            "share_code": code,
+            "receive_code": receive,
+            "cid": destCID,
+            "user_id": cookieValue("UID")?.split(separator: "_").first.map(String.init) ?? ""
+        ]
+        let ids = fileIDs.filter { !$0.isEmpty }
+        if ids.isEmpty {
+            fields["file_id"] = "0"
+        } else {
+            for (i, id) in ids.enumerated() { fields["file_id[\(i)]"] = id }
+            fields["file_id"] = ids.joined(separator: ",")
+        }
+        let obj = try await form(URL(string: "https://webapi.115.com/share/receive")!, fields)
+        guard ok(obj) else {
+            throw APIError.message(string(obj["error"]) ?? string(obj["error_msg"]) ?? "转存失败")
+        }
+    }
+
+    private static func ok(_ obj: [String: Any]) -> Bool {
+        if let b = obj["state"] as? Bool { return b }
+        if let n = obj["state"] as? Int { return n == 1 }
+        if let s = obj["state"] as? String { return s == "1" || s.lowercased() == "true" }
+        return false
     }
 
     static func sha1Hex(_ data: Data) -> String {
