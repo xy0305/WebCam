@@ -272,6 +272,128 @@ enum Pan115API {
         )
     }
 
+    /// 必须与播放器 UA 一致，否则 115 按 UA 绑定的 m3u8 会 403。
+    static let playUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+
+    static func playHeaders() -> [String: String] {
+        var h = [
+            "User-Agent": playUA,
+            "Accept": "*/*",
+            "Origin": origin,
+            "Referer": "https://115.com/"
+        ]
+        if let cookie = Pan115Session.shared.cookieHeader {
+            h["Cookie"] = cookie
+        }
+        return h
+    }
+
+    /// AVDB 同款：优先 `115.com/api/video/m3u8/{pc}.m3u8` 最高码率，失败再 video 直链。
+    static func playURL(pickCode: String) async throws -> URL {
+        let pc = encode(pickCode)
+        guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
+        let m3u8URL = URL(string: "https://115.com/api/video/m3u8/\(pc).m3u8")!
+        var req = URLRequest(url: m3u8URL)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 25
+        playHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        if let (data, _) = try? await URLSession.shared.data(for: req),
+           let text = String(data: data, encoding: .utf8),
+           text.contains("#EXTM3U") {
+            if let best = parseMaster(text).first, let url = URL(string: best) {
+                return url
+            }
+            if !text.contains("#EXT-X-STREAM-INF") {
+                return m3u8URL
+            }
+        }
+        let candidates = [
+            "https://115vod.com/webapi/files/video?pickcode=\(pc)&local=1",
+            "https://webapi.115.com/files/video?pickcode=\(pc)&local=1"
+        ]
+        for raw in candidates {
+            guard let url = URL(string: raw) else { continue }
+            var r = URLRequest(url: url)
+            r.httpMethod = "GET"
+            r.timeoutInterval = 20
+            playHeaders().forEach { r.setValue($1, forHTTPHeaderField: $0) }
+            r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
+            r.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+            guard let obj = try? await playJSON(r) else { continue }
+            let data = obj["data"] as? [String: Any] ?? [:]
+            let direct = string(obj["download_url"] ?? obj["video_url"] ?? obj["url"]
+                ?? data["download_url"] ?? data["video_url"] ?? data["url"])
+            if let direct, direct.hasPrefix("http"), let u = URL(string: direct) {
+                return u
+            }
+        }
+        throw APIError.message("拿不到播放地址")
+    }
+
+    static func isPlayable(_ name: String) -> Bool {
+        let n = name.lowercased()
+        let ext = (n as NSString).pathExtension
+        return ["mp4", "m4v", "mov", "mkv", "avi", "wmv", "flv", "webm", "ts", "m2ts", "m3u8"].contains(ext)
+    }
+
+    private static func parseMaster(_ text: String) -> [String] {
+        let lines = text.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }
+        var scored: [(Int, String)] = []
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            if line.contains("#EXT-X-STREAM-INF"), i + 1 < lines.count {
+                var u = lines[i + 1]
+                if u.hasPrefix("https: //") { u = u.replacingOccurrences(of: "https: //", with: "https://") }
+                if !u.hasPrefix("http"), let abs = URL(string: u, relativeTo: URL(string: "https://115.com/")) {
+                    u = abs.absoluteString
+                }
+                if u.hasPrefix("http") {
+                    let name = capture(line, #"NAME="([^"]+)""#) ?? ""
+                    let height = Int(capture(line, #"RESOLUTION=\d+x(\d+)"#) ?? "") ?? 0
+                    scored.append((qualityScore(name: name, height: height), u))
+                }
+            }
+            i += 1
+        }
+        return scored.sorted { $0.0 > $1.0 }.map(\.1)
+    }
+
+    private static func qualityScore(name: String, height: Int) -> Int {
+        switch name.uppercased() {
+        case "BD": return 4
+        case "UD": return 3
+        case "HD": return 2
+        case "SD": return 1
+        case "LD": return 0
+        default: break
+        }
+        if height >= 2160 { return 4 }
+        if height >= 1080 { return 3 }
+        if height >= 720 { return 2 }
+        if height >= 480 { return 1 }
+        return 0
+    }
+
+    private static func capture(_ line: String, _ pattern: String) -> String? {
+        guard let r = try? NSRegularExpression(pattern: pattern),
+              let m = r.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              m.numberOfRanges > 1,
+              let range = Range(m.range(at: 1), in: line) else { return nil }
+        return String(line[range])
+    }
+
+    private static func playJSON(_ req: URLRequest) async throws -> [String: Any] {
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIError.badResponse
+        }
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.badResponse
+        }
+        return obj
+    }
+
     static func json(_ url: URL, method: String = "GET", body: Data? = nil) async throws -> [String: Any] {
         var req = URLRequest(url: url)
         req.httpMethod = method

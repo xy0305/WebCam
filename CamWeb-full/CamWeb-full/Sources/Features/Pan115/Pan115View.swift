@@ -22,6 +22,7 @@ struct Pan115View: View {
     @State private var showBackupEditor = false
     @State private var editingBackup: Pan115BackupTask?
     @State private var showUploadFolder = false
+    @State private var playBusy = false
 
     private enum Pane: String, CaseIterable {
         case upload = "上传"
@@ -264,14 +265,19 @@ struct Pan115View: View {
                         }
                     }
                     ForEach(files) { node in
-                        Label {
-                            VStack(alignment: .leading) {
-                                Text(node.name).lineLimit(1)
-                                Text(byteText(node.size)).font(.caption).foregroundStyle(.secondary)
+                        Button {
+                            playFile(node)
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading) {
+                                    Text(node.name).lineLimit(1)
+                                    Text(playHint(node)).font(.caption).foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: Pan115API.isPlayable(node.name) ? "play.circle.fill" : "doc.fill")
                             }
-                        } icon: {
-                            Image(systemName: "doc.fill")
                         }
+                        .disabled(playBusy)
                     }
                 }
             }
@@ -464,9 +470,41 @@ struct Pan115View: View {
     private func openSearchHit(_ node: Pan115API.Node) {
         searchText = ""
         searchHits = []
-        path = [("0", "根目录"), (node.id, node.name)]
-        tab = .files
-        Task { await reload() }
+        if node.isDir {
+            path = [("0", "根目录"), (node.id, node.name)]
+            tab = .files
+            Task { await reload() }
+        } else {
+            playFile(node)
+        }
+    }
+
+    private func playHint(_ node: Pan115API.Node) -> String {
+        if Pan115API.isPlayable(node.name) {
+            return "点按播放 · \(byteText(node.size))"
+        }
+        return byteText(node.size)
+    }
+
+    private func playFile(_ node: Pan115API.Node) {
+        guard Pan115API.isPlayable(node.name) else {
+            pickNotice = "这个文件不能直接播放"
+            return
+        }
+        guard !node.pickCode.isEmpty else {
+            pickNotice = "缺少 pickcode，无法拿直链"
+            return
+        }
+        playBusy = true
+        Task {
+            defer { playBusy = false }
+            do {
+                let url = try await Pan115API.playURL(pickCode: node.pickCode)
+                AppState.shared.open115(url: url, title: node.name)
+            } catch {
+                pickNotice = error.localizedDescription
+            }
+        }
     }
 
     private func enqueuePhotos(_ items: [PhotosPickerItem]) async {

@@ -125,6 +125,8 @@ final class AppState: ObservableObject {
     @Published var playingUsername: String?
     @Published var playingRoom: Room?
     @Published var playingRecordingURL: URL?
+    @Published var playing115URL: URL?
+    @Published var playing115Title: String = ""
 
     private init() {
         acceptedAge = UserDefaults.standard.bool(forKey: "camweb.age")
@@ -143,6 +145,8 @@ final class AppState: ObservableObject {
     func openPlayer(username: String, room: Room? = nil) {
         stopMini()
         playingRecordingURL = nil
+        playing115URL = nil
+        playing115Title = ""
         playingUsername = username
         if let room {
             playingRoom = room
@@ -158,13 +162,25 @@ final class AppState: ObservableObject {
         stopMini()
         playingUsername = nil
         playingRoom = nil
+        playing115URL = nil
         playingRecordingURL = url
+    }
+
+    func open115(url: URL, title: String) {
+        stopMini()
+        playingUsername = nil
+        playingRoom = nil
+        playingRecordingURL = nil
+        playing115Title = title
+        playing115URL = url
     }
 
     func closePlayer() {
         playingUsername = nil
         playingRoom = nil
         playingRecordingURL = nil
+        playing115URL = nil
+        playing115Title = ""
     }
 
     func openTag(_ tag: String) {
