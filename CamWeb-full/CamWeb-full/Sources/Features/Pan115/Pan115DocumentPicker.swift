@@ -5,9 +5,18 @@ import UIKit
 /// 直接 present 系统文件选择器。包进 SwiftUI sheet 时点「打开」经常没回调。
 enum Pan115FilePicker {
     static func present(onPicked: @escaping ([URL]) -> Void) {
-        let types: [UTType] = [.item, .content, .data, .folder, .directory, .movie, .video, .image, .audio]
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
-        picker.allowsMultipleSelection = true
+        present(types: [.item, .content, .data, .folder, .directory, .movie, .video, .image, .audio], asCopy: true, multiple: true) { onPicked($0) }
+    }
+
+    static func presentFolder(onPicked: @escaping (URL) -> Void) {
+        present(types: [.folder, .directory], asCopy: false, multiple: false) { urls in
+            if let url = urls.first { onPicked(url) }
+        }
+    }
+
+    private static func present(types: [UTType], asCopy: Bool, multiple: Bool, onPicked: @escaping ([URL]) -> Void) {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: asCopy)
+        picker.allowsMultipleSelection = multiple
         picker.shouldShowFileExtensions = true
         let holder = Holder(onPicked: onPicked)
         picker.delegate = holder

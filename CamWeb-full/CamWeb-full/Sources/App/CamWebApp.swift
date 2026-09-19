@@ -90,6 +90,7 @@ struct RootFlow: View {
             await auth.restore()
             AutoRecordMonitor.shared.startMonitoring()
             RecordingManager.shared.recoverOrphans()
+            _ = Pan115BackupStore.shared
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -99,6 +100,7 @@ struct RootFlow: View {
                 RecordingManager.shared.keepBackgroundAlive()
                 RecordingManager.shared.recoverOrphans()
                 Pan115Uploader.shared.keepAlive()
+                Pan115BackupStore.shared.keepAlive()
             default:
                 break
             }

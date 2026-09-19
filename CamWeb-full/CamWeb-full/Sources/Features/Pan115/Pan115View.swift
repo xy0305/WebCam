@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct Pan115View: View {
     @ObservedObject private var session = Pan115Session.shared
     @ObservedObject private var uploader = Pan115Uploader.shared
+    @ObservedObject private var backups = Pan115BackupStore.shared
     @State private var nodes: [Pan115API.Node] = []
     @State private var path: [(id: String, name: String)] = [("0", "根目录")]
     @State private var loading = false
@@ -18,10 +19,13 @@ struct Pan115View: View {
     @State private var searchHits: [Pan115API.Node] = []
     @State private var searching = false
     @State private var pickNotice: String?
+    @State private var showBackupEditor = false
+    @State private var editingBackup: Pan115BackupTask?
 
     private enum Pane: String, CaseIterable {
         case upload = "上传"
         case files = "网盘"
+        case backup = "备份"
     }
 
     private var cid: String { path.last?.id ?? "0" }
@@ -51,8 +55,10 @@ struct Pan115View: View {
 
                         if tab == .upload {
                             uploadPane
-                        } else {
+                        } else if tab == .files {
                             drivePane
+                        } else {
+                            backupPane
                         }
                     }
                 }
@@ -75,6 +81,17 @@ struct Pan115View: View {
             .alert("提示", isPresented: Binding(get: { pickNotice != nil }, set: { if !$0 { pickNotice = nil } })) {
                 Button("好", role: .cancel) { pickNotice = nil }
             } message: { Text(pickNotice ?? "") }
+            .sheet(isPresented: $showBackupEditor) {
+                Pan115BackupEditor(
+                    existing: editingBackup,
+                    onSave: { task in
+                        backups.save(task, isNew: editingBackup == nil)
+                        showBackupEditor = false
+                        tab = .backup
+                    },
+                    onCancel: { showBackupEditor = false }
+                )
+            }
             .task { if session.hasCookie { await reload() } }
             .onChange(of: session.hasCookie) { _, ok in
                 if ok { Task { await reload() } } else { nodes = []; searchHits = [] }
@@ -97,7 +114,15 @@ struct Pan115View: View {
                         enqueueFiles(urls)
                     }
                 } label: { Image(systemName: "folder.badge.plus") }
+                Button {
+                    editingBackup = nil
+                    showBackupEditor = true
+                } label: { Image(systemName: "plus.rectangle.on.folder") }
                 Menu {
+                    Button("新建备份") {
+                        editingBackup = nil
+                        showBackupEditor = true
+                    }
                     Button("新建文件夹") { showFolder = true }
                     Button("暂停全部") { uploader.pauseAll() }
                     Button("继续全部") { uploader.resumeAll() }
@@ -234,6 +259,72 @@ struct Pan115View: View {
             }
         }
         .refreshable { await reload() }
+    }
+
+    private var backupPane: some View {
+        List {
+            Section {
+                Button {
+                    editingBackup = nil
+                    showBackupEditor = true
+                } label: {
+                    Label("新建备份", systemImage: "plus.circle.fill")
+                }
+            }
+            if backups.tasks.isEmpty {
+                Section {
+                    Text("选择本地文件夹，备份到 115 指定目录。可监控更改、定时扫描、筛选文件。")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Section("任务 (\(backups.tasks.count))") {
+                    ForEach(backups.tasks) { task in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(task.name).font(.headline)
+                                    Text(task.sourceName.isEmpty ? "未选择源文件夹" : task.sourceName)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(destSummary(task))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                Toggle("", isOn: Binding(
+                                    get: { task.enabled },
+                                    set: { backups.setEnabled(task.id, $0) }
+                                ))
+                                .labelsHidden()
+                            }
+                            if backups.scanningIDs.contains(task.id) {
+                                ProgressView("正在扫描…")
+                            } else if let msg = task.lastMessage {
+                                Text(msg).font(.caption).foregroundStyle(task.lastError == nil ? .secondary : .red)
+                            }
+                            HStack {
+                                Button("立即扫描") { backups.scanNow(task.id) }
+                                Button("编辑") {
+                                    editingBackup = task
+                                    showBackupEditor = true
+                                }
+                                Spacer()
+                                Button("删除", role: .destructive) { backups.delete(task.id) }
+                            }
+                            .font(.caption)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private func destSummary(_ task: Pan115BackupTask) -> String {
+        let names = task.destinations.filter(\.enabled).map(\.name).joined(separator: "、")
+        return names.isEmpty ? "未配置目标" : names
     }
 
     @ViewBuilder

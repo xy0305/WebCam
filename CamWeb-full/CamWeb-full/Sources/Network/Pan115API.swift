@@ -122,6 +122,43 @@ enum Pan115API {
         return rows.compactMap { parseNode($0) }
     }
 
+    static func listAll(cid: String) async throws -> [Node] {
+        var offset = 0
+        var all: [Node] = []
+        for _ in 0..<40 {
+            let page = try await list(cid: cid, offset: offset)
+            all.append(contentsOf: page)
+            if page.count < 115 { break }
+            offset += page.count
+        }
+        return all
+    }
+
+    static func ensureFolder(parent: String, parts: [String]) async throws -> String {
+        var cid = parent
+        for raw in parts {
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != "." else { continue }
+            let kids = try await listAll(cid: cid)
+            if let hit = kids.first(where: { $0.isDir && $0.name == name }) {
+                cid = hit.id
+                continue
+            }
+            cid = try await mkdir(parent: cid, name: name)
+        }
+        return cid
+    }
+
+    static func delete(id: String) async throws {
+        let obj = try await form(URL(string: "https://webapi.115.com/rb/delete")!, [
+            "fid[0]": id,
+            "ignore_warn": "1"
+        ])
+        if let state = obj["state"] as? Bool, state == false {
+            throw APIError.message(string(obj["error"]) ?? "删除失败")
+        }
+    }
+
     static func mkdir(parent: String, name: String) async throws -> String {
         let url = URL(string: "https://webapi.115.com/files/add")!
         let obj = try await form(url, [
