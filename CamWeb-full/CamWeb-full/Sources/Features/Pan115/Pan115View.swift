@@ -278,53 +278,23 @@ struct Pan115View: View {
                 }
             } else {
                 Section {
-                    ForEach(Array(backups.tasks), id: \.id) { task in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(task.name).font(.headline)
-                                    Text(task.sourceName.isEmpty ? "未选择源文件夹" : task.sourceName)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Text(destSummary(task))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                }
-                                Spacer()
-                                Toggle("", isOn: Binding(
-                                    get: { task.enabled },
-                                    set: { backups.setEnabled(task.id, $0) }
-                                ))
-                                .labelsHidden()
-                            }
-                            if backups.scanningIDs.contains(task.id) {
-                                ProgressView("正在扫描…")
-                            } else if let msg = task.lastMessage {
-                                Text(msg).font(.caption).foregroundStyle(task.lastError == nil ? .secondary : .red)
-                            }
-                            HStack {
-                                Button("立即扫描") { backups.scanNow(task.id) }
-                                Button("编辑") {
-                                    editingBackup = task
-                                    showBackupEditor = true
-                                }
-                                Spacer()
-                                Button("删除", role: .destructive) { backups.delete(task.id) }
-                            }
-                            .font(.caption)
-                        }
-                        .padding(.vertical, 4)
+                    ForEach(0..<backups.tasks.count, id: \.self) { index in
+                        Pan115BackupTaskRow(
+                            task: backups.tasks[index],
+                            scanning: backups.scanningIDs.contains(backups.tasks[index].id),
+                            onToggle: { backups.setEnabled(backups.tasks[index].id, $0) },
+                            onScan: { backups.scanNow(backups.tasks[index].id) },
+                            onEdit: {
+                                editingBackup = backups.tasks[index]
+                                showBackupEditor = true
+                            },
+                            onDelete: { backups.delete(backups.tasks[index].id) }
+                        )
                     }
                 }
             }
         }
         .listStyle(.insetGrouped)
-    }
-
-    private func destSummary(_ task: Pan115BackupTask) -> String {
-        let names = task.destinations.filter(\.enabled).map(\.name).joined(separator: "、")
-        return names.isEmpty ? "未配置目标" : names
     }
 
     @ViewBuilder
@@ -507,5 +477,52 @@ struct Pan115View: View {
         if n >= 1_048_576 { return String(format: "%.1f MB", Double(n) / 1_048_576) }
         if n >= 1024 { return String(format: "%.0f KB", Double(n) / 1024) }
         return "\(n) B"
+    }
+}
+
+private struct Pan115BackupTaskRow: View {
+    let task: Pan115BackupTask
+    let scanning: Bool
+    let onToggle: (Bool) -> Void
+    let onScan: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(task.name).font(.headline)
+                    Text(task.sourceName.isEmpty ? "未选择源文件夹" : task.sourceName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(destText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(get: { task.enabled }, set: onToggle))
+                    .labelsHidden()
+            }
+            if scanning {
+                ProgressView("正在扫描…")
+            } else if let msg = task.lastMessage {
+                Text(msg).font(.caption).foregroundStyle(task.lastError == nil ? .secondary : .red)
+            }
+            HStack {
+                Button("立即扫描", action: onScan)
+                Button("编辑", action: onEdit)
+                Spacer()
+                Button("删除", role: .destructive, action: onDelete)
+            }
+            .font(.caption)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var destText: String {
+        let names = task.destinations.filter { $0.enabled }.map(\.name).joined(separator: "、")
+        return names.isEmpty ? "未配置目标" : names
     }
 }
