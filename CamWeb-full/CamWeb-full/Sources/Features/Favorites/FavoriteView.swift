@@ -15,13 +15,19 @@ struct FavoriteView: View {
     @ObservedObject private var history = WatchHistoryStore.shared
     @State private var remote: [Room] = []
     @State private var selected: Section = .recent
+    @State private var heat: [String: Room] = [:]
 
     private var columns: [GridItem] { [GridItem(.adaptive(minimum: 160), spacing: 14)] }
     private var rooms: [Room] {
+        let base: [Room]
         switch selected {
-        case .recent: return history.items.map(\.room)
-        case .favorites: return special.items.map(\.room)
-        case .following: return mergedFollows
+        case .recent: base = history.items.map(\.room)
+        case .favorites: base = special.items.map(\.room)
+        case .following: base = mergedFollows
+        }
+        return base.map { room in
+            if let live = heat[room.id] { return room.withHeat(live) }
+            return room
         }
     }
     private var emptyText: String {
@@ -82,8 +88,14 @@ struct FavoriteView: View {
                     ToolbarItem(placement: .topBarTrailing) { Button("清空最近") { history.clear() } }
                 }
             }
-            .refreshable { await loadRemote() }
-            .task { await loadRemote() }
+            .refreshable { await loadRemote(); await loadHeat() }
+            .task { await loadRemote(); await loadHeat() }
+            .onChange(of: selected) { _, _ in
+                Task { await loadHeat() }
+            }
+            .onChange(of: history.items) { _, _ in
+                if selected == .recent { Task { await loadHeat() } }
+            }
         }
     }
 
@@ -119,5 +131,19 @@ struct FavoriteView: View {
         let rooms = (try? await RoomAPI.fetchFollowed()) ?? []
         remote = rooms
         if !rooms.isEmpty { local.mergeRemote(rooms) }
+    }
+
+    private func loadHeat() async {
+        let base: [Room]
+        switch selected {
+        case .recent: base = history.items.map(\.room)
+        case .favorites: base = special.items.map(\.room)
+        case .following: base = mergedFollows
+        }
+        guard !base.isEmpty else { return }
+        let live = await RoomAPI.refreshHeat(base)
+        var next = heat
+        for (key, room) in live { next[key] = room }
+        heat = next
     }
 }

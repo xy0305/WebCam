@@ -134,6 +134,46 @@ enum RoomAPI {
         return []
     }
 
+    /// 收藏/最近播放：按用户名拉当前热度。一次最多 12 个。
+    static func refreshHeat(_ rooms: [Room]) async -> [String: Room] {
+        var out: [String: Room] = [:]
+        let unique = rooms.reduce(into: [Room]()) { acc, room in
+            if !acc.contains(where: { $0.username == room.username && $0.platform == room.platform }) {
+                acc.append(room)
+            }
+        }
+        await withTaskGroup(of: (String, Room?).self) { group in
+            var inflight = 0
+            for room in unique.prefix(80) {
+                if inflight >= 8 {
+                    if let (key, live) = await group.next(), let live {
+                        out[key] = live
+                    }
+                    inflight -= 1
+                }
+                let key = room.id
+                group.addTask {
+                    switch room.platform {
+                    case .chaturbate:
+                        return (key, await lookupUsername(room.username))
+                    case .stripchat:
+                        return (key, try? await StripchatAPI.lookupUsername(room.username))
+                    case .panda:
+                        let hits = (try? await PandaAPI.search(room.username)) ?? []
+                        let live = hits.first { $0.username.caseInsensitiveCompare(room.username) == .orderedSame }
+                            ?? hits.first
+                        return (key, live)
+                    }
+                }
+                inflight += 1
+            }
+            for await (key, live) in group {
+                if let live { out[key] = live }
+            }
+        }
+        return out
+    }
+
     private static func parseLooseRooms(_ obj: Any) -> [Room] {
         var raw: [[String: Any]] = []
         if let arr = obj as? [[String: Any]] {

@@ -156,6 +156,21 @@ struct Room: Decodable, Identifiable, Hashable {
         self.tags = tags
         self.loadState = loadState
     }
+
+    func withHeat(_ live: Room) -> Room {
+        Room(
+            platform: platform,
+            platformRoomID: live.platformRoomID ?? platformRoomID,
+            username: username,
+            displayName: live.displayName ?? displayName,
+            roomSubject: live.roomSubject ?? roomSubject,
+            numUsers: live.numUsers ?? numUsers,
+            imageURL: live.imageURL ?? imageURL,
+            tags: live.tags ?? tags,
+            presets: live.presets ?? presets,
+            loadState: live.loadState
+        )
+    }
 }
 
 enum CardLoadState: String, Hashable {
