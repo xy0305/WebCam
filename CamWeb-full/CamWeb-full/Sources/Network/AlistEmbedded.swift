@@ -6,6 +6,8 @@ import Alistlib
 final class AlistEmbedded: ObservableObject {
     static let shared = AlistEmbedded()
     static let baseURL = "http://127.0.0.1:5244"
+    static let clientID = "camweb-ios"
+    static let adminPassword = "admin"
 
     @Published private(set) var running = false
     @Published var lastError: String?
@@ -19,7 +21,9 @@ final class AlistEmbedded: ObservableObject {
 
     func prepare() async {
         if running {
-            await applyToken()
+            if Pan115Session.shared.token == nil {
+                await loginAdmin()
+            }
             return
         }
         lastError = nil
@@ -34,7 +38,7 @@ final class AlistEmbedded: ObservableObject {
         do {
             try await bootTask?.value
             running = true
-            await applyToken()
+            await loginAdmin()
         } catch {
             bootTask = nil
             running = false
@@ -42,24 +46,18 @@ final class AlistEmbedded: ObservableObject {
         }
     }
 
-    private func applyToken() async {
+    func loginAdmin() async {
         Pan115Session.shared.setBaseURL(Self.baseURL)
         let userRaw = AlistlibGetAdminUsername()
         let user = userRaw.isEmpty ? "admin" : userRaw
-        var token = AlistlibGetAdminToken()
-        if token.isEmpty {
-            let pwd = AlistlibGetAdminPassword()
-            guard !pwd.isEmpty else { return }
-            do {
-                token = try await Pan115API.login(username: user, password: pwd)
-            } catch {
-                lastError = error.localizedDescription
-                return
-            }
+        AlistlibSetAdminPassword(Self.adminPassword)
+        do {
+            let token = try await Pan115API.login(username: user, password: Self.adminPassword)
+            Pan115Session.shared.setToken(token, user: user)
+        } catch {
+            lastError = error.localizedDescription
         }
-        Pan115Session.shared.setToken(token, user: user)
     }
-
 }
 
 enum AlistBoot {

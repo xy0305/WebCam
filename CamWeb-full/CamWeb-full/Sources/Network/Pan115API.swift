@@ -60,6 +60,8 @@ enum Pan115API {
         }
     }
 
+    static let clientID = AlistEmbedded.clientID
+
     static func login(username: String, password: String) async throws -> String {
         let obj = try await post("/api/auth/login", body: [
             "username": username,
@@ -423,6 +425,8 @@ enum Pan115API {
         req.httpMethod = "POST"
         req.timeoutInterval = 40
         req.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        req.setValue(clientID, forHTTPHeaderField: "Client-Id")
+        req.setValue(playUA, forHTTPHeaderField: "User-Agent")
         if auth { applyAuth(&req) }
         extraHeaders.forEach { req.setValue($1, forHTTPHeaderField: $0) }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -434,13 +438,26 @@ enum Pan115API {
             req.setValue(token, forHTTPHeaderField: "Authorization")
         }
         req.setValue(playUA, forHTTPHeaderField: "User-Agent")
+        req.setValue(clientID, forHTTPHeaderField: "Client-Id")
     }
 
     private static func send(_ req: URLRequest) async throws -> [String: Any] {
         if Pan115Session.shared.baseURL.isEmpty { throw APIError.needLogin }
+        return try await sendOnce(req, retried: false)
+    }
+
+    private static func sendOnce(_ req: URLRequest, retried: Bool) async throws -> [String: Any] {
         let (data, response) = try await http.data(for: req)
         if let http = response as? HTTPURLResponse {
-            if http.statusCode == 401 { throw APIError.needLogin }
+            if http.statusCode == 401 || isInvalidToken(data) {
+                if !retried, canRelogin(req) {
+                    await AlistEmbedded.shared.loginAdmin()
+                    var again = req
+                    applyAuth(&again)
+                    return try await sendOnce(again, retried: true)
+                }
+                throw APIError.needLogin
+            }
             if !(200..<300).contains(http.statusCode) {
                 if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let msg = string(obj["message"]) {
@@ -453,9 +470,30 @@ enum Pan115API {
             throw APIError.badResponse
         }
         if let code = obj["code"] as? Int, code != 200 {
-            throw APIError.message(string(obj["message"]) ?? "OpenList 错误 \(code)")
+            let msg = string(obj["message"]) ?? "OpenList 错误 \(code)"
+            if !retried, canRelogin(req), isInvalidTokenMessage(msg) {
+                await AlistEmbedded.shared.loginAdmin()
+                var again = req
+                applyAuth(&again)
+                return try await sendOnce(again, retried: true)
+            }
+            throw APIError.message(msg)
         }
         return obj
+    }
+
+    private static func isInvalidToken(_ data: Data) -> Bool {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return isInvalidTokenMessage(string(obj["message"]) ?? "")
+    }
+
+    private static func canRelogin(_ req: URLRequest) -> Bool {
+        !(req.url?.path.contains("/api/auth/login") ?? false)
+    }
+
+    private static func isInvalidTokenMessage(_ msg: String) -> Bool {
+        let m = msg.lowercased()
+        return m.contains("token is invalidated") || m.contains("token is expired") || m.contains("session inactive")
     }
 
     private static func string(_ any: Any?) -> String? {
