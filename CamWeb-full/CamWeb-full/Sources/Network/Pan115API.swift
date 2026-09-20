@@ -198,12 +198,12 @@ enum Pan115API {
     static func spaceInfo() async throws -> SpaceInfo { SpaceInfo() }
 
     struct OfflineTask: Identifiable, Hashable {
-        let id: String
-        let name: String
+        var id: String { infoHash.isEmpty ? "\(name)-\(url)" : infoHash }
         let infoHash: String
+        let name: String
+        let size: Int64
         let url: String
         let status: Int
-        let size: Int64
         let percent: Double
         var statusText: String {
             switch status {
@@ -216,22 +216,127 @@ enum Pan115API {
         }
     }
 
+    /// 对照 AVDB：内嵌 Alist 没有 tool 115，离线走 115 网页 lixian。
     static func addOffline(urls: [String], dirID: String) async throws -> String {
-        _ = try await post("/api/fs/add_offline_download", body: [
-            "urls": urls,
-            "path": normalize(dirID),
-            "tool": "115",
-            "delete_policy": "delete_on_upload_succeed"
-        ])
-        return "已提交到 OpenList"
+        let links = urls.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !links.isEmpty else { throw APIError.message("链接为空") }
+        guard cookieHeader != nil else { throw APIError.needLogin }
+        let cid = offlineCID(dirID)
+        let uid = cookieValue("UID")?.split(separator: "_").first.map(String.init) ?? ""
+        var sign = ""
+        var time = "\(Int(Date().timeIntervalSince1970 * 1000))"
+        if let s = try? await offlineSign() {
+            sign = s.sign
+            time = s.time
+        }
+        if links.count == 1 {
+            var fields = ["url": links[0], "wp_path_id": cid]
+            if !uid.isEmpty { fields["uid"] = uid }
+            if !sign.isEmpty { fields["sign"] = sign; fields["time"] = time }
+            return try parseOfflineAdd(try await pan115Form(URL(string: "https://115.com/web/lixian/?ct=lixian&ac=add_task_url")!, fields))
+        }
+        var fields = ["wp_path_id": cid]
+        if !uid.isEmpty { fields["uid"] = uid }
+        if !sign.isEmpty { fields["sign"] = sign; fields["time"] = time }
+        for (i, link) in links.enumerated() { fields["url[\(i)]"] = link }
+        return try parseOfflineAdd(try await pan115Form(URL(string: "https://115.com/web/lixian/?ct=lixian&ac=add_task_urls")!, fields))
     }
 
     static func listOffline(page: Int = 1) async throws -> (tasks: [OfflineTask], quota: Int64, pageCount: Int) {
-        ([], 0, 1)
+        guard cookieHeader != nil else { throw APIError.needLogin }
+        let urls = [
+            "https://115.com/web/lixian/?ct=lixian&ac=task_lists&page=\(page)",
+            "https://lixian.115.com/lixian/?ct=lixian&ac=task_lists&page=\(page)"
+        ]
+        var last: Error = APIError.badResponse
+        for raw in urls {
+            guard let url = URL(string: raw) else { continue }
+            do {
+                let obj = try await pan115Form(url, ["page": "\(page)"])
+                if let state = obj["state"] as? Bool, state == false {
+                    last = APIError.message(string(obj["error"]) ?? string(obj["error_msg"]) ?? "离线列表失败")
+                    continue
+                }
+                let rawTasks = (obj["tasks"] as? [[String: Any]])
+                    ?? ((obj["data"] as? [String: Any])?["tasks"] as? [[String: Any]])
+                    ?? []
+                let tasks = rawTasks.map { item in
+                    OfflineTask(
+                        infoHash: string(item["info_hash"] ?? item["hash"]) ?? "",
+                        name: string(item["name"]) ?? "",
+                        size: int64(item["size"]),
+                        url: string(item["url"]) ?? "",
+                        status: Int(string(item["status"]) ?? "0") ?? 0,
+                        percent: Double(string(item["percentDone"] ?? item["percent"]) ?? "0") ?? 0
+                    )
+                }
+                let quota = int64(obj["quota"])
+                let pages = Int(string(obj["page_count"]) ?? "1") ?? 1
+                return (tasks, quota, pages)
+            } catch {
+                last = error
+            }
+        }
+        throw last
     }
 
-    static func deleteOffline(hashes: [String], deleteFiles: Bool) async throws {}
-    static func clearOffline(flag: Int) async throws {}
+    static func deleteOffline(hashes: [String], deleteFiles: Bool) async throws {
+        let hs = hashes.filter { !$0.isEmpty }
+        guard !hs.isEmpty else { return }
+        var fields = ["flag": deleteFiles ? "1" : "0"]
+        for (i, h) in hs.enumerated() { fields["hash[\(i)]"] = h }
+        fields["hash"] = hs[0]
+        let urls = [
+            "https://115.com/web/lixian/?ct=lixian&ac=task_del",
+            "https://lixian.115.com/lixian/?ct=lixian&ac=task_del"
+        ]
+        var last: Error = APIError.badResponse
+        for raw in urls {
+            guard let url = URL(string: raw) else { continue }
+            do {
+                let obj = try await pan115Form(url, fields)
+                if pan115OK(obj) { return }
+                last = APIError.message(string(obj["error"]) ?? string(obj["error_msg"]) ?? "删除离线任务失败")
+            } catch {
+                last = error
+            }
+        }
+        throw last
+    }
+
+    static func clearOffline(flag: Int) async throws {
+        let obj = try await pan115Form(URL(string: "https://115.com/web/lixian/?ct=lixian&ac=task_clear")!, [
+            "flag": "\(flag)"
+        ])
+        guard pan115OK(obj) else {
+            throw APIError.message(string(obj["error"]) ?? "清空失败")
+        }
+    }
+
+    private static func offlineSign() async throws -> (sign: String, time: String) {
+        let ts = Int(Date().timeIntervalSince1970 * 1000)
+        let obj = try await pan115JSON(URL(string: "https://115.com/?ct=offline&ac=space&_=\(ts)")!)
+        guard let sign = string(obj["sign"]), !sign.isEmpty else {
+            throw APIError.message("获取离线签名失败")
+        }
+        return (sign, string(obj["time"]) ?? "\(ts)")
+    }
+
+    private static func parseOfflineAdd(_ obj: [String: Any]) throws -> String {
+        if pan115OK(obj) { return "已加入离线任务" }
+        let msg = string(obj["error_msg"]) ?? string(obj["error"]) ?? string(obj["msg"]) ?? ""
+        let code = Int(string(obj["errcode"] ?? obj["errno"]) ?? "0") ?? 0
+        if code == 10008 || msg.contains("已存在") || msg.contains("重复") {
+            return "任务已存在"
+        }
+        throw APIError.message(msg.isEmpty ? "添加离线任务失败" : msg)
+    }
+
+    private static func offlineCID(_ dirID: String) -> String {
+        let p = dirID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty || p.hasPrefix("/") { return cookieValue("CID") ?? "0" }
+        return p
+    }
 
     struct RecycleItem: Identifiable, Hashable {
         let id: String
@@ -536,5 +641,68 @@ enum Pan115API {
         if let n = any as? NSNumber { return n.int64Value }
         if let s = any as? String, let n = Int64(s) { return n }
         return 0
+    }
+
+    private static var cookieHeader: String? { Pan115Session.shared.cookieHeader }
+
+    static func cookieValue(_ name: String) -> String? {
+        guard let header = cookieHeader else { return nil }
+        for part in header.split(separator: ";") {
+            let bits = part.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            if bits.count == 2, bits[0].caseInsensitiveCompare(name) == .orderedSame { return bits[1] }
+        }
+        return nil
+    }
+
+    private static func pan115Headers() -> [String: String] {
+        var h = [
+            "User-Agent": playUA,
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://115.com/",
+            "Origin": origin
+        ]
+        if let cookie = cookieHeader { h["Cookie"] = cookie }
+        return h
+    }
+
+    private static func pan115JSON(_ url: URL) async throws -> [String: Any] {
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 30
+        pan115Headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw APIError.badResponse }
+        if http.statusCode == 401 || http.statusCode == 403 { throw APIError.needLogin }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.httpStatus(http.statusCode) }
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw APIError.badResponse }
+        return obj
+    }
+
+    private static func pan115Form(_ url: URL, _ fields: [String: String]) async throws -> [String: Any] {
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        pan115Headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        req.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        req.httpBody = fields.map {
+            "\(encodeForm($0.key))=\(encodeForm($0.value))"
+        }.joined(separator: "&").data(using: .utf8)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw APIError.badResponse }
+        if http.statusCode == 401 || http.statusCode == 403 { throw APIError.needLogin }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.httpStatus(http.statusCode) }
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw APIError.badResponse }
+        return obj
+    }
+
+    private static func encodeForm(_ s: String) -> String {
+        s.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")) ?? s
+    }
+
+    private static func pan115OK(_ obj: [String: Any]) -> Bool {
+        if let b = obj["state"] as? Bool { return b }
+        if let n = obj["state"] as? Int { return n == 1 }
+        if let s = obj["state"] as? String { return s == "1" || s.lowercased() == "true" }
+        return false
     }
 }

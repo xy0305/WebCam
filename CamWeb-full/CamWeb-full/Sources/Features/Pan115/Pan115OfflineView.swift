@@ -44,7 +44,7 @@ struct Pan115OfflineView: View {
                 }
                 .disabled(adding || links.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } footer: {
-                Text("离线任务提交到 OpenList（工具 115）。目标：\(destName)")
+                Text("离线走 115 网页接口。目标文件夹请选网盘里的目录；未选则下到根目录。")
             }
 
             Section {
