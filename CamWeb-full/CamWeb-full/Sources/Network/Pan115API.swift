@@ -2,8 +2,9 @@ import Foundation
 
 /// 网盘走 OpenList：列表 `/api/fs/list`，播放 `/api/fs/get` 的 raw_url（115 由 OpenList 302）。
 enum Pan115API {
-    static let userAgent = "Mozilla/5.0 115disk/30.1.0"
-    static let playUA = userAgent
+    /// OpenList `DownloadWithUA`：换链和播放必须同一 UA。Safari 换的 CDN 能 200；115disk 会 403。
+    static let playUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    static let userAgent = playUA
     static let origin = "https://115.com"
 
     private static let http: URLSession = {
@@ -322,10 +323,36 @@ enum Pan115API {
             "password": ""
         ], extraHeaders: ["User-Agent": playUA])
         let data = obj["data"] as? [String: Any] ?? [:]
-        guard let raw = string(data["raw_url"]), let url = URL(string: raw) else {
-            throw APIError.message("OpenList 没有返回播放地址")
+        // 对照 OpenList 网页：播 /d/path，由 Alist 用播放器 UA 换链再 302。
+        if let url = downURL(path: path, sign: string(data["sign"])) {
+            return (url, playHeaders())
         }
-        return (url, fileHeaders())
+        if let raw = string(data["raw_url"]), let url = URL(string: raw) {
+            return (url, playHeaders())
+        }
+        throw APIError.message("OpenList 没有返回播放地址")
+    }
+
+    private static func downURL(path: String, sign: String?) -> URL? {
+        var base = Pan115Session.shared.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while base.hasSuffix("/") { base.removeLast() }
+        guard !base.isEmpty else { return nil }
+        let encoded = encodePath(path)
+        var text = base + "/d" + encoded
+        if let sign, !sign.isEmpty {
+            let q = sign.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sign
+            text += "?sign=" + q
+        }
+        return URL(string: text)
+    }
+
+    private static func encodePath(_ path: String) -> String {
+        let p = normalize(path)
+        if p == "/" { return "/" }
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        return "/" + p.split(separator: "/").map {
+            String($0).addingPercentEncoding(withAllowedCharacters: allowed) ?? String($0)
+        }.joined(separator: "/")
     }
 
     static func playURL(pickCode: String, filename: String = "") async throws -> URL {

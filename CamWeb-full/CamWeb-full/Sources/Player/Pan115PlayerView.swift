@@ -89,6 +89,7 @@ struct Pan115PlayerView: View {
         .onAppear {
             coordinator.isMaskShow = false
             OrientationLock.unlock()
+            coordinator.playerLayer?.play()
             scheduleHide()
         }
         .onDisappear {
@@ -253,14 +254,14 @@ struct Pan115PlayerView: View {
 
     private static func makeOptions(ffmpeg: Bool) -> KSOptions {
         let o = KSOptions()
+        o.userAgent = Pan115API.playUA
+        o.appendHeader(Pan115API.playHeaders())
         if ffmpeg {
             KSOptions.firstPlayerType = KSMEPlayer.self
             KSOptions.secondPlayerType = KSAVPlayer.self
-            o.appendHeader(Pan115API.cdnHeaders())
         } else {
             KSOptions.firstPlayerType = KSAVPlayer.self
             KSOptions.secondPlayerType = KSMEPlayer.self
-            o.appendHeader(Pan115API.playHeaders())
         }
         KSOptions.isAutoPlay = true
         o.videoAdaptable = false
