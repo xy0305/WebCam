@@ -1,4 +1,5 @@
 import Foundation
+import Photos
 import UIKit
 
 @MainActor
@@ -23,6 +24,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
         var folderName: String
         var ownsFile: Bool
         var bookmark: Data?
+        var photoAssetID: String?
         var speedBps: Double
         var createdAt: Date
         var finishedAt: Date?
@@ -64,6 +66,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
         Pan115Inbox.sweep(keeping: jobs.compactMap { job in
             (job.ownsFile && job.status != .done && job.status != .cancelled) ? job.fileURL : nil
         })
+        Pan115Inbox.sweepPhotoCaches()
         pump()
     }
 
@@ -72,12 +75,13 @@ final class Pan115Uploader: NSObject, ObservableObject {
         backgroundCompletion = completion
     }
 
-    func enqueue(fileURL: URL, name: String, size: Int64, cid: String, folderName: String, ownsFile: Bool, bookmark: Data? = nil) {
+    func enqueue(fileURL: URL, name: String, size: Int64, cid: String, folderName: String, ownsFile: Bool, bookmark: Data? = nil, photoAssetID: String? = nil) {
         enqueueMany([
             Job(
                 id: UUID(), name: name, size: max(size, 1), sent: 0, status: .waiting,
                 message: "排队中", fileURL: fileURL, cid: cid, folderName: folderName,
-                ownsFile: ownsFile, bookmark: bookmark, speedBps: 0, createdAt: Date(), finishedAt: nil
+                ownsFile: ownsFile, bookmark: bookmark, photoAssetID: photoAssetID,
+                speedBps: 0, createdAt: Date(), finishedAt: nil
             )
         ])
     }
@@ -156,9 +160,13 @@ final class Pan115Uploader: NSObject, ObservableObject {
         persist()
         var scoped: URL?
         do {
-            let source = try resolveSource(job)
+            let source = try await resolveSource(job)
             scoped = source.stop
+            if source.owns {
+                update(job.id) { $0.fileURL = source.url; $0.ownsFile = true; $0.size = source.size ?? $0.size }
+            }
             let url = source.url
+            let size = source.size ?? job.size
             let hashes = try await Task.detached(priority: .utility) {
                 try Pan115API.fileSHA1(url: url)
             }.value
@@ -170,7 +178,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
             update(job.id) { $0.status = .uploading; $0.message = "初始化上传" }
             persist()
             let ticket = try await Pan115API.initUpload(
-                fileName: job.name, size: job.size, sha1: hashes.full, preSha1: hashes.head, dirID: job.cid
+                fileName: job.name, size: size, sha1: hashes.full, preSha1: hashes.head, dirID: job.cid
             )
             if ticket.rapid {
                 finish(job.id, message: "秒传完成")
@@ -197,18 +205,48 @@ final class Pan115Uploader: NSObject, ObservableObject {
         if let stop = scoped { stop.stopAccessingSecurityScopedResource() }
     }
 
-    private func resolveSource(_ job: Job) throws -> (url: URL, stop: URL?) {
+    private func resolveSource(_ job: Job) async throws -> (url: URL, stop: URL?, owns: Bool, size: Int64?) {
+        if let assetID = job.photoAssetID, !assetID.isEmpty {
+            let file = try await exportPhoto(assetID: assetID, name: job.name)
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
+            return (file, nil, true, size)
+        }
         if let data = job.bookmark {
             var stale = false
             let url = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
             let ok = url.startAccessingSecurityScopedResource()
-            return (url, ok ? url : nil)
+            return (url, ok ? url : nil, false, nil)
         }
         let access = job.fileURL.startAccessingSecurityScopedResource()
         if access || FileManager.default.isReadableFile(atPath: job.fileURL.path) {
-            return (job.fileURL, access ? job.fileURL : nil)
+            return (job.fileURL, access ? job.fileURL : nil, false, nil)
         }
         throw Pan115API.APIError.message("找不到原文件，请重新选择")
+    }
+
+    private func exportPhoto(assetID: String, name: String) async throws -> URL {
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+        guard let asset = assets.firstObject else {
+            throw Pan115API.APIError.message("相册里找不到原文件")
+        }
+        let resources = PHAssetResource.assetResources(for: asset)
+        let resource = resources.first(where: { $0.type == .fullSizeVideo || $0.type == .video })
+            ?? resources.first(where: { $0.type == .fullSizePhoto || $0.type == .photo })
+            ?? resources.first
+        guard let resource else { throw Pan115API.APIError.message("相册资源无法导出") }
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("115Photo-job", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent("\(UUID().uuidString)-\(name)")
+        try? FileManager.default.removeItem(at: dest)
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let opts = PHAssetResourceRequestOptions()
+            opts.isNetworkAccessAllowed = true
+            PHAssetResourceManager.default().writeData(for: resource, toFile: dest, options: opts) { error in
+                if let error { cont.resume(throwing: error) } else { cont.resume() }
+            }
+        }
+        return dest
     }
 
     private func finish(_ id: UUID, message: String) {

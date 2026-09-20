@@ -142,7 +142,6 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         }
         var manifest = loadManifest(id)
         let locals: [LocalFile]
-        let photoCopies: Bool
         if task.sourceKind == .photos {
             do {
                 try await scanPhotoLibrary(id: id, task: task, dests: dests, manifest: &manifest)
@@ -157,7 +156,6 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             }
             setProgress(id, phase: "列举文件", total: 0, index: 0, queued: 0, skipped: 0, current: root.lastPathComponent)
             locals = listLocal(root: root)
-            photoCopies = false
         }
         var uploaded = 0
         var skipped = 0
@@ -203,13 +201,19 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                         setProgress(id, skipped: skipped)
                         continue
                     }
+                    let bookmark = try? file.url.bookmarkData(
+                        options: .minimalBookmark,
+                        includingResourceValuesForKeys: nil,
+                        relativeTo: nil
+                    )
                     Pan115Uploader.shared.enqueue(
                         fileURL: file.url,
                         name: name,
                         size: file.size,
                         cid: cid,
                         folderName: dest.name,
-                        ownsFile: photoCopies
+                        ownsFile: false,
+                        bookmark: bookmark
                     )
                     uploaded += 1
                     setProgress(id, queued: uploaded)
@@ -325,12 +329,9 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         let result = PHAsset.fetchAssets(with: opts)
         let total = result.count
         setProgress(id, phase: "扫描相册", total: total, index: 0, queued: 0, skipped: 0, current: "共 \(total) 项")
-        let dir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("115Photo-\(id.uuidString)", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         var queued = 0
         var skipped = 0
-        var lastErr: String?
+        let lastErr: String? = nil
         let limit = min(total, 8000)
         for i in 0..<limit {
             await Task.yield()
@@ -355,20 +356,7 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                 setProgress(id, skipped: skipped, current: "已备份 \(name)")
                 continue
             }
-            let fileURL = dir.appendingPathComponent("\(asset.localIdentifier.replacingOccurrences(of: "/", with: "_"))-\(name)")
-            do {
-                try await writePhotoResource(resource, to: fileURL)
-            } catch {
-                lastErr = error.localizedDescription
-                skipped += 1
-                setProgress(id, skipped: skipped, current: "导出失败 \(name)")
-                continue
-            }
-            let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
-            guard size > 0 else {
-                skipped += 1
-                continue
-            }
+            let sizeHint = Int64(resource.value(forKey: "fileSize") as? Int ?? 0)
             for dest in dests {
                 if Pan115Uploader.shared.isQueued(name: name, cid: dest.cid) {
                     skipped += 1
@@ -379,15 +367,16 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                     uploadName = rename(name)
                 }
                 Pan115Uploader.shared.enqueue(
-                    fileURL: fileURL,
+                    fileURL: URL(fileURLWithPath: "/photos/\(asset.localIdentifier)"),
                     name: uploadName,
-                    size: size,
+                    size: max(sizeHint, 1),
                     cid: dest.cid,
                     folderName: dest.name,
-                    ownsFile: dests.count == 1
+                    ownsFile: false,
+                    photoAssetID: asset.localIdentifier
                 )
                 queued += 1
-                var item = Pan115BackupManifest.Item(relativePath: key, size: size, mtime: mtime, destIDs: manifest.items[key]?.destIDs ?? [])
+                var item = Pan115BackupManifest.Item(relativePath: key, size: sizeHint, mtime: mtime, destIDs: manifest.items[key]?.destIDs ?? [])
                 if !item.destIDs.contains(dest.id.uuidString) { item.destIDs.append(dest.id.uuidString) }
                 manifest.items[key] = item
             }
@@ -432,17 +421,6 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         resources.first(where: { $0.type == .fullSizeVideo || $0.type == .video })
             ?? resources.first(where: { $0.type == .fullSizePhoto || $0.type == .photo })
             ?? resources.first
-    }
-
-    private func writePhotoResource(_ resource: PHAssetResource, to url: URL) async throws {
-        if fm.fileExists(atPath: url.path) { return }
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            let opts = PHAssetResourceRequestOptions()
-            opts.isNetworkAccessAllowed = true
-            PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: opts) { error in
-                if let error { cont.resume(throwing: error) } else { cont.resume() }
-            }
-        }
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {

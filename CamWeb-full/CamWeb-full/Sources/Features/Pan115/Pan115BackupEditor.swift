@@ -132,7 +132,7 @@ struct Pan115BackupEditor: View {
             .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             caption(task.sourceKind == .photos
                     ? "备份系统相册里的照片和视频。相册有新增时会自动扫描。"
-                    : "点进文件夹后勾选任意文件再点「打开」，会备份该文件夹（含子目录）。也可以直接选中文件夹再打开。")
+                    : "点选一个文件夹再打开，会备份该文件夹（含子目录）。")
         }
     }
 

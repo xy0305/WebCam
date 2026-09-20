@@ -15,7 +15,7 @@ enum Pan115FilePicker {
 
     /// 文件夹选择：点进目录后文件不再灰掉。选中文件则用它所在文件夹；选中文件夹则用该文件夹。
     static func presentFolder(onPicked: @escaping (URL) -> Void) {
-        present(types: [.folder, .directory, .item], asCopy: false, multiple: true) { urls in
+        present(types: [.folder], asCopy: false, multiple: false) { urls in
             guard let folder = folderURL(from: urls) else { return }
             onPicked(folder)
         }
@@ -93,6 +93,15 @@ enum Pan115Inbox {
         return out
     }
 
+    static func sweepPhotoCaches() {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        if let dirs = try? FileManager.default.contentsOfDirectory(at: caches, includingPropertiesForKeys: nil) {
+            for dir in dirs where dir.lastPathComponent.hasPrefix("115Photo-") {
+                try? FileManager.default.removeItem(at: dir)
+            }
+        }
+    }
+
     static func uniqueURL(_ raw: String) -> URL {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let name = uniqueName(raw)
@@ -123,6 +132,7 @@ enum Pan115Inbox {
         if let left = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil), left.isEmpty {
             try? fm.removeItem(at: directory)
         }
+        sweepPhotoCaches()
         let tmp = fm.temporaryDirectory
         if let temps = try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil) {
             for file in temps where file.lastPathComponent.hasPrefix("115-") && file.pathExtension == "form" {

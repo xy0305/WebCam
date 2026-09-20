@@ -591,7 +591,8 @@ struct Pan115View: View {
             Pan115Uploader.Job(
                 id: UUID(), name: item.name, size: max(item.size, 1), sent: 0, status: .waiting,
                 message: "排队中", fileURL: item.source, cid: cid, folderName: folder,
-                ownsFile: false, bookmark: item.bookmark, speedBps: 0, createdAt: now, finishedAt: nil
+                ownsFile: false, bookmark: item.bookmark, photoAssetID: nil,
+                speedBps: 0, createdAt: now, finishedAt: nil
             )
         })
         tab = .upload
