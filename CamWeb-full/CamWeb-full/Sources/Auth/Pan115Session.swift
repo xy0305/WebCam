@@ -11,8 +11,8 @@ final class Pan115Session: ObservableObject {
     @Published var userID: String = ""
     @Published var userName: String = ""
     @Published var baseURL: String = Pan115Session.defaultBase
-    @Published var targetCID: String = UserDefaults.standard.string(forKey: "camweb.115.cid") ?? "/115"
-    @Published var uploadCID: String = UserDefaults.standard.string(forKey: "camweb.115.upload.cid") ?? "/115"
+    @Published var targetCID: String = UserDefaults.standard.string(forKey: "camweb.115.cid") ?? "0"
+    @Published var uploadCID: String = UserDefaults.standard.string(forKey: "camweb.115.upload.cid") ?? "0"
     @Published var uploadFolderName: String = UserDefaults.standard.string(forKey: "camweb.115.upload.folder") ?? "根目录"
 
     private let cookieService = "com.xy0305.WebCam.115"
@@ -24,8 +24,8 @@ final class Pan115Session: ObservableObject {
     private init() {
         cachedCookie = loadCookie()
         hasCookie = cachedCookie != nil
-        if targetCID == "0" || targetCID == "/" { targetCID = "/115" }
-        if uploadCID == "0" || uploadCID == "/" { uploadCID = "/115" }
+        if targetCID.hasPrefix("/") { targetCID = "0" }
+        if uploadCID.hasPrefix("/") { uploadCID = "0" }
         if let raw = cachedCookie {
             applyUser(from: raw)
         }
@@ -60,13 +60,13 @@ final class Pan115Session: ObservableObject {
 
     func setTargetCID(_ cid: String) {
         let value = cid.trimmingCharacters(in: .whitespacesAndNewlines)
-        targetCID = value.isEmpty ? "/115" : value
+        targetCID = value.isEmpty || value.hasPrefix("/") ? "0" : value
         UserDefaults.standard.set(targetCID, forKey: "camweb.115.cid")
     }
 
     func setUploadFolder(cid: String, name: String) {
         let value = cid.trimmingCharacters(in: .whitespacesAndNewlines)
-        uploadCID = value.isEmpty ? "/115" : value
+        uploadCID = value.isEmpty || value.hasPrefix("/") ? "0" : value
         uploadFolderName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "根目录" : name
         UserDefaults.standard.set(uploadCID, forKey: "camweb.115.upload.cid")
         UserDefaults.standard.set(uploadFolderName, forKey: "camweb.115.upload.folder")

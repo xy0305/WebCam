@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// 网盘走 OpenList：列表 `/api/fs/list`，播放 `/api/fs/get` 的 raw_url（115 由 OpenList 302）。
@@ -365,11 +366,208 @@ enum Pan115API {
         throw APIError.message("分享请在 OpenList 网页操作")
     }
 
-    static func sha1Hex(_ data: Data) -> String { "" }
-    static func fileSHA1(url: URL) throws -> (full: String, head: String) { ("", "") }
+    static func sha1Hex(_ data: Data) -> String {
+        Insecure.SHA1.hash(data: data).map { String(format: "%02X", $0) }.joined()
+    }
 
+    static func fileSHA1(url: URL) throws -> (full: String, head: String) {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = Insecure.SHA1()
+        var head = Data()
+        while true {
+            let chunk = (try? handle.read(upToCount: 1024 * 1024)) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+            if head.count < 128 * 1024 {
+                let need = 128 * 1024 - head.count
+                head.append(chunk.prefix(need))
+            }
+        }
+        let full = hasher.finalize().map { String(format: "%02X", $0) }.joined()
+        return (full, sha1Hex(head))
+    }
+
+    /// 对照 build 43：秒传 / sampleinitupload OSS，dirID 必须是 115 cid。
     static func initUpload(fileName: String, size: Int64, sha1: String, preSha1: String, dirID: String) async throws -> InitUpload {
-        throw APIError.message("请走 OpenList 上传")
+        let cid = driveCID(dirID)
+        if let sample = try? await sampleInit(fileName: fileName, size: size, dirID: cid) {
+            return sample
+        }
+        return try await simpleInit(fileName: fileName, size: size, sha1: sha1, dirID: cid)
+    }
+
+    private static func sampleInit(fileName: String, size: Int64, dirID: String) async throws -> InitUpload {
+        let uid = cookieValue("UID")?.split(separator: "_").first.map(String.init) ?? ""
+        let obj = try await pan115Form(URL(string: "https://uplb.115.com/3.0/sampleinitupload.php")!, [
+            "userid": uid,
+            "filename": fileName,
+            "filesize": "\(size)",
+            "target": "U_1_\(dirID)"
+        ])
+        if let err = string(obj["error"]), !err.isEmpty { throw APIError.message(err) }
+        let host = string(obj["host"]) ?? string(obj["endpoint"]) ?? ""
+        let object = string(obj["object"]) ?? string(obj["key"]) ?? ""
+        guard !host.isEmpty, !object.isEmpty else { throw APIError.badResponse }
+        return InitUpload(
+            rapid: false, fileID: nil, host: host, object: object,
+            accessKeyId: string(obj["accessid"]) ?? string(obj["OSSAccessKeyId"]) ?? "",
+            accessKeySecret: "", securityToken: string(obj["token"]) ?? "",
+            callback: string(obj["callback"]) ?? "", callbackVar: string(obj["callback_var"]) ?? "",
+            bucket: string(obj["bucket"]) ?? "", endpoint: host,
+            formPolicy: string(obj["policy"]) ?? "", formSignature: string(obj["signature"]) ?? "",
+            useForm: true
+        )
+    }
+
+    private static func simpleInit(fileName: String, size: Int64, sha1: String, dirID: String) async throws -> InitUpload {
+        let uid = cookieValue("UID")?.split(separator: "_").first.map(String.init) ?? ""
+        let obj = try await pan115Form(URL(string: "https://uplb.115.com/3.0/initupload.php")!, [
+            "appid": "0",
+            "appversion": "27.0.5.7",
+            "userid": uid,
+            "filename": fileName,
+            "filesize": "\(size)",
+            "fileid": sha1,
+            "target": "U_1_\(dirID)"
+        ])
+        let status = (obj["status"] as? Int) ?? Int(string(obj["status"]) ?? "-1") ?? -1
+        if status == 1 || (string(obj["statuscode"]) == "0" && obj["pickcode"] != nil) {
+            return InitUpload(
+                rapid: true, fileID: string(obj["file_id"]) ?? string(obj["fileid"]),
+                host: "", object: "", accessKeyId: "", accessKeySecret: "", securityToken: "",
+                callback: "", callbackVar: "", bucket: "", endpoint: "", formPolicy: "", formSignature: "", useForm: false
+            )
+        }
+        let host = string(obj["host"]) ?? ""
+        let object = string(obj["object"]) ?? ""
+        guard !object.isEmpty else {
+            throw APIError.message(string(obj["message"]) ?? string(obj["error"]) ?? "初始化上传失败，请确认 Cookie 有效")
+        }
+        return InitUpload(
+            rapid: false, fileID: sha1, host: host, object: object,
+            accessKeyId: string(obj["accessid"]) ?? "",
+            accessKeySecret: string(obj["accesskey_secret"]) ?? "",
+            securityToken: string(obj["token"]) ?? "",
+            callback: string(obj["callback"]) ?? "", callbackVar: string(obj["callback_var"]) ?? "",
+            bucket: string(obj["bucket"]) ?? "", endpoint: host,
+            formPolicy: string(obj["policy"]) ?? "", formSignature: string(obj["signature"]) ?? "",
+            useForm: !(string(obj["policy"]) ?? "").isEmpty
+        )
+    }
+
+    /// 备份/上传选目录：走 115 网页 files API，返回数字 cid。
+    static func driveList(cid: String) async throws -> [Node] {
+        let id = driveCID(cid)
+        let query = "aid=1&cid=\(encodeForm(id))&o=user_ptime&asc=0&offset=0&show_dir=1&limit=1150&natsort=1&format=json"
+        let urls = [
+            "https://aps.115.com/natsort/files.php?\(query)",
+            "https://webapi.115.com/files?\(query)"
+        ]
+        var last: Error = APIError.badResponse
+        for raw in urls {
+            guard let url = URL(string: raw) else { continue }
+            do {
+                let obj = try await pan115JSON(url)
+                if let state = obj["state"] as? Bool, state == false {
+                    last = APIError.message(string(obj["error"]) ?? "列出目录失败")
+                    continue
+                }
+                let rows = (obj["data"] as? [[String: Any]]) ?? (obj["list"] as? [[String: Any]]) ?? []
+                return rows.compactMap(parseDriveNode)
+            } catch {
+                last = error
+            }
+        }
+        throw last
+    }
+
+    static func driveSearch(keyword: String) async throws -> [Node] {
+        let q = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 1 else { return [] }
+        var c = URLComponents(string: "https://webapi.115.com/files/search")!
+        c.queryItems = [
+            URLQueryItem(name: "search_value", value: q),
+            URLQueryItem(name: "aid", value: "1"),
+            URLQueryItem(name: "cid", value: "0"),
+            URLQueryItem(name: "offset", value: "0"),
+            URLQueryItem(name: "limit", value: "115"),
+            URLQueryItem(name: "format", value: "json"),
+            URLQueryItem(name: "search_file", value: "2")
+        ]
+        let obj = try await pan115JSON(c.url!)
+        if let state = obj["state"] as? Bool, state == false {
+            throw APIError.message(string(obj["error"]) ?? "搜索失败")
+        }
+        let rows = (obj["data"] as? [[String: Any]]) ?? []
+        return rows.compactMap(parseDriveNode).filter(\.isDir)
+    }
+
+    static func driveEnsureFolder(parent: String, parts: [String]) async throws -> String {
+        var cid = driveCID(parent)
+        for raw in parts {
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != "." else { continue }
+            let kids = try await driveList(cid: cid)
+            if let hit = kids.first(where: { $0.isDir && $0.name == name }) {
+                cid = hit.id
+                continue
+            }
+            cid = try await driveMkdir(parent: cid, name: name)
+        }
+        return cid
+    }
+
+    static func driveMkdir(parent: String, name: String) async throws -> String {
+        let obj = try await pan115Form(URL(string: "https://webapi.115.com/files/add")!, [
+            "pid": driveCID(parent),
+            "cname": name
+        ])
+        if let state = obj["state"] as? Bool, state == false {
+            throw APIError.message(string(obj["error"]) ?? "新建文件夹失败")
+        }
+        return string(obj["cid"]) ?? parent
+    }
+
+    private static func parseDriveNode(_ item: [String: Any]) -> Node? {
+        let fid = string(item["fid"] ?? item["file_id"]) ?? ""
+        let dirID = string(item["cid"] ?? item["pid"]) ?? ""
+        let pc = string(item["pc"] ?? item["pick_code"] ?? item["pickcode"]) ?? ""
+        let fc = string(item["fc"] ?? item["file_category"]) ?? ""
+        let sha = string(item["sha"] ?? item["sha1"]) ?? ""
+        let isDir: Bool
+        if fc == "0" {
+            isDir = true
+        } else if fc == "1" || !pc.isEmpty || !sha.isEmpty || !fid.isEmpty {
+            isDir = false
+        } else {
+            isDir = true
+        }
+        let id = isDir ? (dirID.isEmpty ? fid : dirID) : (fid.isEmpty ? pc : fid)
+        guard !id.isEmpty else { return nil }
+        return Node(
+            id: id,
+            name: string(item["n"] ?? item["fn"] ?? item["file_name"] ?? item["name"]) ?? id,
+            isDir: isDir,
+            size: int64(item["s"] ?? item["file_size"] ?? item["fs"] ?? item["size"]),
+            pickCode: pc
+        )
+    }
+
+    static func driveDelete(id: String) async throws {
+        let obj = try await pan115Form(URL(string: "https://webapi.115.com/rb/delete")!, [
+            "fid[0]": id,
+            "ignore_warn": "1"
+        ])
+        if let state = obj["state"] as? Bool, state == false {
+            throw APIError.message(string(obj["error"]) ?? "删除失败")
+        }
+    }
+
+    static func driveCID(_ raw: String) -> String {
+        let p = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty || p == "/" || p == "/115" || p.hasPrefix("/") { return "0" }
+        return p
     }
 
     /// 把 115 Cookie 挂到本机 Alist。已有 `/115` 则跳过。
@@ -481,7 +679,14 @@ enum Pan115API {
         req.setValue("false", forHTTPHeaderField: "As-Task")
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         req.setValue(playUA, forHTTPHeaderField: "User-Agent")
+        req.setValue(clientID, forHTTPHeaderField: "Client-Id")
         return req
+    }
+
+    /// 旧版 115 fid `0` / 根路径都挂到 `/115`。
+    static func drivePath(_ path: String) -> String {
+        let p = normalize(path)
+        return p == "/" ? "/115" : p
     }
 
     static func isPlayable(_ name: String) -> Bool {

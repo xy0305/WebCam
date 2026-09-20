@@ -180,9 +180,9 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                     continue
                 }
                 do {
-                    let cid = try await Pan115API.ensureFolder(parent: dest.cid, parts: file.folders)
+                    let cid = try await Pan115API.driveEnsureFolder(parent: dest.cid, parts: file.folders)
                     if task.existPolicy == .skip {
-                        let kids = try await Pan115API.listAll(cid: cid)
+                        let kids = try await Pan115API.driveList(cid: cid)
                         if kids.contains(where: { !$0.isDir && $0.name == file.name }) {
                             skipped += 1
                             var item = manifest.items[key] ?? .init(relativePath: key, size: file.size, mtime: file.mtime, destIDs: [])
@@ -193,7 +193,7 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                     }
                     var name = file.name
                     if task.existPolicy == .rename {
-                        let kids = try await Pan115API.listAll(cid: cid)
+                        let kids = try await Pan115API.driveList(cid: cid)
                         if kids.contains(where: { !$0.isDir && $0.name == name }) {
                             name = rename(file.name)
                         }
@@ -230,14 +230,14 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             for (key, item) in manifest.items where !localKeys.contains(key) {
                 for dest in dests {
                     do {
-                        let cid = try await Pan115API.ensureFolder(
+                        let cid = try await Pan115API.driveEnsureFolder(
                             parent: dest.cid,
                             parts: URL(fileURLWithPath: key).deletingLastPathComponent().path.split(separator: "/").map(String.init)
                         )
-                        let kids = try await Pan115API.listAll(cid: cid)
+                        let kids = try await Pan115API.driveList(cid: cid)
                         let name = URL(fileURLWithPath: key).lastPathComponent
                         if let hit = kids.first(where: { !$0.isDir && $0.name == name }) {
-                            try await Pan115API.delete(id: hit.id)
+                            try await Pan115API.driveDelete(id: hit.id)
                         }
                     } catch {
                         lastErr = error.localizedDescription
@@ -251,8 +251,8 @@ final class Pan115BackupStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             for file in locals {
                 for dest in dests {
                     do {
-                        let cid = try await Pan115API.ensureFolder(parent: dest.cid, parts: file.folders)
-                        let kids = try await Pan115API.listAll(cid: cid)
+                        let cid = try await Pan115API.driveEnsureFolder(parent: dest.cid, parts: file.folders)
+                        let kids = try await Pan115API.driveList(cid: cid)
                         if !kids.contains(where: { !$0.isDir && $0.name == file.name }) {
                             try? fm.removeItem(at: file.url)
                             manifest.items.removeValue(forKey: file.rel)
