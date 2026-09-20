@@ -142,23 +142,14 @@ final class Pan115Uploader: NSObject, ObservableObject {
             pump()
         }
         guard !cancelledIDs.contains(job.id), !pausedIDs.contains(job.id) else { return }
-        update(job.id) { $0.status = .hashing; $0.message = "计算 SHA1" }
+        update(job.id) { $0.status = .uploading; $0.message = "上传到 OpenList" }
         do {
-            let hashes = try Pan115API.fileSHA1(url: job.fileURL)
             guard !cancelledIDs.contains(job.id) else { return }
             while pausedIDs.contains(job.id) {
                 try await Task.sleep(nanoseconds: 300_000_000)
                 if cancelledIDs.contains(job.id) { return }
             }
-            update(job.id) { $0.status = .uploading; $0.message = "初始化上传" }
-            let ticket = try await Pan115API.initUpload(
-                fileName: job.name, size: job.size, sha1: hashes.full, preSha1: hashes.head, dirID: job.cid
-            )
-            if ticket.rapid {
-                finish(job.id, message: "秒传完成")
-                return
-            }
-            try await uploadForm(job: job, ticket: ticket)
+            try await uploadOpenList(job: job)
             if cancelledIDs.contains(job.id) { return }
             if pausedIDs.contains(job.id) {
                 update(job.id) { $0.status = .paused; $0.message = "已暂停"; $0.speedBps = 0 }
@@ -190,66 +181,19 @@ final class Pan115Uploader: NSObject, ObservableObject {
         persist()
     }
 
-    private func uploadForm(job: Job, ticket info: Pan115API.InitUpload) async throws {
-        let boundary = "----CamWeb115\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
-        let host = info.host.hasPrefix("http") ? info.host : "https://\(info.host)"
-        guard let url = URL(string: host) else { throw Pan115API.APIError.badResponse }
-
-        var fields: [(String, String)] = []
-        if !info.accessKeyId.isEmpty { fields.append(("OSSAccessKeyId", info.accessKeyId)) }
-        if !info.formPolicy.isEmpty { fields.append(("policy", info.formPolicy)) }
-        if !info.formSignature.isEmpty { fields.append(("signature", info.formSignature)) }
-        fields.append(("key", info.object))
-        if !info.callback.isEmpty { fields.append(("callback", info.callback)) }
-        if !info.callbackVar.isEmpty { fields.append(("callback-var", info.callbackVar)) }
-        if !info.securityToken.isEmpty { fields.append(("x-oss-security-token", info.securityToken)) }
-        fields.append(("name", job.name))
-
-        let header = multipartHeader(fields: fields, filename: job.name, boundary: boundary)
-        let footer = Data("\r\n--\(boundary)--\r\n".utf8)
-        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("115-\(job.id.uuidString).form")
-        try assemble(header: header, file: job.fileURL, footer: footer, output: temp)
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        req.setValue(Pan115API.userAgent, forHTTPHeaderField: "User-Agent")
-        req.setValue("https://115.com/", forHTTPHeaderField: "Referer")
-        if let cookie = Pan115Session.shared.cookieHeader { req.setValue(cookie, forHTTPHeaderField: "Cookie") }
-
+    private func uploadOpenList(job: Job) async throws {
+        let dest = Pan115API.join(job.cid, job.name)
+        var req = Pan115API.putFile(path: dest, fileURL: job.fileURL)
+        if let size = try? FileManager.default.attributesOfItem(atPath: job.fileURL.path)[.size] as? NSNumber {
+            req.setValue(size.stringValue, forHTTPHeaderField: "Content-Length")
+        }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             continuations[job.id] = cont
-            let task = session.uploadTask(with: req, fromFile: temp)
+            let task = session.uploadTask(with: req, fromFile: job.fileURL)
             task.taskDescription = job.id.uuidString
             tasks[job.id] = task
             task.resume()
         }
-        try? FileManager.default.removeItem(at: temp)
-    }
-
-    private func multipartHeader(fields: [(String, String)], filename: String, boundary: String) -> Data {
-        var s = ""
-        for (k, v) in fields {
-            s += "--\(boundary)\r\nContent-Disposition: form-data; name=\"\(k)\"\r\n\r\n\(v)\r\n"
-        }
-        s += "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n"
-        s += "Content-Type: application/octet-stream\r\n\r\n"
-        return Data(s.utf8)
-    }
-
-    private func assemble(header: Data, file: URL, footer: Data, output: URL) throws {
-        FileManager.default.createFile(atPath: output.path, contents: nil)
-        let out = try FileHandle(forWritingTo: output)
-        defer { try? out.close() }
-        try out.write(contentsOf: header)
-        let input = try FileHandle(forReadingFrom: file)
-        defer { try? input.close() }
-        while true {
-            let chunk = (try? input.read(upToCount: 1024 * 1024)) ?? Data()
-            if chunk.isEmpty { break }
-            try out.write(contentsOf: chunk)
-        }
-        try out.write(contentsOf: footer)
     }
 
     private func cleanup(_ job: Job) {

@@ -116,7 +116,7 @@ struct SettingsView: View {
             if pan115.hasCookie {
                 Button("断开 115", role: .destructive) { pan115.clear() }
             }
-            Text("对照 OpenList：Cookie 需含 UID、CID、SEID。登录后可在「115」页浏览目录、上传相册和文件，支持暂停与取消。")
+            Text("对照 alist-ios：App 内嵌 Alist，本机 5244 挂 115。Cookie 需含 UID、CID、SEID。不用填外部地址。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
     }

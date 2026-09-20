@@ -36,7 +36,7 @@ struct Pan115LoginView: View {
                     }
                 }
             } message: {
-                Text("从浏览器 115.com 复制完整 Cookie，必须含 UID、CID、SEID。")
+                Text("从浏览器 115.com 复制完整 Cookie，必须含 UID、CID、SEID。App 内嵌 Alist，不用填地址。")
             }
             .alert("Cookie 无效", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
                 Button("好", role: .cancel) { errorText = nil }

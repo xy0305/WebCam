@@ -393,13 +393,13 @@ struct Pan115FolderPicker: View {
     var onCancel: () -> Void
 
     @State private var nodes: [Pan115API.Node] = []
-    @State private var path: [(id: String, name: String)] = [("0", "根目录")]
+    @State private var path: [(id: String, name: String)] = [("/115", "115")]
     @State private var searchText = ""
     @State private var searchHits: [Pan115API.Node] = []
     @State private var loading = false
     @State private var errorText: String?
 
-    private var cid: String { path.last?.id ?? "0" }
+    private var cid: String { path.last?.id ?? "/" }
     private var folderName: String { path.map(\.name).joined(separator: " / ") }
 
     var body: some View {
@@ -417,7 +417,7 @@ struct Pan115FolderPicker: View {
                     Section("搜索结果") {
                         ForEach(searchHits.filter(\.isDir)) { node in
                             Button {
-                                path = [("0", "根目录"), (node.id, node.name)]
+                                path = [("/115", "115"), (node.id, node.name)]
                                 searchText = ""
                                 Task { await reload() }
                             } label: { Label(node.name, systemImage: "folder.fill") }
@@ -452,7 +452,7 @@ struct Pan115FolderPicker: View {
                 Task {
                     let t = q.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard t.count >= 1 else { searchHits = []; return }
-                    searchHits = (try? await Pan115API.search(keyword: t, cid: "0", foldersOnly: true)) ?? []
+                    searchHits = (try? await Pan115API.search(keyword: t, cid: "/115", foldersOnly: true)) ?? []
                 }
             }
         }

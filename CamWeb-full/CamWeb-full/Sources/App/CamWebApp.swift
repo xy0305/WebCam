@@ -87,6 +87,10 @@ struct RootFlow: View {
             }
         }
         .task {
+            await AlistEmbedded.shared.prepare()
+            if Pan115Session.shared.hasCookie {
+                await Pan115Session.shared.mount115()
+            }
             await auth.restore()
             AutoRecordMonitor.shared.startMonitoring()
             RecordingManager.shared.recoverOrphans()

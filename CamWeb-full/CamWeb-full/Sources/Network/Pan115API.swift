@@ -1,9 +1,18 @@
-import CryptoKit
 import Foundation
 
+/// 网盘走 OpenList：列表 `/api/fs/list`，播放 `/api/fs/get` 的 raw_url（115 由 OpenList 302）。
 enum Pan115API {
-    static let userAgent = "Mozilla/5.0 115Browser/27.0.5.7"
+    static let userAgent = "Mozilla/5.0 115disk/30.1.0"
+    static let playUA = userAgent
     static let origin = "https://115.com"
+
+    private static let http: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.httpCookieStorage = nil
+        c.httpShouldSetCookies = false
+        c.timeoutIntervalForRequest = 30
+        return URLSession(configuration: c)
+    }()
 
     struct UserInfo {
         let id: String
@@ -16,6 +25,7 @@ enum Pan115API {
         let isDir: Bool
         let size: Int64
         let pickCode: String
+        var path: String { id }
     }
 
     struct InitUpload {
@@ -42,132 +52,83 @@ enum Pan115API {
         case message(String)
         var errorDescription: String? {
             switch self {
-            case .needLogin: return "115 Cookie 无效，请重新登录"
-            case .badResponse: return "115 接口返回异常"
-            case .httpStatus(let n): return "115 HTTP \(n)"
+            case .needLogin: return "请先登录 OpenList"
+            case .badResponse: return "OpenList 接口返回异常"
+            case .httpStatus(let n): return "OpenList HTTP \(n)"
             case .message(let s): return s
             }
         }
     }
 
+    static func login(username: String, password: String) async throws -> String {
+        let obj = try await post("/api/auth/login", body: [
+            "username": username,
+            "password": password
+        ], auth: false)
+        guard let data = obj["data"] as? [String: Any],
+              let token = string(data["token"]), !token.isEmpty else {
+            throw APIError.message(string(obj["message"]) ?? "登录失败")
+        }
+        return token
+    }
+
     static func userInfo() async throws -> UserInfo {
-        let url = URL(string: "https://my.115.com/?ct=ajax&ac=nav")!
-        let obj = try await json(url)
-        if let err = obj["error"] as? String, !err.isEmpty { throw APIError.message(err) }
+        let obj = try await get("/api/me")
         let data = obj["data"] as? [String: Any] ?? obj
-        let id = string(data["user_id"]) ?? string(data["uid"]) ?? cookieValue("UID")?.split(separator: "_").first.map(String.init) ?? ""
-        let name = string(data["user_name"]) ?? string(data["user_name"]) ?? string(obj["user_name"]) ?? "115"
-        if id.isEmpty && name.isEmpty { throw APIError.needLogin }
+        let name = string(data["username"]) ?? string(data["Username"]) ?? "OpenList"
+        let id = string(data["id"]) ?? name
         return UserInfo(id: id, name: name)
     }
 
-    static func list(cid: String, offset: Int = 0, limit: Int = 1150) async throws -> [Node] {
-        let query = "aid=1&cid=\(encode(cid))&o=user_ptime&asc=0&offset=\(offset)&show_dir=1&limit=\(limit)&natsort=1&format=json"
-        let urls = [
-            "https://aps.115.com/natsort/files.php?\(query)",
-            "https://proapi.115.com/android/2.0/ufile/files?\(query)",
-            "https://webapi.115.com/files?\(query)"
-        ]
-        var last: Error = APIError.badResponse
-        for raw in urls {
-            guard let url = URL(string: raw) else { continue }
-            do {
-                let obj = try await json(url)
-                if let state = obj["state"] as? Bool, state == false {
-                    last = APIError.message(string(obj["error"]) ?? "列出目录失败")
-                    continue
-                }
-                let rows = extractRows(obj)
-                let nodes = rows.compactMap(parseNode)
-                if !nodes.isEmpty { return nodes }
-                if obj["state"] as? Bool == true { return [] }
-            } catch {
-                last = error
-            }
-        }
-        throw last
-    }
-
-    private static func extractRows(_ obj: [String: Any]) -> [[String: Any]] {
-        func array(from value: Any?) -> [[String: Any]]? {
-            if let arr = value as? [[String: Any]] { return arr }
-            if let dict = value as? [String: Any] {
-                for key in ["data", "list", "files", "items"] {
-                    if let arr = dict[key] as? [[String: Any]] { return arr }
-                }
-            }
-            return nil
-        }
-        return array(from: obj["data"]) ?? array(from: obj["list"]) ?? array(from: obj["files"]) ?? []
-    }
-
-    private static func parseNode(_ item: [String: Any]) -> Node? {
-        let fid = string(item["fid"] ?? item["file_id"]) ?? ""
-        let dirID = string(item["cid"] ?? item["pid"]) ?? ""
-        let pc = string(item["pc"] ?? item["pick_code"] ?? item["pickcode"]) ?? ""
-        let fc = string(item["fc"] ?? item["file_category"]) ?? ""
-        let sha = string(item["sha"] ?? item["sha1"]) ?? ""
-        // 115 文件 fid 常是 JSON 数字；以前只认 String，fid 空了就把文件当成文件夹，
-        // 而且 id 全变成父目录 cid，ForEach 直接把文件挤掉。
-        let isDir: Bool
-        if fc == "0" {
-            isDir = true
-        } else if fc == "1" || !pc.isEmpty || !sha.isEmpty || !fid.isEmpty {
-            isDir = false
-        } else {
-            isDir = true
-        }
-        let id = isDir ? (dirID.isEmpty ? fid : dirID) : (fid.isEmpty ? pc : fid)
-        guard !id.isEmpty else { return nil }
-        return Node(
-            id: id,
-            name: string(item["n"] ?? item["fn"] ?? item["file_name"] ?? item["name"]) ?? id,
-            isDir: isDir,
-            size: Int64(string(item["s"] ?? item["file_size"] ?? item["fs"] ?? item["size"]) ?? "0") ?? 0,
-            pickCode: pc
-        )
-    }
-
-    /// 全盘搜文件夹/文件。`search_file=2` 只搜目录；不传则文件+目录。
-    static func search(keyword: String, cid: String = "0", foldersOnly: Bool = true) async throws -> [Node] {
-        let q = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard q.count >= 1 else { return [] }
-        var c = URLComponents(string: "https://webapi.115.com/files/search")!
-        var items = [
-            URLQueryItem(name: "search_value", value: q),
-            URLQueryItem(name: "aid", value: "1"),
-            URLQueryItem(name: "cid", value: cid),
-            URLQueryItem(name: "offset", value: "0"),
-            URLQueryItem(name: "limit", value: "115"),
-            URLQueryItem(name: "format", value: "json")
-        ]
-        if foldersOnly {
-            items.append(URLQueryItem(name: "search_file", value: "2"))
-        }
-        c.queryItems = items
-        let obj = try await json(c.url!)
-        if let state = obj["state"] as? Bool, state == false {
-            throw APIError.message(string(obj["error"]) ?? "搜索失败")
-        }
-        let rows = extractRows(obj)
-        return rows.compactMap(parseNode)
+    static func list(cid: String, offset: Int = 0, limit: Int = 0) async throws -> [Node] {
+        let path = normalize(cid)
+        let obj = try await post("/api/fs/list", body: [
+            "path": path,
+            "password": "",
+            "page": 1,
+            "per_page": 0,
+            "refresh": false
+        ])
+        let data = obj["data"] as? [String: Any] ?? [:]
+        let rows = data["content"] as? [[String: Any]] ?? []
+        return rows.compactMap { parseNode($0, dir: path) }
     }
 
     static func listAll(cid: String) async throws -> [Node] {
-        var offset = 0
-        var all: [Node] = []
-        let pageSize = 1150
-        for _ in 0..<40 {
-            let page = try await list(cid: cid, offset: offset, limit: pageSize)
-            all.append(contentsOf: page)
-            if page.count < pageSize { break }
-            offset += page.count
+        try await list(cid: cid)
+    }
+
+    static func search(keyword: String, cid: String = "/115", foldersOnly: Bool = true) async throws -> [Node] {
+        let q = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 1 else { return [] }
+        let obj = try await post("/api/fs/search", body: [
+            "parent": normalize(cid),
+            "keywords": q,
+            "scope": foldersOnly ? 1 : 0,
+            "page": 1,
+            "per_page": 100
+        ])
+        let data = obj["data"] as? [String: Any] ?? obj
+        let rows = data["content"] as? [[String: Any]] ?? []
+        return rows.compactMap { item in
+            let parent = string(item["parent"]) ?? "/"
+            let name = string(item["name"]) ?? ""
+            guard !name.isEmpty else { return nil }
+            let isDir = item["is_dir"] as? Bool ?? false
+            if foldersOnly && !isDir { return nil }
+            let path = join(parent, name)
+            return Node(
+                id: path,
+                name: name,
+                isDir: isDir,
+                size: int64(item["size"]),
+                pickCode: path
+            )
         }
-        return all
     }
 
     static func ensureFolder(parent: String, parts: [String]) async throws -> String {
-        var cid = parent
+        var cid = normalize(parent)
         for raw in parts {
             let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty, name != "." else { continue }
@@ -181,241 +142,201 @@ enum Pan115API {
         return cid
     }
 
-    static func delete(id: String) async throws {
-        let obj = try await form(URL(string: "https://webapi.115.com/rb/delete")!, [
-            "fid[0]": id,
-            "ignore_warn": "1"
+    static func delete(id: String, pid: String? = nil) async throws {
+        let path = normalize(id)
+        let dir = pid.map(normalize) ?? parent(path)
+        let name = basename(path)
+        _ = try await post("/api/fs/remove", body: [
+            "dir": dir,
+            "names": [name]
         ])
-        if let state = obj["state"] as? Bool, state == false {
-            throw APIError.message(string(obj["error"]) ?? "删除失败")
-        }
     }
 
     static func mkdir(parent: String, name: String) async throws -> String {
-        let url = URL(string: "https://webapi.115.com/files/add")!
-        let obj = try await form(url, [
-            "pid": parent,
-            "cname": name
+        let path = join(parent, name)
+        _ = try await post("/api/fs/mkdir", body: ["path": path])
+        return path
+    }
+
+    static func rename(id: String, name: String) async throws {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty else { throw APIError.message("名称无效") }
+        _ = try await post("/api/fs/rename", body: [
+            "path": normalize(id),
+            "name": n
         ])
-        if let state = obj["state"] as? Bool, state == false {
-            throw APIError.message(string(obj["error"]) ?? "新建文件夹失败")
-        }
-        return string(obj["cid"]) ?? parent
     }
 
-    static func sha1Hex(_ data: Data) -> String {
-        Insecure.SHA1.hash(data: data).map { String(format: "%02X", $0) }.joined()
+    static func move(ids: [String], to destCID: String) async throws {
+        try await relocate(ids, to: destCID, copy: false)
     }
 
-    static func fileSHA1(url: URL) throws -> (full: String, head: String) {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hasher = Insecure.SHA1()
-        var head = Data()
-        while true {
-            let chunk = (try? handle.read(upToCount: 1024 * 1024)) ?? Data()
-            if chunk.isEmpty { break }
-            hasher.update(data: chunk)
-            if head.count < 128 * 1024 {
-                let need = 128 * 1024 - head.count
-                head.append(chunk.prefix(need))
-            }
-        }
-        let full = hasher.finalize().map { String(format: "%02X", $0) }.joined()
-        return (full, sha1Hex(head))
+    static func copy(ids: [String], to destCID: String) async throws {
+        try await relocate(ids, to: destCID, copy: true)
     }
+
+    private static func relocate(_ ids: [String], to dest: String, copy: Bool) async throws {
+        guard let first = ids.first else { return }
+        let srcDir = parent(first)
+        let names = ids.map(basename)
+        _ = try await post(copy ? "/api/fs/copy" : "/api/fs/move", body: [
+            "src_dir": srcDir,
+            "dst_dir": normalize(dest),
+            "names": names
+        ])
+    }
+
+    struct SpaceInfo {
+        var used: Int64 = 0
+        var total: Int64 = 0
+        var text: String { "" }
+    }
+
+    static func spaceInfo() async throws -> SpaceInfo { SpaceInfo() }
+
+    struct OfflineTask: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let infoHash: String
+        let status: String
+        let size: Int64
+        let percent: Double
+    }
+
+    static func addOffline(urls: [String], dirID: String) async throws -> String {
+        _ = try await post("/api/fs/add_offline_download", body: [
+            "urls": urls,
+            "path": normalize(dirID),
+            "tool": "115",
+            "delete_policy": "delete_on_upload_succeed"
+        ])
+        return "已提交到 OpenList"
+    }
+
+    static func listOffline(page: Int = 1) async throws -> (tasks: [OfflineTask], quota: Int64, pageCount: Int) {
+        ([], 0, 1)
+    }
+
+    static func deleteOffline(hashes: [String], deleteFiles: Bool) async throws {}
+    static func clearOffline(flag: Int) async throws {}
+
+    struct RecycleItem: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let size: Int64
+    }
+
+    static func recycleList() async throws -> [RecycleItem] { [] }
+    static func recycleRevert(ids: [String]) async throws {
+        throw APIError.message("回收站请在 OpenList 网页操作")
+    }
+    static func recycleClean() async throws {
+        throw APIError.message("回收站请在 OpenList 网页操作")
+    }
+
+    static func parseShare(_ raw: String) -> (code: String, receive: String) {
+        (raw, "")
+    }
+
+    static func shareSnap(code: String, receive: String, cid: String = "/") async throws -> [Node] {
+        throw APIError.message("分享请在 OpenList 网页操作")
+    }
+
+    static func shareReceive(code: String, receive: String, fileIDs: [String], destCID: String) async throws {
+        throw APIError.message("分享请在 OpenList 网页操作")
+    }
+
+    static func sha1Hex(_ data: Data) -> String { "" }
+    static func fileSHA1(url: URL) throws -> (full: String, head: String) { ("", "") }
 
     static func initUpload(fileName: String, size: Int64, sha1: String, preSha1: String, dirID: String) async throws -> InitUpload {
-        if let sample = try? await sampleInit(fileName: fileName, size: size, dirID: dirID) {
-            return sample
-        }
-        return try await simpleInit(fileName: fileName, size: size, sha1: sha1, dirID: dirID)
+        throw APIError.message("请走 OpenList 上传")
     }
 
-    private static func sampleInit(fileName: String, size: Int64, dirID: String) async throws -> InitUpload {
-        let uid = cookieValue("UID")?.split(separator: "_").first.map(String.init) ?? ""
-        let obj = try await form(URL(string: "https://uplb.115.com/3.0/sampleinitupload.php")!, [
-            "userid": uid,
-            "filename": fileName,
-            "filesize": "\(size)",
-            "target": "U_1_\(dirID)"
-        ])
-        if let err = string(obj["error"]), !err.isEmpty { throw APIError.message(err) }
-        let host = string(obj["host"]) ?? string(obj["endpoint"]) ?? ""
-        let object = string(obj["object"]) ?? string(obj["key"]) ?? ""
-        guard !host.isEmpty, !object.isEmpty else { throw APIError.badResponse }
-        return InitUpload(
-            rapid: false,
-            fileID: nil,
-            host: host,
-            object: object,
-            accessKeyId: string(obj["accessid"]) ?? string(obj["OSSAccessKeyId"]) ?? "",
-            accessKeySecret: "",
-            securityToken: string(obj["token"]) ?? "",
-            callback: string(obj["callback"]) ?? "",
-            callbackVar: string(obj["callback_var"]) ?? "",
-            bucket: string(obj["bucket"]) ?? "",
-            endpoint: host,
-            formPolicy: string(obj["policy"]) ?? "",
-            formSignature: string(obj["signature"]) ?? "",
-            useForm: true
-        )
-    }
-
-    private static func simpleInit(fileName: String, size: Int64, sha1: String, dirID: String) async throws -> InitUpload {
-        let uid = cookieValue("UID")?.split(separator: "_").first.map(String.init) ?? ""
-        let obj = try await form(URL(string: "https://uplb.115.com/3.0/initupload.php")!, [
-            "appid": "0",
-            "appversion": "27.0.5.7",
-            "userid": uid,
-            "filename": fileName,
-            "filesize": "\(size)",
-            "fileid": sha1,
-            "target": "U_1_\(dirID)"
-        ])
-        let status = (obj["status"] as? Int) ?? Int(string(obj["status"]) ?? "-1") ?? -1
-        if status == 1 || string(obj["statuscode"]) == "0" && obj["pickcode"] != nil {
-            return InitUpload(
-                rapid: true, fileID: string(obj["file_id"]) ?? string(obj["fileid"]),
-                host: "", object: "", accessKeyId: "", accessKeySecret: "", securityToken: "",
-                callback: "", callbackVar: "", bucket: "", endpoint: "", formPolicy: "", formSignature: "", useForm: false
-            )
+    /// 把 115 Cookie 挂到本机 Alist。已有 `/115` 则跳过。
+    static func ensure115Storage(cookie: String) async throws {
+        let raw = cookie.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        if let list = try? await get("/api/admin/storage/list") {
+            let data = list["data"] as? [String: Any] ?? [:]
+            let rows = data["content"] as? [[String: Any]] ?? []
+            if rows.contains(where: { string($0["mount_path"]) == "/115" || string($0["driver"]) == "115 Cloud" }) {
+                return
+            }
         }
-        let host = string(obj["host"]) ?? ""
-        let object = string(obj["object"]) ?? ""
-        guard !object.isEmpty else {
-            throw APIError.message(string(obj["message"]) ?? string(obj["error"]) ?? "初始化上传失败，请确认 Cookie 有效")
-        }
-        return InitUpload(
-            rapid: false,
-            fileID: sha1,
-            host: host,
-            object: object,
-            accessKeyId: string(obj["accessid"]) ?? "",
-            accessKeySecret: string(obj["accesskey_secret"]) ?? "",
-            securityToken: string(obj["token"]) ?? "",
-            callback: string(obj["callback"]) ?? "",
-            callbackVar: string(obj["callback_var"]) ?? "",
-            bucket: string(obj["bucket"]) ?? "",
-            endpoint: host,
-            formPolicy: string(obj["policy"]) ?? "",
-            formSignature: string(obj["signature"]) ?? "",
-            useForm: !(string(obj["policy"]) ?? "").isEmpty
-        )
-    }
-
-    /// 必须与播放器 UA 一致，否则 115 按 UA 绑定的 m3u8 会 403。
-    static let playUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
-
-    static func playHeaders() -> [String: String] {
-        var h = [
-            "User-Agent": playUA,
-            "Accept": "*/*",
-            "Origin": origin,
-            "Referer": "https://115.com/"
+        let addition: [String: Any] = [
+            "cookie": raw,
+            "qrcode_token": "",
+            "qrcode_source": "linux",
+            "page_size": 1000,
+            "limit_rate": 2,
+            "root_folder_id": "0"
         ]
-        if let cookie = Pan115Session.shared.cookieHeader {
-            h["Cookie"] = cookie
-        }
-        return h
+        let additionJSON = try JSONSerialization.data(withJSONObject: addition)
+        let additionText = String(data: additionJSON, encoding: .utf8) ?? "{}"
+        _ = try await post("/api/admin/storage/create", body: [
+            "mount_path": "/115",
+            "order": 0,
+            "driver": "115 Cloud",
+            "cache_expiration": 30,
+            "status": "work",
+            "addition": additionText,
+            "remark": "CamWeb",
+            "disabled": false,
+            "web_proxy": false,
+            "webdav_policy": "302_redirect",
+            "proxy_range": false,
+            "down_proxy_url": ""
+        ])
     }
 
-    /// 115 CDN 直链：再带 Cookie / Origin 经常 403。
-    static func cdnHeaders() -> [String: String] {
-        [
-            "User-Agent": playUA,
-            "Accept": "*/*",
-            "Referer": "https://115.com/"
-        ]
+    static func playHeaders() -> [String: String] { fileHeaders() }
+
+    static func fileHeaders() -> [String: String] {
+        ["User-Agent": playUA, "Accept": "*/*"]
     }
 
-    /// 原文件直链（可 seek）。转码没完成的 m3u8 只有 1 秒，进度条会废掉。
+    static func cdnHeaders() -> [String: String] { fileHeaders() }
+
     static func downloadURL(pickCode: String) async throws -> URL {
-        guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
-        let pc = uriEncode(pickCode)
-        let candidates = [
-            "https://proapi.115.com/android/2.0/ufile/download?pickcode=\(pc)",
-            "https://webapi.115.com/files/download?pickcode=\(pc)",
-            "https://webapi.115.com/files/download?pick_code=\(pc)"
-        ]
-        for raw in candidates {
-            guard let url = URL(string: raw) else { continue }
-            var r = URLRequest(url: url)
-            r.httpMethod = "GET"
-            r.timeoutInterval = 20
-            headers().forEach { r.setValue($1, forHTTPHeaderField: $0) }
-            r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
-            r.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-            guard let obj = try? await playJSON(r), let u = firstHTTPURL(obj) else { continue }
-            return u
-        }
-        throw APIError.message("拿不到直链")
+        try await fileLink(pickCode: pickCode).url
     }
 
-    /// 对齐 build 36 / AVDB：先 115 转码 m3u8（完整时长、可 seek），再 video，最后才原文件。
-    /// 原文件直链给 AVPlayer 时常只有 1 秒，ts/mkv 也播不了。
+    static func fileLink(pickCode: String) async throws -> (url: URL, headers: [String: String]) {
+        let path = normalize(pickCode)
+        let obj = try await post("/api/fs/get", body: [
+            "path": path,
+            "password": ""
+        ], extraHeaders: ["User-Agent": playUA])
+        let data = obj["data"] as? [String: Any] ?? [:]
+        guard let raw = string(data["raw_url"]), let url = URL(string: raw) else {
+            throw APIError.message("OpenList 没有返回播放地址")
+        }
+        return (url, fileHeaders())
+    }
+
     static func playURL(pickCode: String, filename: String = "") async throws -> URL {
         try await playSource(pickCode: pickCode, filename: filename).url
     }
 
     static func playSource(pickCode: String, filename: String = "") async throws -> (url: URL, ffmpeg: Bool) {
-        guard !pickCode.isEmpty else { throw APIError.message("缺少 pickcode") }
-        let ffmpeg = needsFFmpeg(filename)
-        // ts/avi/mkv 的转码 m3u8 经常只有 1 秒。直接原文件 + FFmpeg。
-        if !ffmpeg, let hls = try? await transcodedStream(pickCode: pickCode) {
-            return (hls, false)
-        }
-        let pc = uriEncode(pickCode)
-        let candidates = [
-            "https://115vod.com/webapi/files/video?pickcode=\(pc)&local=1",
-            "https://webapi.115.com/files/video?pickcode=\(pc)&local=1"
-        ]
-        for raw in candidates {
-            guard let url = URL(string: raw) else { continue }
-            var r = URLRequest(url: url)
-            r.httpMethod = "GET"
-            r.timeoutInterval = 15
-            playHeaders().forEach { r.setValue($1, forHTTPHeaderField: $0) }
-            r.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
-            guard let obj = try? await playJSON(r), let u = firstHTTPURL(obj) else { continue }
-            return (u, true)
-        }
-        if let url = try? await downloadURL(pickCode: pickCode) {
-            return (url, true)
-        }
-        throw APIError.message("拿不到播放地址")
+        let url = try await downloadURL(pickCode: pickCode)
+        return (url, true)
     }
 
-    private static func transcodedStream(pickCode: String) async throws -> URL? {
-        let pc = uriEncode(pickCode)
-        let m3u8URL = URL(string: "https://115.com/api/video/m3u8/\(pc).m3u8")!
-        var req = URLRequest(url: m3u8URL)
-        req.httpMethod = "GET"
-        req.timeoutInterval = 15
-        playHeaders().forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse, (200..<400).contains(http.statusCode),
-              let text = String(data: data, encoding: .utf8),
-              text.contains("#EXTM3U"),
-              let best = parseMaster(text).first else { return nil }
-        return URL(string: best)
-    }
-
-    private static func firstHTTPURL(_ obj: [String: Any]) -> URL? {
-        func from(_ value: Any?) -> URL? {
-            if let s = string(value), s.hasPrefix("http") { return URL(string: s) }
-            if let dict = value as? [String: Any] {
-                for key in ["url", "file_url", "download_url", "video_url"] {
-                    if let s = string(dict[key]), s.hasPrefix("http") { return URL(string: s) }
-                }
-            }
-            return nil
-        }
-        let data = obj["data"] as? [String: Any] ?? [:]
-        for key in ["file_url", "download_url", "video_url", "url", "file_download_url"] {
-            if let u = from(obj[key]) ?? from(data[key]) { return u }
-        }
-        return nil
+    static func putFile(path: String, fileURL: URL) -> URLRequest {
+        let dest = normalize(path)
+        let encoded = dest.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? dest
+        var req = URLRequest(url: endpoint("/api/fs/put"))
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 60 * 60 * 12
+        req.setValue(authToken, forHTTPHeaderField: "Authorization")
+        req.setValue(encoded, forHTTPHeaderField: "File-Path")
+        req.setValue("true", forHTTPHeaderField: "Overwrite")
+        req.setValue("false", forHTTPHeaderField: "As-Task")
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.setValue(playUA, forHTTPHeaderField: "User-Agent")
+        return req
     }
 
     static func isPlayable(_ name: String) -> Bool {
@@ -426,13 +347,7 @@ enum Pan115API {
         ].contains(fileExt(name))
     }
 
-    static func needsFFmpeg(_ name: String) -> Bool {
-        [
-            "ts", "m2ts", "mts", "mkv", "avi", "wmv", "flv", "webm",
-            "iso", "mpg", "mpeg", "vob", "rm", "rmvb", "f4v", "asf",
-            "3gp", "tp", "trp", "dat"
-        ].contains(fileExt(name))
-    }
+    static func needsFFmpeg(_ name: String) -> Bool { isPlayable(name) }
 
     static func isImage(_ name: String) -> Bool {
         ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"].contains(fileExt(name))
@@ -442,132 +357,108 @@ enum Pan115API {
         (name as NSString).pathExtension.lowercased()
     }
 
-    private static func parseMaster(_ text: String) -> [String] {
-        let lines = text.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }
-        var scored: [(Int, String)] = []
-        var i = 0
-        while i < lines.count {
-            let line = lines[i]
-            if line.contains("#EXT-X-STREAM-INF"), i + 1 < lines.count {
-                var u = lines[i + 1]
-                if u.hasPrefix("https: //") { u = u.replacingOccurrences(of: "https: //", with: "https://") }
-                if !u.hasPrefix("http"), let abs = URL(string: u, relativeTo: URL(string: "https://115.com/")) {
-                    u = abs.absoluteString
-                }
-                if u.hasPrefix("http") {
-                    let name = capture(line, #"NAME="([^"]+)""#) ?? ""
-                    let height = Int(capture(line, #"RESOLUTION=\d+x(\d+)"#) ?? "") ?? 0
-                    scored.append((qualityScore(name: name, height: height), u))
-                }
-            }
-            i += 1
-        }
-        return scored.sorted { $0.0 > $1.0 }.map(\.1)
+    static func normalize(_ path: String) -> String {
+        var p = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty || p == "0" { return "/" }
+        if !p.hasPrefix("/") { p = "/" + p }
+        while p.count > 1, p.hasSuffix("/") { p.removeLast() }
+        return p
     }
 
-    private static func qualityScore(name: String, height: Int) -> Int {
-        switch name.uppercased() {
-        case "BD": return 4
-        case "UD": return 3
-        case "HD": return 2
-        case "SD": return 1
-        case "LD": return 0
-        default: break
-        }
-        if height >= 2160 { return 4 }
-        if height >= 1080 { return 3 }
-        if height >= 720 { return 2 }
-        if height >= 480 { return 1 }
-        return 0
+    static func join(_ dir: String, _ name: String) -> String {
+        let d = normalize(dir)
+        if d == "/" { return "/\(name)" }
+        return d + "/" + name
     }
 
-    private static func capture(_ line: String, _ pattern: String) -> String? {
-        guard let r = try? NSRegularExpression(pattern: pattern),
-              let m = r.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-              m.numberOfRanges > 1,
-              let range = Range(m.range(at: 1), in: line) else { return nil }
-        return String(line[range])
+    static func parent(_ path: String) -> String {
+        let p = normalize(path)
+        guard p != "/" else { return "/" }
+        let url = URL(fileURLWithPath: p)
+        let up = url.deletingLastPathComponent().path
+        return normalize(up)
     }
 
-    private static func playJSON(_ req: URLRequest) async throws -> [String: Any] {
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw APIError.badResponse
-        }
-        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw APIError.badResponse
-        }
-        return obj
+    static func basename(_ path: String) -> String {
+        URL(fileURLWithPath: normalize(path)).lastPathComponent
     }
 
-    static func json(_ url: URL, method: String = "GET", body: Data? = nil) async throws -> [String: Any] {
-        var req = URLRequest(url: url)
-        req.httpMethod = method
+    private static func parseNode(_ item: [String: Any], dir: String) -> Node? {
+        let name = string(item["name"]) ?? ""
+        guard !name.isEmpty else { return nil }
+        let isDir = item["is_dir"] as? Bool ?? false
+        let path = join(dir, name)
+        return Node(id: path, name: name, isDir: isDir, size: int64(item["size"]), pickCode: path)
+    }
+
+    private static var authToken: String? { Pan115Session.shared.token }
+
+    private static func endpoint(_ path: String) -> URL {
+        var base = Pan115Session.shared.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while base.hasSuffix("/") { base.removeLast() }
+        return URL(string: base + path) ?? URL(string: "https://invalid.local")!
+    }
+
+    private static func get(_ path: String) async throws -> [String: Any] {
+        var req = URLRequest(url: endpoint(path))
+        req.httpMethod = "GET"
         req.timeoutInterval = 30
-        headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        req.httpBody = body
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse else { throw APIError.badResponse }
-        if http.statusCode == 401 || http.statusCode == 403 { throw APIError.needLogin }
-        guard (200..<300).contains(http.statusCode) else { throw APIError.httpStatus(http.statusCode) }
-        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw APIError.badResponse }
-        return obj
+        applyAuth(&req)
+        return try await send(req)
     }
 
-    static func form(_ url: URL, _ fields: [String: String]) async throws -> [String: Any] {
-        var req = URLRequest(url: url)
+    private static func post(_ path: String, body: [String: Any], auth: Bool = true, extraHeaders: [String: String] = [:]) async throws -> [String: Any] {
+        var req = URLRequest(url: endpoint(path))
         req.httpMethod = "POST"
-        req.timeoutInterval = 30
-        headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        req.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
-        req.httpBody = fields.map { "\(encode($0.key))=\(encode($0.value))" }.joined(separator: "&").data(using: .utf8)
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse else { throw APIError.badResponse }
-        if http.statusCode == 401 || http.statusCode == 403 { throw APIError.needLogin }
-        guard (200..<300).contains(http.statusCode) else { throw APIError.httpStatus(http.statusCode) }
-        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { return obj }
-        throw APIError.badResponse
+        req.timeoutInterval = 40
+        req.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        if auth { applyAuth(&req) }
+        extraHeaders.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await send(req)
     }
 
-    static func headers() -> [String: String] {
-        var h = [
-            "User-Agent": userAgent,
-            "Accept": "application/json, text/plain, */*",
-            "Referer": "https://115.com/",
-            "Origin": origin
-        ]
-        if let cookie = Pan115Session.shared.cookieHeader {
-            h["Cookie"] = cookie
+    private static func applyAuth(_ req: inout URLRequest) {
+        if let token = authToken, !token.isEmpty {
+            req.setValue(token, forHTTPHeaderField: "Authorization")
         }
-        return h
+        req.setValue(playUA, forHTTPHeaderField: "User-Agent")
     }
 
-    static func cookieValue(_ name: String) -> String? {
-        guard let header = Pan115Session.shared.cookieHeader else { return nil }
-        for part in header.split(separator: ";") {
-            let bits = part.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            if bits.count == 2, bits[0].caseInsensitiveCompare(name) == .orderedSame { return bits[1] }
+    private static func send(_ req: URLRequest) async throws -> [String: Any] {
+        if Pan115Session.shared.baseURL.isEmpty { throw APIError.needLogin }
+        let (data, response) = try await http.data(for: req)
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 401 { throw APIError.needLogin }
+            if !(200..<300).contains(http.statusCode) {
+                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let msg = string(obj["message"]) {
+                    throw APIError.message(msg)
+                }
+                throw APIError.httpStatus(http.statusCode)
+            }
         }
-        return nil
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.badResponse
+        }
+        if let code = obj["code"] as? Int, code != 200 {
+            throw APIError.message(string(obj["message"]) ?? "OpenList 错误 \(code)")
+        }
+        return obj
     }
 
     private static func string(_ any: Any?) -> String? {
         if let s = any as? String, !s.isEmpty { return s }
         if let n = any as? NSNumber { return n.stringValue }
         if let n = any as? Int { return String(n) }
-        if let n = any as? Int64 { return String(n) }
-        if let n = any as? Double { return String(Int64(n)) }
         return nil
     }
 
-    private static func encode(_ s: String) -> String {
-        s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
-    }
-
-    /// 对齐 JS `encodeURIComponent`。
-    private static func uriEncode(_ s: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-_.!~*'()")
-        return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s
+    private static func int64(_ any: Any?) -> Int64 {
+        if let n = any as? Int64 { return n }
+        if let n = any as? Int { return Int64(n) }
+        if let n = any as? NSNumber { return n.int64Value }
+        if let s = any as? String, let n = Int64(s) { return n }
+        return 0
     }
 }

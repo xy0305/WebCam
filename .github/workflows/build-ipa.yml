@@ -11,10 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: CamWeb-full/CamWeb-full
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -25,16 +22,53 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Checkout alist-ios
+        uses: actions/checkout@v4
+        with:
+          repository: gendago/alist-ios
+          path: alist
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: alist/go.mod
+          cache-dependency-path: alist/go.sum
+
+      - name: Fetch Alist web UI
+        working-directory: alist
+        run: |
+          curl -L https://github.com/alist-org/alist-web/releases/latest/download/dist.tar.gz -o dist.tar.gz
+          tar -zxvf dist.tar.gz
+          rm -rf public/dist
+          mv -f dist public
+          rm -rf dist.tar.gz
+
+      - name: Build Alistlib.xcframework
+        working-directory: alist
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile init
+          mkdir -p "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks"
+          gomobile bind -target ios -bundleid com.personal.camweb \
+            -o "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/Alistlib.xcframework" \
+            -ldflags "-s -w -X 'github.com/alist-org/alist/v3/internal/conf.Version=embedded'" \
+            github.com/alist-org/alist/v3/alistlib
+          ls -lh "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/Alistlib.xcframework"
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate Xcode project
+        working-directory: CamWeb-full/CamWeb-full
         run: xcodegen generate
 
       - name: Resolve packages
+        working-directory: CamWeb-full/CamWeb-full
         run: xcodebuild -project CamWeb.xcodeproj -scheme CamWeb -resolvePackageDependencies
 
       - name: Build (unsigned)
+        working-directory: CamWeb-full/CamWeb-full
         run: |
           mkdir -p "$PWD/build-out"
           xcodebuild \
@@ -52,6 +86,7 @@ jobs:
             build
 
       - name: Package IPA
+        working-directory: CamWeb-full/CamWeb-full
         run: |
           ls -la build-out || true
           APP=""

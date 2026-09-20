@@ -7,14 +7,14 @@ struct Pan115View: View {
     @ObservedObject private var uploader = Pan115Uploader.shared
     @ObservedObject private var backups = Pan115BackupStore.shared
     @State private var nodes: [Pan115API.Node] = []
-    @State private var path: [(id: String, name: String)] = [("0", "根目录")]
+    @State private var path: [(id: String, name: String)] = [("/115", "115")]
     @State private var loading = false
     @State private var errorText: String?
     @State private var showLogin = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var newFolder = ""
     @State private var showFolder = false
-    @State private var tab: Pane = .upload
+    @State private var tab: Pane = .files
     @State private var searchText = ""
     @State private var searchHits: [Pan115API.Node] = []
     @State private var searching = false
@@ -23,92 +23,158 @@ struct Pan115View: View {
     @State private var editingBackup: Pan115BackupTask?
     @State private var showUploadFolder = false
     @State private var playBusy = false
+    @State private var showShare = false
+    @State private var showRecycle = false
+    @State private var showMove = false
+    @State private var moveIsCopy = false
+    @State private var movingNodes: [Pan115API.Node] = []
+    @State private var showRename = false
+    @State private var renameTarget: Pan115API.Node?
+    @State private var renameText = ""
+    @State private var space: Pan115API.SpaceInfo?
 
     private enum Pane: String, CaseIterable {
-        case upload = "上传"
         case files = "网盘"
+        case upload = "上传"
+        case offline = "离线"
         case backup = "备份"
     }
 
-    private var cid: String { path.last?.id ?? "0" }
+    private var cid: String { path.last?.id ?? "/" }
     private var folderName: String { path.map(\.name).joined(separator: " / ") }
     private var folders: [Pan115API.Node] { nodes.filter(\.isDir) }
     private var files: [Pan115API.Node] { nodes.filter { !$0.isDir } }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if !session.hasCookie {
-                    ContentUnavailableView {
-                        Label("115 未登录", systemImage: "externaldrive.badge.person.crop")
-                    } description: {
-                        Text("Cookie 需含 UID / CID / SEID。登录后可选文件夹上传相册和文件，锁屏后台也会继续。")
-                    } actions: {
-                        Button("登录 115") { showLogin = true }.buttonStyle(.borderedProminent)
+            rootContent
+                .navigationTitle("115")
+                .toolbar { toolbar }
+                .sheet(isPresented: $showLogin) { Pan115LoginView() }
+                .sheet(isPresented: $showBackupEditor, content: backupEditorSheet)
+                .sheet(isPresented: $showUploadFolder, content: uploadFolderSheet)
+                .sheet(isPresented: $showShare, content: shareSheet)
+                .sheet(isPresented: $showRecycle, content: recycleSheet)
+                .sheet(isPresented: $showMove, content: moveSheet)
+                .alert("新建文件夹", isPresented: $showFolder) {
+                    TextField("名称", text: $newFolder)
+                    Button("取消", role: .cancel) {}
+                    Button("创建") {
+                        let name = newFolder
+                        newFolder = ""
+                        Task { await makeFolder(name) }
                     }
-                } else {
-                    VStack(spacing: 0) {
-                        Picker("", selection: $tab) {
-                            ForEach(Pane.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
+                }
+                .alert("重命名", isPresented: $showRename) {
+                    TextField("名称", text: $renameText)
+                    Button("取消", role: .cancel) { renameTarget = nil }
+                    Button("保存") {
+                        let name = renameText
+                        let target = renameTarget
+                        renameTarget = nil
+                        Task { await rename(target, name) }
+                    }
+                }
+                .alert("提示", isPresented: Binding(get: { pickNotice != nil }, set: { if !$0 { pickNotice = nil } })) {
+                    Button("好", role: .cancel) { pickNotice = nil }
+                } message: { Text(pickNotice ?? "") }
+                .onChange(of: photos) { _, items in
+                    Task { await enqueuePhotos(items); photos = [] }
+                }
+                .task { if session.hasCookie { await reload() } }
+                .onChange(of: session.hasCookie) { _, ok in
+                    if ok { Task { await reload() } } else { nodes = []; searchHits = [] }
+                }
+                .onChange(of: searchText) { _, q in
+                    Task { await runSearch(q) }
+                }
+        }
+    }
 
-                        if tab == .upload {
-                            uploadPane
-                        } else if tab == .files {
-                            drivePane
-                        } else {
-                            backupPane
-                        }
-                    }
-                }
+    private func backupEditorSheet() -> some View {
+        Pan115BackupEditor(
+            existing: editingBackup,
+            onSave: { task in
+                backups.save(task, isNew: editingBackup == nil)
+                showBackupEditor = false
+                tab = .backup
+            },
+            onCancel: { showBackupEditor = false }
+        )
+    }
+
+    private func uploadFolderSheet() -> some View {
+        Pan115FolderPicker { cid, name in
+            session.setUploadFolder(cid: cid, name: name)
+            showUploadFolder = false
+        } onCancel: {
+            showUploadFolder = false
+        }
+    }
+
+    private func shareSheet() -> some View {
+        NavigationStack {
+            Pan115ShareView()
+                .navigationTitle("转存分享")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showShare = false } } }
+        }
+    }
+
+    private func recycleSheet() -> some View {
+        NavigationStack {
+            Pan115RecycleView()
+                .navigationTitle("回收站")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showRecycle = false } } }
+        }
+    }
+
+    private func moveSheet() -> some View {
+        Pan115FolderPicker { dest, name in
+            showMove = false
+            let items = movingNodes
+            let copy = moveIsCopy
+            movingNodes = []
+            Task { await moveOrCopy(items, to: dest, name: name, copy: copy) }
+        } onCancel: {
+            showMove = false
+            movingNodes = []
+        }
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        if session.hasCookie {
+            loggedIn
+        } else {
+            ContentUnavailableView {
+                Label("OpenList 未登录", systemImage: "externaldrive.badge.person.crop")
+            } description: {
+                Text("登录你的 OpenList。115 存储在 OpenList 里配置，播放走它的 302 直链。")
+            } actions: {
+                Button("登录 OpenList") { showLogin = true }.buttonStyle(.borderedProminent)
             }
-            .navigationTitle("115")
-            .toolbar { toolbar }
-            .sheet(isPresented: $showLogin) { Pan115LoginView() }
-            .onChange(of: photos) { _, items in
-                Task { await enqueuePhotos(items); photos = [] }
+        }
+    }
+
+    private var loggedIn: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(Pane.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .alert("新建文件夹", isPresented: $showFolder) {
-                TextField("名称", text: $newFolder)
-                Button("取消", role: .cancel) {}
-                Button("创建") {
-                    let name = newFolder
-                    newFolder = ""
-                    Task { await makeFolder(name) }
-                }
-            }
-            .alert("提示", isPresented: Binding(get: { pickNotice != nil }, set: { if !$0 { pickNotice = nil } })) {
-                Button("好", role: .cancel) { pickNotice = nil }
-            } message: { Text(pickNotice ?? "") }
-            .sheet(isPresented: $showBackupEditor) {
-                Pan115BackupEditor(
-                    existing: editingBackup,
-                    onSave: { task in
-                        backups.save(task, isNew: editingBackup == nil)
-                        showBackupEditor = false
-                        tab = .backup
-                    },
-                    onCancel: { showBackupEditor = false }
-                )
-            }
-            .sheet(isPresented: $showUploadFolder) {
-                Pan115FolderPicker { cid, name in
-                    session.setUploadFolder(cid: cid, name: name)
-                    showUploadFolder = false
-                } onCancel: {
-                    showUploadFolder = false
-                }
-            }
-            .task { if session.hasCookie { await reload() } }
-            .onChange(of: session.hasCookie) { _, ok in
-                if ok { Task { await reload() } } else { nodes = []; searchHits = [] }
-            }
-            .onChange(of: searchText) { _, q in
-                Task { await runSearch(q) }
-            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            tabContent
+        }
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch tab {
+        case .files: drivePane
+        case .upload: uploadPane
+        case .offline: Pan115OfflineView()
+        case .backup: backupPane
         }
     }
 
@@ -129,17 +195,20 @@ struct Pan115View: View {
                     showBackupEditor = true
                 } label: { Image(systemName: "plus.rectangle.on.folder") }
                 Menu {
+                    Button("新建文件夹") { showFolder = true }
+                    Button("转存分享") { showShare = true }
+                    Button("回收站") { showRecycle = true }
+                    Button("离线下载") { tab = .offline }
                     Button("新建备份") {
                         editingBackup = nil
                         showBackupEditor = true
                     }
-                    Button("新建文件夹") { showFolder = true }
                     Button("暂停全部") { uploader.pauseAll() }
                     Button("继续全部") { uploader.resumeAll() }
                     Button("取消全部", role: .destructive) { uploader.cancelAll() }
                     Button("清除完成记录") { uploader.removeHistory() }
                     Button("重新登录") { showLogin = true }
-                    Button("退出 115", role: .destructive) { session.clear() }
+                    Button("退出 OpenList", role: .destructive) { session.clear() }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -217,7 +286,7 @@ struct Pan115View: View {
             Section {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("搜索文件夹", text: $searchText)
+                    TextField("搜索文件或文件夹", text: $searchText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     if !searchText.isEmpty {
@@ -246,9 +315,16 @@ struct Pan115View: View {
                     }
                 }
             } else {
-                Section("当前目录") {
+                Section {
                     HStack {
-                        Text(folderName).font(.subheadline)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(folderName).font(.subheadline)
+                            if let space {
+                                Text("已用 \(byteText(space.used)) / \(byteText(space.total))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer()
                         if path.count > 1 {
                             Button("上级") { path.removeLast(); Task { await reload() } }
@@ -262,6 +338,10 @@ struct Pan115View: View {
                             Task { await reload() }
                         } label: {
                             Label(node.name, systemImage: "folder.fill")
+                        }
+                        .contextMenu { nodeActions(node) }
+                        .swipeActions {
+                            Button("删除", role: .destructive) { Task { await deleteNode(node) } }
                         }
                     }
                     ForEach(files) { node in
@@ -278,6 +358,10 @@ struct Pan115View: View {
                             }
                         }
                         .disabled(playBusy)
+                        .contextMenu { nodeActions(node) }
+                        .swipeActions {
+                            Button("删除", role: .destructive) { Task { await deleteNode(node) } }
+                        }
                     }
                 }
             }
@@ -414,8 +498,13 @@ struct Pan115View: View {
         loading = true
         errorText = nil
         defer { loading = false }
+        await AlistEmbedded.shared.prepare()
+        await session.mount115()
         do {
             nodes = try await Pan115API.listAll(cid: cid)
+            if let info = try? await Pan115API.spaceInfo() {
+                space = info
+            }
         } catch {
             errorText = error.localizedDescription
         }
@@ -429,6 +518,64 @@ struct Pan115View: View {
             await reload()
         } catch {
             errorText = error.localizedDescription
+        }
+    }
+
+    @ViewBuilder
+    private func nodeActions(_ node: Pan115API.Node) -> some View {
+        Button("重命名") {
+            renameTarget = node
+            renameText = node.name
+            showRename = true
+        }
+        Button("移动到…") {
+            movingNodes = [node]
+            moveIsCopy = false
+            showMove = true
+        }
+        Button("复制到…") {
+            movingNodes = [node]
+            moveIsCopy = true
+            showMove = true
+        }
+        Button("删除", role: .destructive) {
+            Task { await deleteNode(node) }
+        }
+    }
+
+    private func rename(_ node: Pan115API.Node?, _ name: String) async {
+        guard let node else { return }
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty, n != node.name else { return }
+        do {
+            try await Pan115API.rename(id: node.id, name: n)
+            await reload()
+        } catch {
+            pickNotice = error.localizedDescription
+        }
+    }
+
+    private func deleteNode(_ node: Pan115API.Node) async {
+        do {
+            try await Pan115API.delete(id: node.id, pid: cid)
+            await reload()
+        } catch {
+            pickNotice = error.localizedDescription
+        }
+    }
+
+    private func moveOrCopy(_ items: [Pan115API.Node], to dest: String, name: String, copy: Bool) async {
+        let ids = items.map(\.id)
+        do {
+            if copy {
+                try await Pan115API.copy(ids: ids, to: dest)
+            } else {
+                try await Pan115API.move(ids: ids, to: dest)
+            }
+            pickNotice = (copy ? "已复制到 " : "已移动到 ") + name
+            await reload()
+        } catch {
+            pickNotice = error.localizedDescription
         }
     }
 
@@ -455,7 +602,7 @@ struct Pan115View: View {
         searching = true
         defer { searching = false }
         do {
-            let hits = try await Pan115API.search(keyword: q, cid: "0", foldersOnly: true)
+            let hits = try await Pan115API.search(keyword: q, cid: "/115", foldersOnly: false)
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines) == q {
                 searchHits = hits
             }
@@ -471,7 +618,7 @@ struct Pan115View: View {
         searchText = ""
         searchHits = []
         if node.isDir {
-            path = [("0", "根目录"), (node.id, node.name)]
+            path = [("/115", "115"), (node.id, node.name)]
             tab = .files
             Task { await reload() }
         } else {
