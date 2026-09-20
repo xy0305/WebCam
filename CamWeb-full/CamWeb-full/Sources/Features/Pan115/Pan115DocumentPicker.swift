@@ -1,3 +1,4 @@
+import CoreTransferable
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
@@ -5,7 +6,8 @@ import UIKit
 /// 直接 present 系统文件选择器。包进 SwiftUI sheet 时点「打开」经常没回调。
 enum Pan115FilePicker {
     static func present(onPicked: @escaping ([URL]) -> Void) {
-        present(types: [.item, .content, .data, .folder, .directory, .movie, .video, .image, .audio], asCopy: true, multiple: true) { onPicked($0) }
+        // asCopy: true 会在回调前把全部选中文件拷进 App，多选大文件会卡死、占十几 G。
+        present(types: [.item, .content, .data, .folder, .directory, .movie, .video, .image, .audio], asCopy: false, multiple: true) { onPicked($0) }
     }
 
     /// 文件夹选择：点进目录后文件不再灰掉。选中文件则用它所在文件夹；选中文件夹则用该文件夹。
@@ -59,47 +61,122 @@ enum Pan115FilePicker {
 }
 
 enum Pan115Inbox {
+    struct Planned: Sendable {
+        let source: URL
+        let name: String
+        let size: Int64
+        let bookmark: Data?
+    }
+
     static var directory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("115Inbox", isDirectory: true)
     }
 
-    static func ingest(_ urls: [URL]) -> [(url: URL, name: String, size: Int64)] {
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var out: [(URL, String, Int64)] = []
+    /// 只列文件、做书签，不拷贝。拷贝放到真正开始上传时。
+    static func plan(_ urls: [URL]) -> [Planned] {
+        var out: [Planned] = []
         for url in urls {
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
-            out.append(contentsOf: copyTree(url, prefix: ""))
+            out.append(contentsOf: listTree(url))
         }
         return out
     }
 
-    private static func copyTree(_ url: URL, prefix: String) -> [(URL, String, Int64)] {
+    static func uniqueURL(_ raw: String) -> URL {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let name = uniqueName(raw)
+        return directory.appendingPathComponent(name)
+    }
+
+    static func copyFile(from src: URL, to dest: URL) throws {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: dest)
+        do {
+            try FileManager.default.copyItem(at: src, to: dest)
+        } catch {
+            try streamCopy(from: src, to: dest)
+        }
+        guard FileManager.default.fileExists(atPath: dest.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+    }
+
+    static func sweep(keeping urls: [URL]) {
+        let keep = Set(urls.map(\.standardizedFileURL.path))
+        let fm = FileManager.default
+        if let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for file in files where !keep.contains(file.standardizedFileURL.path) {
+                try? fm.removeItem(at: file)
+            }
+        }
+        if let left = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil), left.isEmpty {
+            try? fm.removeItem(at: directory)
+        }
+        let tmp = fm.temporaryDirectory
+        if let temps = try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil) {
+            for file in temps where file.lastPathComponent.hasPrefix("115-") && file.pathExtension == "form" {
+                if !keep.contains(file.standardizedFileURL.path) {
+                    try? fm.removeItem(at: file)
+                }
+            }
+        }
+    }
+
+    private static func listTree(_ url: URL) -> [Planned] {
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return [] }
         if isDir.boolValue {
-            let children = (try? fm.contentsOfDirectory(
+            let enumerator = fm.enumerator(
                 at: url,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
-                options: [.skipsHiddenFiles]
-            )) ?? []
-            let folder = prefix.isEmpty ? url.lastPathComponent : "\(prefix)/\(url.lastPathComponent)"
-            return children.flatMap { copyTree($0, prefix: folder) }
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            )
+            var out: [Planned] = []
+            while let child = enumerator?.nextObject() as? URL {
+                let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+                if values?.isDirectory == true { continue }
+                if let item = planned(child) { out.append(item) }
+            }
+            return out
         }
-        let destName = uniqueName(url.lastPathComponent)
-        let dest = directory.appendingPathComponent(destName)
-        try? fm.removeItem(at: dest)
-        do {
-            try fm.copyItem(at: url, to: dest)
-        } catch {
-            guard let data = try? Data(contentsOf: url) else { return [] }
-            try? data.write(to: dest)
+        return planned(url).map { [$0] } ?? []
+    }
+
+    private static func planned(_ url: URL) -> Planned? {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isDirectoryKey])
+        if values?.isDirectory == true { return nil }
+        let size = Int64(values?.fileSize ?? 0)
+        let bookmark = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
+        return Planned(source: url, name: url.lastPathComponent, size: size, bookmark: bookmark)
+    }
+
+    private static func streamCopy(from src: URL, to dest: URL) throws {
+        FileManager.default.createFile(atPath: dest.path, contents: nil)
+        let out = try FileHandle(forWritingTo: dest)
+        defer { try? out.close() }
+        let input = try FileHandle(forReadingFrom: src)
+        defer { try? input.close() }
+        while true {
+            let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            try out.write(contentsOf: chunk)
         }
-        let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
-        guard fm.fileExists(atPath: dest.path) else { return [] }
-        return [(dest, url.lastPathComponent, size)]
+    }
+
+    struct ImportedFile: Transferable {
+        let url: URL
+        static var transferRepresentation: some TransferRepresentation {
+            FileRepresentation(contentType: .item) { file in
+                SentTransferredFile(file.url)
+            } importing: { received in
+                let dest = Pan115Inbox.uniqueURL(received.file.lastPathComponent)
+                try Pan115Inbox.copyFile(from: received.file, to: dest)
+                return ImportedFile(url: dest)
+            }
+        }
     }
 
     private static func uniqueName(_ raw: String) -> String {

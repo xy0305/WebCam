@@ -580,16 +580,23 @@ struct Pan115View: View {
     }
 
     private func enqueueFiles(_ urls: [URL]) {
-        let items = Pan115Inbox.ingest(urls)
+        let items = Pan115Inbox.plan(urls)
         guard !items.isEmpty else {
             pickNotice = "没有读到可上传的文件，请再试一次「打开」"
             return
         }
-        for item in items {
-            uploader.enqueue(fileURL: item.url, name: item.name, size: item.size, cid: session.uploadCID, folderName: session.uploadFolderName, ownsFile: true)
-        }
+        let cid = session.uploadCID
+        let folder = session.uploadFolderName
+        let now = Date()
+        uploader.enqueueMany(items.map { item in
+            Pan115Uploader.Job(
+                id: UUID(), name: item.name, size: max(item.size, 1), sent: 0, status: .waiting,
+                message: "排队中", fileURL: item.source, cid: cid, folderName: folder,
+                ownsFile: false, bookmark: item.bookmark, speedBps: 0, createdAt: now, finishedAt: nil
+            )
+        })
         tab = .upload
-        pickNotice = "已加入 \(items.count) 个文件，上传到 \(session.uploadFolderName)"
+        pickNotice = "已加入 \(items.count) 个文件，上传到 \(folder)"
     }
 
     private func runSearch(_ raw: String) async {
@@ -677,16 +684,15 @@ struct Pan115View: View {
     }
 
     private func enqueuePhotos(_ items: [PhotosPickerItem]) async {
+        let cid = session.uploadCID
+        let folder = session.uploadFolderName
         for item in items {
-            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
-            let ext = item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) ? "mov" : "jpg"
-            let name = suggestedPhotoName(item, ext: ext)
-            let dest = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("115Inbox", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
-            let file = dest.appendingPathComponent(name)
-            try? data.write(to: file)
-            uploader.enqueue(fileURL: file, name: name, size: Int64(data.count), cid: session.uploadCID, folderName: session.uploadFolderName, ownsFile: true)
+            guard let imported = try? await item.loadTransferable(type: Pan115Inbox.ImportedFile.self) else { continue }
+            let size = (try? imported.url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+            uploader.enqueue(
+                fileURL: imported.url, name: imported.url.lastPathComponent, size: size,
+                cid: cid, folderName: folder, ownsFile: true
+            )
         }
     }
 

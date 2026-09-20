@@ -22,6 +22,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
         var cid: String
         var folderName: String
         var ownsFile: Bool
+        var bookmark: Data?
         var speedBps: Double
         var createdAt: Date
         var finishedAt: Date?
@@ -60,6 +61,9 @@ final class Pan115Uploader: NSObject, ObservableObject {
         config.timeoutIntervalForResource = 60 * 60 * 24
         session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         jobs = Self.load(storeURL)
+        Pan115Inbox.sweep(keeping: jobs.compactMap { job in
+            (job.ownsFile && job.status != .done && job.status != .cancelled) ? job.fileURL : nil
+        })
         pump()
     }
 
@@ -68,13 +72,19 @@ final class Pan115Uploader: NSObject, ObservableObject {
         backgroundCompletion = completion
     }
 
-    func enqueue(fileURL: URL, name: String, size: Int64, cid: String, folderName: String, ownsFile: Bool) {
-        let job = Job(
-            id: UUID(), name: name, size: max(size, 1), sent: 0, status: .waiting,
-            message: "排队中", fileURL: fileURL, cid: cid, folderName: folderName,
-            ownsFile: ownsFile, speedBps: 0, createdAt: Date(), finishedAt: nil
-        )
-        jobs.insert(job, at: 0)
+    func enqueue(fileURL: URL, name: String, size: Int64, cid: String, folderName: String, ownsFile: Bool, bookmark: Data? = nil) {
+        enqueueMany([
+            Job(
+                id: UUID(), name: name, size: max(size, 1), sent: 0, status: .waiting,
+                message: "排队中", fileURL: fileURL, cid: cid, folderName: folderName,
+                ownsFile: ownsFile, bookmark: bookmark, speedBps: 0, createdAt: Date(), finishedAt: nil
+            )
+        ])
+    }
+
+    func enqueueMany(_ items: [Job]) {
+        guard !items.isEmpty else { return }
+        jobs.insert(contentsOf: items, at: 0)
         persist()
         extendBackground()
         pump()
@@ -143,14 +153,22 @@ final class Pan115Uploader: NSObject, ObservableObject {
         }
         guard !cancelledIDs.contains(job.id), !pausedIDs.contains(job.id) else { return }
         update(job.id) { $0.status = .hashing; $0.message = "计算 SHA1" }
+        persist()
+        var scoped: URL?
         do {
-            let hashes = try Pan115API.fileSHA1(url: job.fileURL)
+            let source = try resolveSource(job)
+            scoped = source.stop
+            let url = source.url
+            let hashes = try await Task.detached(priority: .utility) {
+                try Pan115API.fileSHA1(url: url)
+            }.value
             guard !cancelledIDs.contains(job.id) else { return }
             while pausedIDs.contains(job.id) {
                 try await Task.sleep(nanoseconds: 300_000_000)
                 if cancelledIDs.contains(job.id) { return }
             }
             update(job.id) { $0.status = .uploading; $0.message = "初始化上传" }
+            persist()
             let ticket = try await Pan115API.initUpload(
                 fileName: job.name, size: job.size, sha1: hashes.full, preSha1: hashes.head, dirID: job.cid
             )
@@ -158,7 +176,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
                 finish(job.id, message: "秒传完成")
                 return
             }
-            try await uploadForm(job: job, ticket: ticket)
+            try await uploadForm(job: job, file: url, ticket: ticket)
             if cancelledIDs.contains(job.id) { return }
             if pausedIDs.contains(job.id) {
                 update(job.id) { $0.status = .paused; $0.message = "已暂停"; $0.speedBps = 0 }
@@ -176,6 +194,24 @@ final class Pan115Uploader: NSObject, ObservableObject {
                 update(job.id) { $0.status = .failed; $0.message = error.localizedDescription; $0.speedBps = 0 }
             }
         }
+        if let stop = scoped { stop.stopAccessingSecurityScopedResource() }
+    }
+
+    private func resolveSource(_ job: Job) throws -> (url: URL, stop: URL?) {
+        if FileManager.default.isReadableFile(atPath: job.fileURL.path) {
+            return (job.fileURL, nil)
+        }
+        if let data = job.bookmark {
+            var stale = false
+            let url = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+            let ok = url.startAccessingSecurityScopedResource()
+            guard FileManager.default.isReadableFile(atPath: url.path) else {
+                if ok { url.stopAccessingSecurityScopedResource() }
+                throw Pan115API.APIError.message("找不到原文件，请重新选择")
+            }
+            return (url, ok ? url : nil)
+        }
+        throw Pan115API.APIError.message("找不到原文件，请重新选择")
     }
 
     private func finish(_ id: UUID, message: String) {
@@ -190,7 +226,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
         persist()
     }
 
-    private func uploadForm(job: Job, ticket info: Pan115API.InitUpload) async throws {
+    private func uploadForm(job: Job, file: URL, ticket info: Pan115API.InitUpload) async throws {
         let boundary = "----CamWeb115\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
         let host = info.host.hasPrefix("http") ? info.host : "https://\(info.host)"
         guard let url = URL(string: host) else { throw Pan115API.APIError.badResponse }
@@ -208,7 +244,9 @@ final class Pan115Uploader: NSObject, ObservableObject {
         let header = multipartHeader(fields: fields, filename: job.name, boundary: boundary)
         let footer = Data("\r\n--\(boundary)--\r\n".utf8)
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("115-\(job.id.uuidString).form")
-        try assemble(header: header, file: job.fileURL, footer: footer, output: temp)
+        try await Task.detached(priority: .utility) {
+            try Self.assemble(header: header, file: file, footer: footer, output: temp)
+        }.value
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -237,7 +275,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
         return Data(s.utf8)
     }
 
-    private func assemble(header: Data, file: URL, footer: Data, output: URL) throws {
+    nonisolated private static func assemble(header: Data, file: URL, footer: Data, output: URL) throws {
         FileManager.default.createFile(atPath: output.path, contents: nil)
         let out = try FileHandle(forWritingTo: output)
         defer { try? out.close() }
@@ -270,8 +308,9 @@ final class Pan115Uploader: NSObject, ObservableObject {
     }
 
     private func persist() {
-        let keep = jobs.prefix(300)
-        jobs = Array(keep)
+        let active = jobs.filter { $0.status != .done && $0.status != .cancelled }
+        let history = jobs.filter { $0.status == .done || $0.status == .cancelled }.prefix(80)
+        jobs = active + Array(history)
         if let data = try? JSONEncoder().encode(jobs) {
             try? data.write(to: storeURL, options: .atomic)
         }
@@ -280,7 +319,7 @@ final class Pan115Uploader: NSObject, ObservableObject {
     private static func load(_ url: URL) -> [Job] {
         guard let data = try? Data(contentsOf: url),
               var items = try? JSONDecoder().decode([Job].self, from: data) else { return [] }
-        for i in items.indices where items[i].status == .hashing {
+        for i in items.indices where items[i].status == .hashing || items[i].status == .uploading {
             items[i].status = .waiting
             items[i].message = "排队中"
             items[i].speedBps = 0
