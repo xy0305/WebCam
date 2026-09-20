@@ -198,9 +198,19 @@ enum Pan115API {
         let id: String
         let name: String
         let infoHash: String
-        let status: String
+        let url: String
+        let status: Int
         let size: Int64
         let percent: Double
+        var statusText: String {
+            switch status {
+            case 0: return "等待"
+            case 1: return "下载中"
+            case 2: return "完成"
+            case -1: return "失败"
+            default: return "未知"
+            }
+        }
     }
 
     static func addOffline(urls: [String], dirID: String) async throws -> String {
@@ -224,6 +234,7 @@ enum Pan115API {
         let id: String
         let name: String
         let size: Int64
+        let isDir: Bool
     }
 
     static func recycleList() async throws -> [RecycleItem] { [] }

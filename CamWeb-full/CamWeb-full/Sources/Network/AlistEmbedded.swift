@@ -28,7 +28,7 @@ final class AlistEmbedded: ObservableObject {
             let log = log
             let change = change
             bootTask = Task.detached(priority: .userInitiated) {
-                try Self.boot(event: event, log: log, change: change)
+                try AlistBoot.run(event: event, log: log, change: change)
             }
         }
         do {
@@ -60,7 +60,10 @@ final class AlistEmbedded: ObservableObject {
         Pan115Session.shared.setToken(token, user: user)
     }
 
-    private static func boot(event: AlistEventSink, log: AlistLogSink, change: AlistChangeSink) throws {
+}
+
+enum AlistBoot {
+    static func run(event: AlistEventSink, log: AlistLogSink, change: AlistChangeSink) throws {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("AList", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
