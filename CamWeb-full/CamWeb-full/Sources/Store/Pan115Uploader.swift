@@ -198,18 +198,15 @@ final class Pan115Uploader: NSObject, ObservableObject {
     }
 
     private func resolveSource(_ job: Job) throws -> (url: URL, stop: URL?) {
-        if FileManager.default.isReadableFile(atPath: job.fileURL.path) {
-            return (job.fileURL, nil)
-        }
         if let data = job.bookmark {
             var stale = false
             let url = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
             let ok = url.startAccessingSecurityScopedResource()
-            guard FileManager.default.isReadableFile(atPath: url.path) else {
-                if ok { url.stopAccessingSecurityScopedResource() }
-                throw Pan115API.APIError.message("找不到原文件，请重新选择")
-            }
             return (url, ok ? url : nil)
+        }
+        let access = job.fileURL.startAccessingSecurityScopedResource()
+        if access || FileManager.default.isReadableFile(atPath: job.fileURL.path) {
+            return (job.fileURL, access ? job.fileURL : nil)
         }
         throw Pan115API.APIError.message("找不到原文件，请重新选择")
     }

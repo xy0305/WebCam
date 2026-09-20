@@ -5,9 +5,12 @@ import UIKit
 
 /// 直接 present 系统文件选择器。包进 SwiftUI sheet 时点「打开」经常没回调。
 enum Pan115FilePicker {
-    static func present(onPicked: @escaping ([URL]) -> Void) {
-        // asCopy: true 会在回调前把全部选中文件拷进 App，多选大文件会卡死、占十几 G。
-        present(types: [.item, .content, .data, .folder, .directory, .movie, .video, .image, .audio], asCopy: false, multiple: true) { onPicked($0) }
+    static func present(onPicked: @escaping ([Pan115Inbox.Planned]) -> Void) {
+        // 不要混进 folder：否则 Files 里文件能勾选，点「打开」却没回调。
+        // asCopy: false，回调里立刻做安全范围书签，避免整批拷进 App。
+        present(types: [.item, .movie, .video, .audio, .image, .data], asCopy: false, multiple: true) { urls in
+            onPicked(Pan115Inbox.plan(urls))
+        }
     }
 
     /// 文件夹选择：点进目录后文件不再灰掉。选中文件则用它所在文件夹；选中文件夹则用该文件夹。
@@ -22,9 +25,8 @@ enum Pan115FilePicker {
         guard let first = urls.first else { return nil }
         let access = first.startAccessingSecurityScopedResource()
         defer { if access { first.stopAccessingSecurityScopedResource() } }
-        var isDir: ObjCBool = false
-        FileManager.default.fileExists(atPath: first.path, isDirectory: &isDir)
-        if urls.count == 1 && isDir.boolValue { return first }
+        let isDir = (try? first.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+        if urls.count == 1 && isDir { return first }
         return first.deletingLastPathComponent()
     }
 
@@ -53,7 +55,14 @@ enum Pan115FilePicker {
         init(onPicked: @escaping ([URL]) -> Void) { self.onPicked = onPicked }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            onPicked(urls)
+            // 必须在回调返回前 startAccessing 并拷一份 URL，否则安全范围立刻失效。
+            let kept = urls.map { $0 }
+            for url in kept { _ = url.startAccessingSecurityScopedResource() }
+            if Thread.isMainThread {
+                onPicked(kept)
+            } else {
+                DispatchQueue.main.sync { onPicked(kept) }
+            }
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {}
@@ -73,7 +82,7 @@ enum Pan115Inbox {
             .appendingPathComponent("115Inbox", isDirectory: true)
     }
 
-    /// 只列文件、做书签，不拷贝。拷贝放到真正开始上传时。
+    /// 回调当下做书签。iCloud / Files 的安全范围 URL 不能用 fileExists 判断。
     static func plan(_ urls: [URL]) -> [Planned] {
         var out: [Planned] = []
         for url in urls {
@@ -125,32 +134,45 @@ enum Pan115Inbox {
     }
 
     private static func listTree(_ url: URL) -> [Planned] {
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return [] }
-        if isDir.boolValue {
-            let enumerator = fm.enumerator(
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey, .nameKey])
+        if values?.isDirectory == true {
+            let enumerator = FileManager.default.enumerator(
                 at: url,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .isRegularFileKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .isRegularFileKey, .nameKey],
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             )
             var out: [Planned] = []
             while let child = enumerator?.nextObject() as? URL {
-                let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
-                if values?.isDirectory == true { continue }
+                let childAccess = child.startAccessingSecurityScopedResource()
+                defer { if childAccess { child.stopAccessingSecurityScopedResource() } }
+                let meta = try? child.resourceValues(forKeys: [.isDirectoryKey])
+                if meta?.isDirectory == true { continue }
                 if let item = planned(child) { out.append(item) }
             }
             return out
         }
-        return planned(url).map { [$0] } ?? []
+        if let item = planned(url) { return [item] }
+        return [Planned(
+            source: url,
+            name: url.lastPathComponent,
+            size: Int64(values?.fileSize ?? 0),
+            bookmark: makeBookmark(url)
+        )]
     }
 
     private static func planned(_ url: URL) -> Planned? {
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isDirectoryKey])
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isDirectoryKey, .nameKey])
         if values?.isDirectory == true { return nil }
-        let size = Int64(values?.fileSize ?? 0)
-        let bookmark = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
-        return Planned(source: url, name: url.lastPathComponent, size: size, bookmark: bookmark)
+        return Planned(
+            source: url,
+            name: values?.name ?? url.lastPathComponent,
+            size: Int64(values?.fileSize ?? 0),
+            bookmark: makeBookmark(url)
+        )
+    }
+
+    private static func makeBookmark(_ url: URL) -> Data? {
+        try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: [.nameKey, .fileSizeKey], relativeTo: nil)
     }
 
     private static func streamCopy(from src: URL, to dest: URL) throws {

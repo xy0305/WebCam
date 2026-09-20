@@ -186,8 +186,8 @@ struct Pan115View: View {
                     Image(systemName: "photo.on.rectangle")
                 }
                 Button {
-                    Pan115FilePicker.present { urls in
-                        enqueueFiles(urls)
+                    Pan115FilePicker.present { items in
+                        enqueueFiles(items)
                     }
                 } label: { Image(systemName: "folder.badge.plus") }
                 Button {
@@ -579,8 +579,7 @@ struct Pan115View: View {
         }
     }
 
-    private func enqueueFiles(_ urls: [URL]) {
-        let items = Pan115Inbox.plan(urls)
+    private func enqueueFiles(_ items: [Pan115Inbox.Planned]) {
         guard !items.isEmpty else {
             pickNotice = "没有读到可上传的文件，请再试一次「打开」"
             return
