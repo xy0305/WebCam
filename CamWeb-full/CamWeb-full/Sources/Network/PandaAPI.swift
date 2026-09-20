@@ -187,6 +187,17 @@ enum PandaStreamSource {
         }
         let master = try firstPlaylist(play)
         let context = HLSRequestContext.panda(roomId: userId)
+        if let locked = await HLSMaster.lock(master, context: context) {
+            return ResolvedStream(
+                username: userId,
+                requestContext: context,
+                hlsURL: locked.play,
+                masterURL: master,
+                videoPlaylist: locked.video,
+                audioPlaylist: locked.audio,
+                status: "public"
+            )
+        }
         return ResolvedStream(
             username: userId,
             requestContext: context,

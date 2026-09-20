@@ -174,8 +174,19 @@ enum StripchatStreamSource {
     static func resolve(room: Room) async throws -> ResolvedStream {
         let id = try await modelID(for: room)
         let context = HLSRequestContext.stripchat(username: room.username)
-        // StripCam getPlayback：开播前不拉 CDN / pkey / Mouflon，直接把 _auto.m3u8 交给播放器。
+        // 拉 _auto.m3u8 后锁最高档，避免 AVPlayer 自适应降画质。
         let master = playlistURL(id: id, host: cdnHosts[0], file: "\(id)_auto.m3u8", lowLatency: false)
+        if let locked = await HLSMaster.lock(master, context: context) {
+            return ResolvedStream(
+                username: room.username,
+                requestContext: context,
+                hlsURL: locked.play,
+                masterURL: master,
+                videoPlaylist: locked.video,
+                audioPlaylist: locked.audio,
+                status: room.roomSubject ?? "public"
+            )
+        }
         return ResolvedStream(
             username: room.username,
             requestContext: context,
@@ -214,8 +225,8 @@ enum StripchatStreamSource {
         let matched = keys.first { pdkeys[$0] != nil } ?? keys.first
         let rawMedia: URL
         if text.contains("#EXT-X-STREAM-INF") {
-            let variants = parseVariants(text, base: master)
-            if let best = variants.first {
+            let parsed = HLSMaster.parse(text, base: master)
+            if let best = parsed.best {
                 rawMedia = best.url
             } else {
                 rawMedia = playlistURL(id: id, host: cdnHosts[0], file: "\(id)_\(preferredQuality(room.presets)).m3u8", lowLatency: true)
@@ -364,21 +375,6 @@ enum StripchatStreamSource {
             }
             throw last
         }
-    }
-
-    private static func parseVariants(_ text: String, base: URL) -> [(bandwidth: Int, url: URL)] {
-        var out: [(Int, URL)] = []
-        var bandwidth = 0
-        for raw in text.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.hasPrefix("#EXT-X-STREAM-INF:") {
-                bandwidth = intAttribute("BANDWIDTH=", line) ?? 0
-            } else if !line.isEmpty, !line.hasPrefix("#"), let url = decorate(line, base: base, pkey: nil) {
-                out.append((bandwidth, url))
-                bandwidth = 0
-            }
-        }
-        return out.sorted { $0.0 > $1.0 }
     }
 
     static func decorate(_ value: String, base: URL, pkey: String?, lowLatency: Bool = false) -> URL? {

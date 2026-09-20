@@ -703,7 +703,7 @@ struct PlayerView: View {
     private var playerOptions: KSOptions {
         let o = KSOptions()
         if displayRoom.platform == .stripchat {
-            // 直出 _auto.m3u8：AVPlayer 走系统 VPN，首帧比 FFmpeg 快。
+            // 迷你 master 已锁最高档；AVPlayer 走系统 VPN。
             KSOptions.firstPlayerType = KSAVPlayer.self
             KSOptions.secondPlayerType = KSMEPlayer.self
             o.appendHeader([
@@ -713,7 +713,7 @@ struct PlayerView: View {
                 "Origin": "https://zh.stripchat.com"
             ])
         } else if displayRoom.platform == .panda {
-            // 刚接入时能播：直出 play 接口 HLS。FFmpeg 不走系统 VPN，Panda 改走 AVPlayer。
+            // 迷你 master 已锁最高档。FFmpeg 不走系统 VPN，Panda 仍走 AVPlayer。
             KSOptions.firstPlayerType = KSAVPlayer.self
             KSOptions.secondPlayerType = KSMEPlayer.self
             o.appendHeader([

@@ -1063,21 +1063,7 @@ enum HLSPackager {
     }
 
     static func bestVariant(_ doc: String, base: URL) -> URL? {
-        var bandwidth = 0
-        var best: (Int, URL)?
-        for raw in doc.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.hasPrefix("#EXT-X-STREAM-INF:") {
-                if let r = line.range(of: "BANDWIDTH=") {
-                    bandwidth = Int(line[r.upperBound...].prefix(while: { $0.isNumber })) ?? 0
-                }
-            } else if !line.isEmpty, !line.hasPrefix("#"),
-                      let url = resolve(line, base: base) {
-                if best == nil || bandwidth > best!.0 { best = (bandwidth, url) }
-                bandwidth = 0
-            }
-        }
-        return best?.1
+        HLSMaster.parse(doc, base: base).best?.url
     }
 
     private static func isPlaceholderMedia(_ url: URL) -> Bool {
