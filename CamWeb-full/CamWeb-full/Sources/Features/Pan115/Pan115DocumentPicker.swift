@@ -6,10 +6,10 @@ import UIKit
 /// 直接 present 系统文件选择器。包进 SwiftUI sheet 时点「打开」经常没回调。
 enum Pan115FilePicker {
     static func present(onPicked: @escaping ([Pan115Inbox.Planned]) -> Void) {
-        // 不要混进 folder：否则 Files 里文件能勾选，点「打开」却没回调。
-        // asCopy: false，回调里立刻做安全范围书签，避免整批拷进 App。
-        present(types: [.item, .movie, .video, .audio, .image, .data], asCopy: false, multiple: true) { urls in
-            onPicked(Pan115Inbox.plan(urls))
+        // 对照 build 28/43：asCopy true 才能点「打开」。系统会把选中文件拷进 App tmp，
+        // 回调里只 move 到 Inbox，不再整份拷第二遍。
+        present(types: [.item, .content, .data, .folder, .directory, .movie, .video, .image, .audio], asCopy: true, multiple: true) { urls in
+            onPicked(Pan115Inbox.take(urls))
         }
     }
 
@@ -82,6 +82,18 @@ enum Pan115Inbox {
             .appendingPathComponent("115Inbox", isDirectory: true)
     }
 
+    /// asCopy 已经把文件放进沙盒 tmp。这里只 move 到 Inbox，避免再拷一份。
+    static func take(_ urls: [URL]) -> [Planned] {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var out: [Planned] = []
+        for url in urls {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            out.append(contentsOf: takeTree(url))
+        }
+        return out
+    }
+
     /// 回调当下做书签。iCloud / Files 的安全范围 URL 不能用 fileExists 判断。
     static func plan(_ urls: [URL]) -> [Planned] {
         var out: [Planned] = []
@@ -141,6 +153,28 @@ enum Pan115Inbox {
                 }
             }
         }
+    }
+
+    private static func takeTree(_ url: URL) -> [Planned] {
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .nameKey])
+        if values?.isDirectory == true {
+            let children = (try? FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .nameKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            return children.flatMap(takeTree)
+        }
+        let dest = uniqueURL(values?.name ?? url.lastPathComponent)
+        try? FileManager.default.removeItem(at: dest)
+        do {
+            try FileManager.default.moveItem(at: url, to: dest)
+        } catch {
+            try? copyFile(from: url, to: dest)
+        }
+        guard FileManager.default.fileExists(atPath: dest.path) else { return [] }
+        let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? Int64(values?.fileSize ?? 0)
+        return [Planned(source: dest, name: dest.lastPathComponent, size: size, bookmark: nil)]
     }
 
     private static func listTree(_ url: URL) -> [Planned] {
