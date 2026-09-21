@@ -4,12 +4,48 @@ import Foundation
 final class FollowingStore: ObservableObject {
     static let shared = FollowingStore()
     private let key = "camweb.following"
+    private let cloudKey = "camweb.icloud.following.v1"
+    private let cloud = NSUbiquitousKeyValueStore.default
+    private var cloudObserver: NSObjectProtocol?
+    private var seedTask: Task<Void, Never>?
 
     @Published private(set) var usernames: [String]
     @Published var lastError: String?
 
     private init() {
         usernames = Self.normalized(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        if let remote = cloud.array(forKey: cloudKey) as? [String] {
+            usernames = Self.normalized(remote)
+            persistLocal()
+        }
+        cloudObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloud,
+            queue: .main
+        ) { [weak self] note in
+            let keys = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
+            Task { @MainActor [weak self] in self?.reloadCloud(changedKeys: keys) }
+        }
+        cloud.synchronize()
+        // 首次安装先给 iCloud 一点下载时间，避免空设备立即覆盖另一台设备。
+        seedTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, self.cloud.object(forKey: self.cloudKey) == nil, !self.usernames.isEmpty else { return }
+            self.persistCloud()
+        }
+    }
+
+    /// 手动从 iCloud 拉取；云端没有数据时，把本机列表作为首次种子上传。
+    @discardableResult
+    func syncNow() -> Bool {
+        guard cloud.synchronize() else { return false }
+        if let remote = cloud.array(forKey: cloudKey) as? [String] {
+            usernames = Self.normalized(remote)
+            persistLocal()
+        } else {
+            persistCloud()
+        }
+        return true
     }
 
     func isFollowing(_ username: String) -> Bool {
@@ -44,13 +80,6 @@ final class FollowingStore: ObservableObject {
         persist()
     }
 
-    func applySnapshot(_ values: [String]) {
-        let next = Self.normalized(values)
-        guard next != usernames else { return }
-        usernames = next
-        persistLocal()
-    }
-
     private func applyLocal(_ name: String, follow: Bool) {
         guard !name.isEmpty else { return }
         if follow {
@@ -63,11 +92,23 @@ final class FollowingStore: ObservableObject {
 
     private func persist() {
         persistLocal()
-        Pan115DataSync.shared.scheduleUpload()
+        persistCloud()
     }
 
     private func persistLocal() {
         UserDefaults.standard.set(usernames, forKey: key)
+    }
+
+    private func persistCloud() {
+        cloud.set(usernames, forKey: cloudKey)
+        cloud.synchronize()
+    }
+
+    private func reloadCloud(changedKeys: [String]?) {
+        guard changedKeys == nil || changedKeys?.contains(cloudKey) == true else { return }
+        guard let remote = cloud.array(forKey: cloudKey) as? [String] else { return }
+        usernames = Self.normalized(remote)
+        persistLocal()
     }
 
     private static func clean(_ raw: String) -> String {

@@ -93,7 +93,7 @@ struct FavoriteView: View {
                         if syncing {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("立即同步", systemImage: "arrow.triangle.2.circlepath")
+                            Label("立即同步", systemImage: "icloud.and.arrow.down")
                         }
                     }
                     .disabled(syncing)
@@ -102,7 +102,7 @@ struct FavoriteView: View {
                     ToolbarItem(placement: .topBarTrailing) { Button("清空最近") { history.clear() } }
                 }
             }
-            .alert("115 数据同步", isPresented: Binding(
+            .alert("iCloud 同步", isPresented: Binding(
                 get: { syncMessage != nil },
                 set: { if !$0 { syncMessage = nil } }
             )) {
@@ -157,11 +157,14 @@ struct FavoriteView: View {
 
     private func syncCloudNow() async {
         syncing = true
-        let text = await Pan115DataSync.shared.sync(reason: .manual)
+        let followOK = local.syncNow()
+        let favoriteOK = special.syncNow()
         await loadRemote()
         await loadHeat()
         syncing = false
-        syncMessage = text
+        syncMessage = (followOK && favoriteOK)
+            ? "已从 iCloud 更新收藏和关注"
+            : "iCloud 暂时无法同步，请确认两台设备使用同一 Apple 账户"
     }
 
     private func loadHeat() async {

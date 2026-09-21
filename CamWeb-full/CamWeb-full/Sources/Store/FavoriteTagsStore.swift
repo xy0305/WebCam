@@ -23,26 +23,12 @@ final class FavoriteTagsStore: ObservableObject {
         } else {
             tags.insert(tag, at: 0)
         }
-        persist()
+        UserDefaults.standard.set(tags, forKey: key)
     }
 
     func remove(_ raw: String) {
         tags.removeAll { $0 == normalize(raw) }
-        persist()
-    }
-
-    func applySnapshot(_ values: [String]) {
-        let next = values.map(normalize).filter { !$0.isEmpty }.reduce(into: [String]()) { acc, tag in
-            if !acc.contains(tag) { acc.append(tag) }
-        }
-        guard next != tags else { return }
-        tags = next
         UserDefaults.standard.set(tags, forKey: key)
-    }
-
-    private func persist() {
-        UserDefaults.standard.set(tags, forKey: key)
-        Pan115DataSync.shared.scheduleUpload()
     }
 
     private func normalize(_ raw: String) -> String {

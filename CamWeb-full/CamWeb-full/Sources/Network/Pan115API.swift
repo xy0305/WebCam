@@ -84,14 +84,14 @@ enum Pan115API {
         return UserInfo(id: id, name: name)
     }
 
-    static func list(cid: String, offset: Int = 0, limit: Int = 0, refresh: Bool = false) async throws -> [Node] {
+    static func list(cid: String, offset: Int = 0, limit: Int = 0) async throws -> [Node] {
         let path = normalize(cid)
         let obj = try await post("/api/fs/list", body: [
             "path": path,
             "password": "",
             "page": 1,
             "per_page": 0,
-            "refresh": refresh
+            "refresh": false
         ])
         let data = obj["data"] as? [String: Any] ?? [:]
         let rows = data["content"] as? [[String: Any]] ?? []
@@ -564,57 +564,21 @@ enum Pan115API {
         }
     }
 
-    /// 115 直连换下载链。同步快照用它，不吃 Alist 的 meta 缓存，也不依赖 /115 挂载是否存在。
-    static func driveDownloadURL(pickCode: String) async throws -> URL {
-        let stamp = Int(Date().timeIntervalSince1970 * 1000)
-        let url = URL(string: "https://webapi.115.com/files/download?pickcode=\(encodeForm(pickCode))&_=\(stamp)")!
-        let obj = try await pan115JSON(url)
-        if let state = obj["state"] as? Bool, state == false {
-            throw APIError.message(string(obj["error_msg"]) ?? string(obj["error"]) ?? "115 没有返回下载地址")
-        }
-        guard let raw = string(obj["file_url"]), raw.hasPrefix("http"), let link = URL(string: raw) else {
-            throw APIError.message("115 下载地址格式不认识")
-        }
-        return link
-    }
-
-    static func driveData(from url: URL) async throws -> Data {
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.timeoutInterval = 40
-        pan115Headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse else { throw APIError.badResponse }
-        guard (200..<300).contains(http.statusCode) else { throw APIError.httpStatus(http.statusCode) }
-        guard !data.isEmpty else { throw APIError.badResponse }
-        return data
-    }
-
     static func driveCID(_ raw: String) -> String {
         let p = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if p.isEmpty || p == "/" || p == "/115" || p.hasPrefix("/") { return "0" }
         return p
     }
 
-    /// 把 115 Cookie 挂到本机 Alist。已有 `/115` 且 SEID 没变才跳过。
+    /// 把 115 Cookie 挂到本机 Alist。已有 `/115` 则跳过。
     static func ensure115Storage(cookie: String) async throws {
         let raw = cookie.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return }
         if let list = try? await get("/api/admin/storage/list") {
             let data = list["data"] as? [String: Any] ?? [:]
             let rows = data["content"] as? [[String: Any]] ?? []
-            if let mounted = rows.first(where: { string($0["mount_path"]) == "/115" || string($0["driver"]) == "115 Cloud" }) {
-                // 115 的 SEID 会轮换。挂载里留着旧 Cookie 时，Alist 的 115 驱动会对任何路径
-                // 回 "failed get objs: object not found"，播放和换链一起坏，必须删了重建。
-                let have = seid(in: string(mounted["addition"]) ?? "")
-                let want = seid(in: raw)
-                // 读不到挂载里的 SEID 就不动，免得每次启动来回重建挂载。
-                if have.isEmpty || have == want {
-                    return
-                }
-                if let id = string(mounted["id"]) {
-                    _ = try? await post("/api/admin/storage/delete", body: ["id": id])
-                }
+            if rows.contains(where: { string($0["mount_path"]) == "/115" || string($0["driver"]) == "115 Cloud" }) {
+                return
             }
         }
         let addition: [String: Any] = [
@@ -885,19 +849,6 @@ enum Pan115API {
     }
 
     private static var cookieHeader: String? { Pan115Session.shared.cookieHeader }
-
-    /// 从 Cookie 或挂载的 addition JSON 里抠出 SEID 的值，两边格式不同所以只比这一段。
-    private static func seid(in text: String) -> String {
-        guard let at = text.range(of: "SEID") else { return "" }
-        var out = ""
-        for ch in text[at.upperBound...] {
-            if ch == "=" { continue }
-            if ch == ";" || ch == "\"" || ch == "'" || ch == "\\" || ch == "," || ch.isWhitespace { break }
-            out.append(ch)
-            if out.count > 200 { break }
-        }
-        return out
-    }
 
     static func cookieValue(_ name: String) -> String? {
         guard let header = cookieHeader else { return nil }

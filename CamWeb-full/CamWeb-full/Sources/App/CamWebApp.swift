@@ -95,13 +95,11 @@ struct RootFlow: View {
             AutoRecordMonitor.shared.startMonitoring()
             RecordingManager.shared.recoverOrphans()
             _ = Pan115BackupStore.shared
-            Task { _ = await Pan115DataSync.shared.sync(reason: .launch) }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
                 RecordingManager.shared.recoverOrphans()
-                Task { _ = await Pan115DataSync.shared.sync(reason: .launch) }
             case .background:
                 RecordingManager.shared.keepBackgroundAlive()
                 RecordingManager.shared.recoverOrphans()
