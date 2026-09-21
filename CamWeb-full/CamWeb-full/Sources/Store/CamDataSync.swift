@@ -198,7 +198,8 @@ final class Pan115DataSync: ObservableObject {
     private func newestRemotePath() async throws -> String? {
         let dir = Self.remoteDir
         do {
-            let kids = try await Pan115API.list(cid: dir)
+            // 同步目录必须强刷：115 挂载带 30 分钟 meta 缓存，否则刚传的快照另一台看不到。
+            let kids = try await Pan115API.list(cid: dir, refresh: true)
             return snapshotPaths(kids).max()
         } catch let error as Pan115API.APIError {
             if case .message(let text) = error, isMissingFolder(text) { return nil }
@@ -290,7 +291,7 @@ final class Pan115DataSync: ObservableObject {
 
     /// 只留最近几份，出错不影响同步本身。
     private func pruneRemoteCopies() async throws {
-        let kids = try await Pan115API.list(cid: Self.remoteDir)
+        let kids = try await Pan115API.list(cid: Self.remoteDir, refresh: true)
         for path in snapshotPaths(kids).sorted().dropLast(Self.keepRemoteCopies) {
             try? await Pan115API.delete(id: path)
         }

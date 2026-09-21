@@ -84,14 +84,14 @@ enum Pan115API {
         return UserInfo(id: id, name: name)
     }
 
-    static func list(cid: String, offset: Int = 0, limit: Int = 0) async throws -> [Node] {
+    static func list(cid: String, offset: Int = 0, limit: Int = 0, refresh: Bool = false) async throws -> [Node] {
         let path = normalize(cid)
         let obj = try await post("/api/fs/list", body: [
             "path": path,
             "password": "",
             "page": 1,
             "per_page": 0,
-            "refresh": false
+            "refresh": refresh
         ])
         let data = obj["data"] as? [String: Any] ?? [:]
         let rows = data["content"] as? [[String: Any]] ?? []
