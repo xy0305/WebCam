@@ -16,6 +16,8 @@ struct FavoriteView: View {
     @State private var remote: [Room] = []
     @State private var selected: Section = .recent
     @State private var heat: [String: Room] = [:]
+    @State private var syncing = false
+    @State private var syncMessage: String?
 
     private var columns: [GridItem] { [GridItem(.adaptive(minimum: 160), spacing: 14)] }
     private var rooms: [Room] {
@@ -84,9 +86,29 @@ struct FavoriteView: View {
             }
             .navigationTitle("收藏")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Task { await syncCloudNow() }
+                    } label: {
+                        if syncing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("立即同步", systemImage: "icloud.and.arrow.down")
+                        }
+                    }
+                    .disabled(syncing)
+                }
                 if selected == .recent, !history.items.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) { Button("清空最近") { history.clear() } }
                 }
+            }
+            .alert("iCloud 同步", isPresented: Binding(
+                get: { syncMessage != nil },
+                set: { if !$0 { syncMessage = nil } }
+            )) {
+                Button("好", role: .cancel) { syncMessage = nil }
+            } message: {
+                Text(syncMessage ?? "")
             }
             .refreshable { await loadRemote(); await loadHeat() }
             .task { await loadRemote(); await loadHeat() }
@@ -131,6 +153,18 @@ struct FavoriteView: View {
         let rooms = (try? await RoomAPI.fetchFollowed()) ?? []
         remote = rooms
         if !rooms.isEmpty { local.mergeRemote(rooms) }
+    }
+
+    private func syncCloudNow() async {
+        syncing = true
+        let followOK = local.syncNow()
+        let favoriteOK = special.syncNow()
+        await loadRemote()
+        await loadHeat()
+        syncing = false
+        syncMessage = (followOK && favoriteOK)
+            ? "已从 iCloud 更新收藏和关注"
+            : "iCloud 暂时无法同步，请确认两台设备使用同一 Apple 账户"
     }
 
     private func loadHeat() async {

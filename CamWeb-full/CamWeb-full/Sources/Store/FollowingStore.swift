@@ -35,6 +35,19 @@ final class FollowingStore: ObservableObject {
         }
     }
 
+    /// 手动从 iCloud 拉取；云端没有数据时，把本机列表作为首次种子上传。
+    @discardableResult
+    func syncNow() -> Bool {
+        guard cloud.synchronize() else { return false }
+        if let remote = cloud.array(forKey: cloudKey) as? [String] {
+            usernames = Self.normalized(remote)
+            persistLocal()
+        } else {
+            persistCloud()
+        }
+        return true
+    }
+
     func isFollowing(_ username: String) -> Bool {
         usernames.contains(Self.clean(username))
     }

@@ -144,6 +144,20 @@ final class SpecialFollowStore: ObservableObject {
         }
     }
 
+    /// 手动从 iCloud 拉取；云端没有数据时，把本机列表作为首次种子上传。
+    @discardableResult
+    func syncNow() -> Bool {
+        guard cloud.synchronize() else { return false }
+        if let data = cloud.data(forKey: cloudKey),
+           let remote = try? JSONDecoder().decode([Item].self, from: data) {
+            items = Self.normalized(remote)
+            persistLocal()
+        } else {
+            persistCloud()
+        }
+        return true
+    }
+
     func contains(_ username: String) -> Bool {
         items.contains { $0.username == username.lowercased() }
     }
