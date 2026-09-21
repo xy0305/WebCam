@@ -270,8 +270,8 @@ enum RecordingStore {
         }
         let folder = url.deletingLastPathComponent()
         finalizeRecoveredPlaylists(in: folder)
-        let output = folder.deletingLastPathComponent()
-            .appendingPathComponent(exportFileStem(from: url) + ".mp4")
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(exportFileStem(from: url)).album-export.\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: output)
         var ok = await Task.detached(priority: .utility) {
             FFmpegLocalMuxer.mux(input: url, output: output)

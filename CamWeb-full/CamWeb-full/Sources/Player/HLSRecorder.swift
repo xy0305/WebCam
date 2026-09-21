@@ -381,22 +381,37 @@ final class RecordingSession: ObservableObject, Identifiable {
             return
         }
 
-        let mp4 = recovered.deletingLastPathComponent().appendingPathComponent("\(fileStem).mp4")
-        try? FileManager.default.removeItem(at: mp4)
+        let parent = recovered.deletingLastPathComponent()
+        let mp4 = parent.appendingPathComponent("\(fileStem).mp4")
+        // 封装中的文件绝不能用最终名称，否则列表会同时显示恢复录像和半成品 MP4。
+        let temporaryMP4 = parent.appendingPathComponent("\(fileStem).mux.\(UUID().uuidString).mp4")
+        try? FileManager.default.removeItem(at: temporaryMP4)
         bannerMuxing(name)
 
         let duration = elapsedText
         let size = bytesText
         Task.detached(priority: .utility) { [weak self] in
-            let ok = FFmpegLocalMuxer.mux(input: index, output: mp4)
-            let usable = ok && RecordingStore.isUsableVideoFile(mp4)
+            let ok = FFmpegLocalMuxer.mux(input: index, output: temporaryMP4)
+            let usable = ok && RecordingStore.isUsableVideoFile(temporaryMP4)
+            let installed: Bool
+            if usable && !FileManager.default.fileExists(atPath: mp4.path) {
+                do {
+                    try FileManager.default.moveItem(at: temporaryMP4, to: mp4)
+                    installed = true
+                } catch {
+                    installed = false
+                }
+            } else {
+                installed = false
+            }
+            if !installed { try? FileManager.default.removeItem(at: temporaryMP4) }
             await MainActor.run {
                 guard let self else { return }
-                if usable {
+                if installed {
+                    // 最终 MP4 已完整落盘后，才删除作为兜底的 HLS 恢复目录。
                     try? FileManager.default.removeItem(at: recovered)
                     self.onFinished?(name, "\(name) 已保存 MP4 · \(duration) · \(size)")
                 } else {
-                    try? FileManager.default.removeItem(at: mp4)
                     self.onFinished?(name, "\(name) 封装未完成，已保留恢复录像")
                 }
             }
