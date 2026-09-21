@@ -87,10 +87,6 @@ final class SpecialFollowStore: ObservableObject {
     static let shared = SpecialFollowStore()
     private let key = "camweb.special.v2"
     private let legacyKey = "camweb.special"
-    private let cloudKey = "camweb.icloud.special.v1"
-    private let cloud = NSUbiquitousKeyValueStore.default
-    private var cloudObserver: NSObjectProtocol?
-    private var seedTask: Task<Void, Never>?
 
     struct Item: Codable, Identifiable, Hashable {
         var username: String
@@ -123,39 +119,6 @@ final class SpecialFollowStore: ObservableObject {
                 Item(username: $0, platform: .chaturbate, platformRoomID: nil, imageURL: nil)
             })
         }
-        if let data = cloud.data(forKey: cloudKey),
-           let remote = try? JSONDecoder().decode([Item].self, from: data) {
-            items = Self.normalized(remote)
-            persistLocal()
-        }
-        cloudObserver = NotificationCenter.default.addObserver(
-            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: cloud,
-            queue: .main
-        ) { [weak self] note in
-            let keys = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
-            Task { @MainActor [weak self] in self?.reloadCloud(changedKeys: keys) }
-        }
-        cloud.synchronize()
-        seedTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let self, self.cloud.object(forKey: self.cloudKey) == nil, !self.items.isEmpty else { return }
-            self.persistCloud()
-        }
-    }
-
-    /// 手动从 iCloud 拉取；云端没有数据时，把本机列表作为首次种子上传。
-    @discardableResult
-    func syncNow() -> Bool {
-        guard cloud.synchronize() else { return false }
-        if let data = cloud.data(forKey: cloudKey),
-           let remote = try? JSONDecoder().decode([Item].self, from: data) {
-            items = Self.normalized(remote)
-            persistLocal()
-        } else {
-            persistCloud()
-        }
-        return true
     }
 
     func contains(_ username: String) -> Bool {
@@ -188,29 +151,22 @@ final class SpecialFollowStore: ObservableObject {
         persist()
     }
 
+    func applySnapshot(_ values: [Item]) {
+        let next = Self.normalized(values)
+        guard next != items else { return }
+        items = next
+        persistLocal()
+    }
+
     private func persist() {
         persistLocal()
-        persistCloud()
+        Pan115DataSync.shared.scheduleUpload()
     }
 
     private func persistLocal() {
         if let data = try? JSONEncoder().encode(items) {
             UserDefaults.standard.set(data, forKey: key)
         }
-    }
-
-    private func persistCloud() {
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        cloud.set(data, forKey: cloudKey)
-        cloud.synchronize()
-    }
-
-    private func reloadCloud(changedKeys: [String]?) {
-        guard changedKeys == nil || changedKeys?.contains(cloudKey) == true else { return }
-        guard let data = cloud.data(forKey: cloudKey),
-              let remote = try? JSONDecoder().decode([Item].self, from: data) else { return }
-        items = Self.normalized(remote)
-        persistLocal()
     }
 
     private static func normalized(_ values: [Item]) -> [Item] {

@@ -6,6 +6,9 @@ struct SettingsView: View {
     @ObservedObject private var stripchat = StripchatSession.shared
     @ObservedObject private var panda = PandaSession.shared
     @ObservedObject private var pan115 = Pan115Session.shared
+    @ObservedObject private var dataSync = Pan115DataSync.shared
+    @State private var syncConfirm: SyncConfirm?
+    @State private var syncNote: String?
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
@@ -22,6 +25,7 @@ struct SettingsView: View {
                 stripchatSection
                 pandaSection
                 pan115Section
+                syncSection
                 playbackSection
                 logoutSection
                 footerSection
@@ -59,6 +63,30 @@ struct SettingsView: View {
                 Button("好", role: .cancel) { cookieAlert = nil }
             } message: {
                 Text(cookieAlert?.message ?? "")
+            }
+            .alert(
+                "115 数据同步",
+                isPresented: Binding(
+                    get: { syncNote != nil },
+                    set: { if !$0 { syncNote = nil } }
+                )
+            ) {
+                Button("好", role: .cancel) { syncNote = nil }
+            } message: {
+                Text(syncNote ?? "")
+            }
+            .confirmationDialog(
+                syncConfirm?.title ?? "",
+                isPresented: Binding(
+                    get: { syncConfirm != nil },
+                    set: { if !$0 { syncConfirm = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("确认") { runSyncConfirm() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text(syncConfirm?.message ?? "")
             }
         }
     }
@@ -119,6 +147,31 @@ struct SettingsView: View {
             Text("对照 alist-ios：App 内嵌 Alist，本机 5244 挂 115。Cookie 需含 UID、CID、SEID。不用填外部地址。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+    }
+
+    private var syncSection: some View {
+        Section("收藏同步（115）") {
+            Toggle("自动同步", isOn: Binding(
+                get: { dataSync.enabled },
+                set: { dataSync.enabled = $0 }
+            ))
+            LabeledContent("云端位置", value: "/115/\(Pan115DataSync.folderName)/")
+            LabeledContent("最近结果", value: dataSync.summary)
+            Button {
+                Task { syncNote = await dataSync.sync(reason: .manual) }
+            } label: {
+                if dataSync.busy {
+                    ProgressView()
+                } else {
+                    Text("立即同步")
+                }
+            }
+            Button("以本机为准覆盖 115", role: .destructive) { syncConfirm = .push }
+            Button("用 115 覆盖本机", role: .destructive) { syncConfirm = .pull }
+            Text("同步收藏、关注、收藏标签，不含最近播放和录像。平时只做并集合并，取消收藏要靠「以本机为准」才会传出去。云端保留最近 5 份快照，可回退。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .disabled(!dataSync.readyToSync || dataSync.busy)
     }
 
     private var playbackSection: some View {
@@ -210,6 +263,30 @@ struct SettingsView: View {
         } else {
             auth.markLoggedIn(username: "chaturbate")
         }
+    }
+
+    private func runSyncConfirm() {
+        guard let kind = syncConfirm else { return }
+        syncConfirm = nil
+        Task {
+            switch kind {
+            case .push: syncNote = await dataSync.pushReplacingRemote()
+            case .pull: syncNote = await dataSync.pullReplacingLocal()
+            }
+        }
+    }
+}
+
+private enum SyncConfirm: String, Identifiable {
+    case push, pull
+    var id: Self { self }
+    var title: String {
+        self == .push ? "用本机数据覆盖 115？" : "用 115 数据覆盖本机？"
+    }
+    var message: String {
+        self == .push
+            ? "本机的取消收藏、取消关注会从另一台设备消失。合并同步不会这样，只有这里会。"
+            : "本机现有的收藏、关注、标签会被 115 上的快照替换，之后仍可再「以本机为准」传回去。"
     }
 }
 
