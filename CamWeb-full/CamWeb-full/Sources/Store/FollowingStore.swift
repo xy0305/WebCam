@@ -4,15 +4,39 @@ import Foundation
 final class FollowingStore: ObservableObject {
     static let shared = FollowingStore()
     private let key = "camweb.following"
+    private let cloudKey = "camweb.icloud.following.v1"
+    private let cloud = NSUbiquitousKeyValueStore.default
+    private var cloudObserver: NSObjectProtocol?
+    private var seedTask: Task<Void, Never>?
+
     @Published private(set) var usernames: [String]
     @Published var lastError: String?
 
     private init() {
-        usernames = UserDefaults.standard.stringArray(forKey: key) ?? []
+        usernames = Self.normalized(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        if let remote = cloud.array(forKey: cloudKey) as? [String] {
+            usernames = Self.normalized(remote)
+            persistLocal()
+        }
+        cloudObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloud,
+            queue: .main
+        ) { [weak self] note in
+            let keys = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
+            Task { @MainActor [weak self] in self?.reloadCloud(changedKeys: keys) }
+        }
+        cloud.synchronize()
+        // 首次安装先给 iCloud 一点下载时间，避免空设备立即覆盖另一台设备。
+        seedTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, self.cloud.object(forKey: self.cloudKey) == nil, !self.usernames.isEmpty else { return }
+            self.persistCloud()
+        }
     }
 
     func isFollowing(_ username: String) -> Bool {
-        usernames.contains(username.lowercased())
+        usernames.contains(Self.clean(username))
     }
 
     func toggle(_ username: String) {
@@ -20,7 +44,7 @@ final class FollowingStore: ObservableObject {
     }
 
     func toggleSynced(_ username: String) async {
-        let name = username.lowercased()
+        let name = Self.clean(username)
         let willFollow = !isFollowing(name)
         applyLocal(name, follow: willFollow)
         guard CookieBridge.hasSessionCookie() else { return }
@@ -34,21 +58,57 @@ final class FollowingStore: ObservableObject {
     }
 
     func mergeRemote(_ rooms: [Room]) {
-        var set = usernames
-        for r in rooms where !set.contains(r.username) {
-            set.insert(r.username, at: 0)
+        var values = usernames
+        for room in rooms {
+            let name = Self.clean(room.username)
+            if !name.isEmpty, !values.contains(name) { values.insert(name, at: 0) }
         }
-        usernames = set
-        UserDefaults.standard.set(usernames, forKey: key)
+        usernames = values
+        persist()
     }
 
     private func applyLocal(_ name: String, follow: Bool) {
+        guard !name.isEmpty else { return }
         if follow {
             if !usernames.contains(name) { usernames.insert(name, at: 0) }
         } else if let i = usernames.firstIndex(of: name) {
             usernames.remove(at: i)
         }
+        persist()
+    }
+
+    private func persist() {
+        persistLocal()
+        persistCloud()
+    }
+
+    private func persistLocal() {
         UserDefaults.standard.set(usernames, forKey: key)
+    }
+
+    private func persistCloud() {
+        cloud.set(usernames, forKey: cloudKey)
+        cloud.synchronize()
+    }
+
+    private func reloadCloud(changedKeys: [String]?) {
+        guard changedKeys == nil || changedKeys?.contains(cloudKey) == true else { return }
+        guard let remote = cloud.array(forKey: cloudKey) as? [String] else { return }
+        usernames = Self.normalized(remote)
+        persistLocal()
+    }
+
+    private static func clean(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalized(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap {
+            let value = clean($0)
+            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
+            return value
+        }
     }
 }
 

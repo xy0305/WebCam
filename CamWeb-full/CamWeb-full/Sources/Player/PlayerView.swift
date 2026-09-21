@@ -63,8 +63,10 @@ struct PlayerView: View {
     var body: some View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
-            let fillVideo = isLandscape || isVerticalLive
-            let videoHeight = fillVideo ? geo.size.height : (geo.size.width * 9 / 16)
+            let isPad = UIDevice.current.userInterfaceIdiom == .pad
+            // iPad 默认保留视频下方详情区；iPhone 横屏/竖屏直播仍按全屏播放。
+            let fillVideo = !isPad && (isLandscape || isVerticalLive)
+            let videoHeight = fillVideo ? geo.size.height : min(geo.size.height * 0.68, geo.size.width * 9 / 16)
 
             ZStack(alignment: .top) {
                 Color.black.ignoresSafeArea()
@@ -208,13 +210,13 @@ struct PlayerView: View {
                         Button {
                             special.toggle(displayRoom)
                         } label: {
-                            Label(special.contains(displayRoom) ? "取消非常关注" : "非常关注",
+                            Label(special.contains(displayRoom) ? "取消收藏" : "收藏",
                                   systemImage: special.contains(displayRoom) ? "star.slash.fill" : "star")
                         }
                         Button {
                             fav.toggle(username)
                         } label: {
-                            Label(fav.isFollowing(username) ? "取消收藏" : "收藏",
+                            Label(fav.isFollowing(username) ? "取消关注" : "关注",
                                   systemImage: fav.isFollowing(username) ? "heart.slash" : "heart")
                         }
                         ShareLink(item: shareURL) {
@@ -531,7 +533,31 @@ struct PlayerView: View {
             VStack {
                 HStack {
                     Spacer()
-                    HStack(spacing: 16) {
+                    HStack(spacing: 14) {
+                        Button {
+                            special.toggle(displayRoom)
+                            scheduleAutoHide()
+                        } label: {
+                            Image(systemName: special.contains(displayRoom) ? "star.fill" : "star")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(special.contains(displayRoom) ? .yellow : .white)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(special.contains(displayRoom) ? "取消收藏" : "收藏")
+
+                        Button {
+                            fav.toggle(username)
+                            scheduleAutoHide()
+                        } label: {
+                            Image(systemName: fav.isFollowing(username) ? "heart.fill" : "heart")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(fav.isFollowing(username) ? .red : .white)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(fav.isFollowing(username) ? "取消关注" : "关注")
+
                         iconButton("pip") {
                             startSystemPiP()
                         }

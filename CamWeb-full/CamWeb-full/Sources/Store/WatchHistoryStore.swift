@@ -87,6 +87,10 @@ final class SpecialFollowStore: ObservableObject {
     static let shared = SpecialFollowStore()
     private let key = "camweb.special.v2"
     private let legacyKey = "camweb.special"
+    private let cloudKey = "camweb.icloud.special.v1"
+    private let cloud = NSUbiquitousKeyValueStore.default
+    private var cloudObserver: NSObjectProtocol?
+    private var seedTask: Task<Void, Never>?
 
     struct Item: Codable, Identifiable, Hashable {
         var username: String
@@ -113,11 +117,30 @@ final class SpecialFollowStore: ObservableObject {
     private init() {
         if let data = UserDefaults.standard.data(forKey: key),
            let decoded = try? JSONDecoder().decode([Item].self, from: data) {
-            items = decoded
+            items = Self.normalized(decoded)
         } else {
-            items = (UserDefaults.standard.stringArray(forKey: legacyKey) ?? []).map {
+            items = Self.normalized((UserDefaults.standard.stringArray(forKey: legacyKey) ?? []).map {
                 Item(username: $0, platform: .chaturbate, platformRoomID: nil, imageURL: nil)
-            }
+            })
+        }
+        if let data = cloud.data(forKey: cloudKey),
+           let remote = try? JSONDecoder().decode([Item].self, from: data) {
+            items = Self.normalized(remote)
+            persistLocal()
+        }
+        cloudObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloud,
+            queue: .main
+        ) { [weak self] note in
+            let keys = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
+            Task { @MainActor [weak self] in self?.reloadCloud(changedKeys: keys) }
+        }
+        cloud.synchronize()
+        seedTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, self.cloud.object(forKey: self.cloudKey) == nil, !self.items.isEmpty else { return }
+            self.persistCloud()
         }
     }
 
@@ -152,8 +175,37 @@ final class SpecialFollowStore: ObservableObject {
     }
 
     private func persist() {
+        persistLocal()
+        persistCloud()
+    }
+
+    private func persistLocal() {
         if let data = try? JSONEncoder().encode(items) {
             UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private func persistCloud() {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        cloud.set(data, forKey: cloudKey)
+        cloud.synchronize()
+    }
+
+    private func reloadCloud(changedKeys: [String]?) {
+        guard changedKeys == nil || changedKeys?.contains(cloudKey) == true else { return }
+        guard let data = cloud.data(forKey: cloudKey),
+              let remote = try? JSONDecoder().decode([Item].self, from: data) else { return }
+        items = Self.normalized(remote)
+        persistLocal()
+    }
+
+    private static func normalized(_ values: [Item]) -> [Item] {
+        var seen = Set<String>()
+        return values.compactMap { item in
+            var value = item
+            value.username = item.username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !value.username.isEmpty, seen.insert(value.id).inserted else { return nil }
+            return value
         }
     }
 }
