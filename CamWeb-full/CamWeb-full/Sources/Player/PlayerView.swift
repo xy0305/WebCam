@@ -20,6 +20,7 @@ struct PlayerView: View {
     @State private var isBuffering = false
     @State private var hasStarted = false
     @State private var isVerticalLive = false
+    @State private var isPadFullscreen = false
     @State private var autoHideTask: Task<Void, Never>?
     @State private var exportCopied = false
     @State private var showRoomSwitcher = false
@@ -64,8 +65,8 @@ struct PlayerView: View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
             let isPad = UIDevice.current.userInterfaceIdiom == .pad
-            // iPad 默认保留视频下方详情区；iPhone 横屏/竖屏直播仍按全屏播放。
-            let fillVideo = !isPad && (isLandscape || isVerticalLive)
+            // iPad 默认保留详情；点击全屏按钮后才铺满视频。
+            let fillVideo = isPad ? isPadFullscreen : (isLandscape || isVerticalLive)
             let videoHeight = fillVideo ? geo.size.height : min(geo.size.height * 0.68, geo.size.width * 9 / 16)
 
             ZStack(alignment: .top) {
@@ -659,16 +660,23 @@ struct PlayerView: View {
 
                         if !isVerticalLive {
                             Button {
-                                toggleOrientation()
+                                if UIDevice.current.userInterfaceIdiom == .pad {
+                                    withAnimation(.easeInOut(duration: 0.2)) { isPadFullscreen.toggle() }
+                                    isMaskVisible = true
+                                    scheduleAutoHide()
+                                } else {
+                                    toggleOrientation()
+                                }
                             } label: {
-                                Image(systemName: isLandscape
-                                      ? "arrow.down.right.and.arrow.up.left"
-                                      : "arrow.up.left.and.arrow.down.right")
+                                Image(systemName: UIDevice.current.userInterfaceIdiom == .pad
+                                      ? (isPadFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                                      : (isLandscape ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"))
                                     .font(.system(size: 18, weight: .semibold))
                                     .foregroundStyle(.white)
                                     .frame(width: 30, height: 30)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel(UIDevice.current.userInterfaceIdiom == .pad && isPadFullscreen ? "退出全屏" : "全屏")
                         }
                     }
                     .padding(.horizontal, 8)
