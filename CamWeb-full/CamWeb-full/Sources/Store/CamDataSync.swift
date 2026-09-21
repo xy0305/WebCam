@@ -175,6 +175,8 @@ final class Pan115DataSync: ObservableObject {
     private func readRemote() async throws -> CamSyncSnapshot? {
         // 列举走 115 网页接口：实时，不吃 Alist 的 meta 缓存，也不要求 /115 挂载存在。
         guard let node = try await newestRemoteNode() else { return nil }
+        // 换下载链要 Alist 活着；没有远端快照时不必去碰它。
+        if Pan115Session.shared.hasCookie { await Pan115Session.shared.mount115() }
         let data = try await download(node)
         do {
             return try JSONDecoder().decode(CamSyncSnapshot.self, from: data)
@@ -185,17 +187,11 @@ final class Pan115DataSync: ObservableObject {
     }
 
     private func download(_ node: Pan115API.Node) async throws -> Data {
-        var directError: String?
-        if !node.pickCode.isEmpty {
-            do {
-                let url = try await Pan115API.driveDownloadURL(pickCode: node.pickCode)
-                return try await Pan115API.driveData(from: url)
-            } catch {
-                directError = error.localizedDescription
-            }
-        }
         let path = Pan115API.join(Self.remoteDir, node.name)
+        var alistError: String?
         do {
+            // 强刷一次目录，把 Alist 里可能缓存下来的"该目录不存在"记录冲掉。
+            _ = try? await Pan115API.list(cid: Self.remoteDir, refresh: true)
             let link = try await Pan115API.fileLink(pickCode: path)
             var req = URLRequest(url: link.url)
             req.httpMethod = "GET"
@@ -203,11 +199,22 @@ final class Pan115DataSync: ObservableObject {
             link.headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
             let (data, response) = try await URLSession.shared.data(for: req)
             guard let http = response as? HTTPURLResponse else { throw Pan115API.APIError.badResponse }
-            guard (200..<300).contains(http.statusCode) else { throw Pan115API.APIError.httpStatus(http.statusCode) }
+            guard (200..<300).contains(http.statusCode), !data.isEmpty else {
+                throw Pan115API.APIError.httpStatus(http.statusCode)
+            }
             return data
         } catch {
-            let fallback = error.localizedDescription
-            throw Pan115API.APIError.message("下载快照失败：115 直连「\(directError ?? "无 pickcode")」，Alist 换链「\(fallback)」")
+            alistError = error.localizedDescription
+        }
+        guard !node.pickCode.isEmpty else {
+            throw Pan115API.APIError.message("读取快照失败：\(alistError ?? "未知错误")")
+        }
+        // 兜底走 115 直连换链；CDN 会校验会话，同设备同 IP 时才有机会通过。
+        do {
+            let url = try await Pan115API.driveDownloadURL(pickCode: node.pickCode)
+            return try await Pan115API.driveData(from: url)
+        } catch {
+            throw Pan115API.APIError.message("读取快照失败：Alist「\(alistError ?? "")」，115 直连「\(error.localizedDescription)」")
         }
     }
 
