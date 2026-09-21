@@ -60,12 +60,16 @@ final class Pan115DataSync: ObservableObject {
     }
 
     @Published private(set) var busy = false
-    @Published private(set) var summary: String = UserDefaults.standard.string(forKey: Self.summaryKey) ?? "从未同步"
+    @Published private(set) var summary: String = Pan115DataSync.storedSummary
     @Published var enabled: Bool = Pan115DataSync.storedEnabled {
-        didSet { UserDefaults.standard.set(enabled, forKey: Self.enabledKey) }
+        didSet { UserDefaults.standard.set(enabled, forKey: Pan115DataSync.enabledKey) }
     }
 
     private var pending: Task<Void, Never>?
+
+    private static var storedSummary: String {
+        UserDefaults.standard.string(forKey: summaryKey) ?? "从未同步"
+    }
 
     private static var storedEnabled: Bool {
         guard UserDefaults.standard.object(forKey: enabledKey) != nil else { return true }
