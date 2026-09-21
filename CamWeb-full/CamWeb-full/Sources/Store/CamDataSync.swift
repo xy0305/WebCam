@@ -173,47 +173,61 @@ final class Pan115DataSync: ObservableObject {
     // MARK: - 传输
 
     private func readRemote() async throws -> CamSyncSnapshot? {
-        if Pan115Session.shared.hasCookie {
-            await Pan115Session.shared.mount115()
-        } else {
-            await AlistEmbedded.shared.prepare()
-        }
-        guard let path = try await newestRemotePath() else { return nil }
-        let link = try await Pan115API.fileLink(pickCode: path)
-        var req = URLRequest(url: link.url)
-        req.httpMethod = "GET"
-        req.timeoutInterval = 30
-        link.headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse else { throw Pan115API.APIError.badResponse }
-        guard (200..<300).contains(http.statusCode) else { throw Pan115API.APIError.httpStatus(http.statusCode) }
+        // 列举走 115 网页接口：实时，不吃 Alist 的 meta 缓存，也不要求 /115 挂载存在。
+        guard let node = try await newestRemoteNode() else { return nil }
+        let data = try await download(node)
         do {
             return try JSONDecoder().decode(CamSyncSnapshot.self, from: data)
         } catch {
             // 认不出来的云端快照绝不能被本机覆盖。
-            throw Pan115API.APIError.message("115 上的快照无法解析（\(path)），已停止同步以保护数据")
+            throw Pan115API.APIError.message("115 上的快照无法解析（\(node.name)），已停止同步以保护数据")
         }
     }
 
-    private func newestRemotePath() async throws -> String? {
-        let dir = Self.remoteDir
+    private func download(_ node: Pan115API.Node) async throws -> Data {
+        var directError: String?
+        if !node.pickCode.isEmpty {
+            do {
+                let url = try await Pan115API.driveDownloadURL(pickCode: node.pickCode)
+                return try await Pan115API.driveData(from: url)
+            } catch {
+                directError = error.localizedDescription
+            }
+        }
+        let path = Pan115API.join(Self.remoteDir, node.name)
         do {
-            // 同步目录必须强刷：115 挂载带 30 分钟 meta 缓存，否则刚传的快照另一台看不到。
-            let kids = try await Pan115API.list(cid: dir, refresh: true)
-            return snapshotPaths(kids).max()
-        } catch let error as Pan115API.APIError {
-            if case .message(let text) = error, isMissingFolder(text) { return nil }
-            throw error
+            let link = try await Pan115API.fileLink(pickCode: path)
+            var req = URLRequest(url: link.url)
+            req.httpMethod = "GET"
+            req.timeoutInterval = 40
+            link.headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse else { throw Pan115API.APIError.badResponse }
+            guard (200..<300).contains(http.statusCode) else { throw Pan115API.APIError.httpStatus(http.statusCode) }
+            return data
+        } catch {
+            let fallback = error.localizedDescription
+            throw Pan115API.APIError.message("下载快照失败：115 直连「\(directError ?? "无 pickcode")」，Alist 换链「\(fallback)」")
         }
     }
 
-    private func snapshotPaths(_ kids: [Pan115API.Node]) -> [String] {
-        kids.filter { !$0.isDir && $0.name.hasPrefix(Self.filePrefix) && $0.name.hasSuffix(".json") }.map(\.id)
+    /// 目录不存在就创建（115 cid）；缓存的 cid 失效时重建一次再试。
+    private func listRemoteSnapshots() async throws -> [Pan115API.Node] {
+        let cid = try await syncFolderCID()
+        do {
+            return snapshotNodes(try await Pan115API.driveList(cid: cid))
+        } catch {
+            UserDefaults.standard.removeObject(forKey: Self.folderCIDKey)
+            return snapshotNodes(try await Pan115API.driveList(cid: try await syncFolderCID()))
+        }
     }
 
-    private func isMissingFolder(_ text: String) -> Bool {
-        let m = text.lowercased()
-        return m.contains("not exist") || m.contains("no such") || m.contains("文件不存在") || m.contains("目录不存在")
+    private func newestRemoteNode() async throws -> Pan115API.Node? {
+        try await listRemoteSnapshots().max { $0.name < $1.name }
+    }
+
+    private func snapshotNodes(_ kids: [Pan115API.Node]) -> [Pan115API.Node] {
+        kids.filter { !$0.isDir && $0.name.hasPrefix(Self.filePrefix) && $0.name.hasSuffix(".json") }
     }
 
     private func upload(_ snap: CamSyncSnapshot) async throws {
@@ -291,9 +305,8 @@ final class Pan115DataSync: ObservableObject {
 
     /// 只留最近几份，出错不影响同步本身。
     private func pruneRemoteCopies() async throws {
-        let kids = try await Pan115API.list(cid: Self.remoteDir, refresh: true)
-        for path in snapshotPaths(kids).sorted().dropLast(Self.keepRemoteCopies) {
-            try? await Pan115API.delete(id: path)
+        for node in try await listRemoteSnapshots().sorted(by: { $0.name < $1.name }).dropLast(Self.keepRemoteCopies) {
+            try? await Pan115API.driveDelete(id: node.id)
         }
     }
 

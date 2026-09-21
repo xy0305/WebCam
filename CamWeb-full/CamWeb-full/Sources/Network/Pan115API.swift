@@ -84,14 +84,14 @@ enum Pan115API {
         return UserInfo(id: id, name: name)
     }
 
-    static func list(cid: String, offset: Int = 0, limit: Int = 0, refresh: Bool = false) async throws -> [Node] {
+    static func list(cid: String, offset: Int = 0, limit: Int = 0) async throws -> [Node] {
         let path = normalize(cid)
         let obj = try await post("/api/fs/list", body: [
             "path": path,
             "password": "",
             "page": 1,
             "per_page": 0,
-            "refresh": refresh
+            "refresh": false
         ])
         let data = obj["data"] as? [String: Any] ?? [:]
         let rows = data["content"] as? [[String: Any]] ?? []
@@ -562,6 +562,32 @@ enum Pan115API {
         if let state = obj["state"] as? Bool, state == false {
             throw APIError.message(string(obj["error"]) ?? "删除失败")
         }
+    }
+
+    /// 115 直连换下载链。同步快照用它，不吃 Alist 的 meta 缓存，也不依赖 /115 挂载是否存在。
+    static func driveDownloadURL(pickCode: String) async throws -> URL {
+        let stamp = Int(Date().timeIntervalSince1970 * 1000)
+        let url = URL(string: "https://webapi.115.com/files/download?pickcode=\(encodeForm(pickCode))&_=\(stamp)")!
+        let obj = try await pan115JSON(url)
+        if let state = obj["state"] as? Bool, state == false {
+            throw APIError.message(string(obj["error_msg"]) ?? string(obj["error"]) ?? "115 没有返回下载地址")
+        }
+        guard let raw = string(obj["file_url"]), raw.hasPrefix("http"), let link = URL(string: raw) else {
+            throw APIError.message("115 下载地址格式不认识")
+        }
+        return link
+    }
+
+    static func driveData(from url: URL) async throws -> Data {
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 40
+        pan115Headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw APIError.badResponse }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.httpStatus(http.statusCode) }
+        guard !data.isEmpty else { throw APIError.badResponse }
+        return data
     }
 
     static func driveCID(_ raw: String) -> String {
