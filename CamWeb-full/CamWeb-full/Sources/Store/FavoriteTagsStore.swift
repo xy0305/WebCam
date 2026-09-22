@@ -53,12 +53,12 @@ final class FavoriteTagsStore: ObservableObject {
     }
 
     func contains(_ raw: String) -> Bool {
-        let tag = normalize(raw)
+        let tag = Self.normalize(raw)
         return state.entries[tag]?.isDeleted == false
     }
 
     func toggle(_ raw: String) {
-        let tag = normalize(raw)
+        let tag = Self.normalize(raw)
         guard !tag.isEmpty else { return }
         if contains(tag) {
             state.remove(key: tag)
@@ -70,7 +70,7 @@ final class FavoriteTagsStore: ObservableObject {
     }
 
     func remove(_ raw: String) {
-        let tag = normalize(raw)
+        let tag = Self.normalize(raw)
         guard !tag.isEmpty else { return }
         guard contains(tag) else { return }
         state.remove(key: tag)

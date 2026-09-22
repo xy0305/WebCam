@@ -31,6 +31,18 @@ final class NutstoreSession: ObservableObject {
         !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !appPassword.isEmpty
     }
 
+    func markBusy(_ busy: Bool) {
+        isBusy = busy
+    }
+
+    func markSynced() {
+        lastSyncAt = Date()
+    }
+
+    func setMessage(_ text: String?) {
+        lastMessage = text
+    }
+
     var remoteFileURL: URL {
         Self.baseURL.appendingPathComponent(Self.folderName).appendingPathComponent(Self.fileName)
     }
@@ -162,15 +174,15 @@ enum NutstoreSyncCoordinator {
     static func syncAll(showMessage: Bool = true) async -> Bool {
         let nutstore = NutstoreSession.shared
         guard nutstore.isConfigured else {
-            if showMessage { nutstore.lastMessage = "未配置坚果云，请到设置填写" }
+            if showMessage { nutstore.setMessage("未配置坚果云，请到设置填写") }
             return false
         }
         guard !inFlight else { return false }
         inFlight = true
-        nutstore.isBusy = true
+        nutstore.markBusy(true)
         defer {
             inFlight = false
-            nutstore.isBusy = false
+            nutstore.markBusy(false)
         }
 
         // 顺带刷一次 iCloud KVS（同证书时仍可同步）
@@ -185,7 +197,7 @@ enum NutstoreSyncCoordinator {
             }
         } catch {
             if showMessage {
-                nutstore.lastMessage = "拉取失败：\(error.localizedDescription)"
+                nutstore.setMessage("拉取失败：\(error.localizedDescription)")
             }
             return false
         }
@@ -205,12 +217,12 @@ enum NutstoreSyncCoordinator {
         do {
             let data = try JSONEncoder().encode(merged)
             try await nutstore.putData(data)
-            nutstore.lastSyncAt = Date()
-            if showMessage { nutstore.lastMessage = "已与坚果云合并同步" }
+            nutstore.markSynced()
+            if showMessage { nutstore.setMessage("已与坚果云合并同步") }
             return true
         } catch {
             if showMessage {
-                nutstore.lastMessage = "上传失败：\(error.localizedDescription)"
+                nutstore.setMessage("上传失败：\(error.localizedDescription)")
             }
             return false
         }
