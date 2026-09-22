@@ -77,14 +77,14 @@ struct ChannelCard: View {
                 RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
                     .stroke(
                         LinearGradient(
-                            colors: [Color.white.opacity(0.18), .clear, Color.black.opacity(0.15)],
+                            colors: [Color(hex: 0xE8F0F8).opacity(0.25), .clear, Color(hex: 0x1A2433).opacity(0.2)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
                         lineWidth: 1
                     )
             )
-            .shadow(color: .black.opacity(0.28), radius: 12, y: 5)
+            .shadow(color: Color(hex: 0x8FBCD4).opacity(0.08), radius: 12, y: 5)
 
             Text(room.title)
                 .font(.subheadline.weight(.semibold))

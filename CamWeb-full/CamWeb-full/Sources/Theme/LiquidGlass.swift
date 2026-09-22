@@ -5,10 +5,11 @@ import SwiftUI
 enum GlassStyle {
     static let corner: CGFloat = 18
     static let chipCorner: CGFloat = 22
-    static let edgeLight = Color.white.opacity(0.22)
-    static let edgeShade = Color.black.opacity(0.18)
-    static let fill = Color.white.opacity(0.07)
-    static let fillStrong = Color.white.opacity(0.11)
+    /// 淡雅高光：珠光白，低对比
+    static let edgeLight = Color(hex: 0xE8F0F8).opacity(0.32)
+    static let edgeShade = Color(hex: 0x1A2433).opacity(0.25)
+    static let fill = Color(hex: 0x8FBCD4).opacity(0.06)
+    static let fillStrong = Color(hex: 0x8FBCD4).opacity(0.10)
 }
 
 /// 液态玻璃：内描边高光 + 柔和填充 + 轻投影，克制不花哨。
@@ -97,21 +98,22 @@ struct GlassButtonChrome: ViewModifier {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(
                             LinearGradient(
-                                colors: [AppTheme.accent, AppTheme.accent.opacity(0.78)],
+                                colors: [AppTheme.accent, Color(hex: 0xA8B8D0), AppTheme.accentAlt],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
                         .overlay {
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                                .stroke(Color.white.opacity(0.28), lineWidth: 1)
                         }
+                        .shadow(color: AppTheme.accent.opacity(0.25), radius: 12, y: 5)
                 } else {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(.ultraThinMaterial)
                         .overlay {
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
+                                .fill(Color(hex: 0x8FBCD4).opacity(0.08))
                         }
                         .overlay {
                             RoundedRectangle(cornerRadius: 16, style: .continuous)

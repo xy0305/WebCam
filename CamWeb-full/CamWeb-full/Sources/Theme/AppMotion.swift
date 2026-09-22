@@ -20,9 +20,9 @@ struct AuroraBackground: View {
             AppTheme.background
             Canvas { context, size in
                 let blobs: [(CGPoint, CGFloat, Color)] = [
-                    (CGPoint(x: size.width * 0.2 + shift, y: size.height * 0.15), 140, AppTheme.accent.opacity(0.28 * intensity)),
-                    (CGPoint(x: size.width * 0.85 - shift, y: size.height * 0.25), 120, AppTheme.favorite.opacity(0.14 * intensity)),
-                    (CGPoint(x: size.width * 0.5, y: size.height * 0.85), 160, AppTheme.accent.opacity(0.12 * intensity)),
+                    (CGPoint(x: size.width * 0.2 + shift, y: size.height * 0.15), 160, AppTheme.accent.opacity(0.22 * intensity)),
+                    (CGPoint(x: size.width * 0.85 - shift, y: size.height * 0.22), 140, AppTheme.accentAlt.opacity(0.16 * intensity)),
+                    (CGPoint(x: size.width * 0.55, y: size.height * 0.88), 180, AppTheme.accent.opacity(0.12 * intensity)),
                 ]
                 for (center, radius, color) in blobs {
                     let rect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)

@@ -1,20 +1,24 @@
 import SwiftUI
 
-/// CamWeb 视觉规范：暗色媒体风（近黑底 + 珊瑚强调 + 金色收藏）。
+/// CamWeb 视觉规范：淡雅雾蓝液态玻璃，低饱和、舒适耐看。
 enum AppTheme {
     // MARK: Palette
-    static let background = Color(hex: 0x0B0B0F)
-    static let surface = Color(hex: 0x16161D)
-    static let card = Color(hex: 0x1C1C26)
-    static let cardStroke = Color.white.opacity(0.06)
-    static let ink = Color(hex: 0xF5F5F7)
-    static let inkSecondary = Color(hex: 0x9A9AA8)
-    static let accent = Color(hex: 0xFF375F)
-    static let accentSoft = Color(hex: 0xFF375F).opacity(0.16)
-    static let favorite = Color(hex: 0xFFD60A)
-    static let live = Color(hex: 0xFF375F)
-    static let danger = Color(hex: 0xFF453A)
-    static let success = Color(hex: 0x30D158)
+    static let background = Color(hex: 0x1A2433)
+    static let surface = Color(hex: 0x243044)
+    static let card = Color(hex: 0x2E3C52)
+    static let cardStroke = Color.white.opacity(0.10)
+    static let ink = Color(hex: 0xF0F4F8)
+    static let inkSecondary = Color(hex: 0x9BA8BC)
+    /// 雾青，主操作与玻璃高光
+    static let accent = Color(hex: 0x8FBCD4)
+    static let accentSoft = Color(hex: 0x8FBCD4).opacity(0.20)
+    /// 淡紫，极光辅助
+    static let accentAlt = Color(hex: 0xB5A8D4)
+    static let favorite = Color(hex: 0xE8D5A8)
+    /// LIVE 柔玫，仅语义
+    static let live = Color(hex: 0xE8A8B8)
+    static let danger = Color(hex: 0xE8A0A0)
+    static let success = Color(hex: 0xA8D4C0)
 
     // MARK: Metrics
     static let screenPadding: CGFloat = 16
@@ -129,21 +133,21 @@ struct CardBackground: ViewModifier {
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
                         .fill(.ultraThinMaterial)
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Color(hex: 0x8FBCD4).opacity(0.06))
                 }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .stroke(
                         LinearGradient(
-                            colors: [Color.white.opacity(0.2), .clear, Color.black.opacity(0.12)],
+                            colors: [Color(hex: 0xE8F0F8).opacity(0.28), .clear, Color(hex: 0x1A2433).opacity(0.2)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
                         lineWidth: 1
                     )
             }
-            .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+            .shadow(color: Color(hex: 0x8FBCD4).opacity(0.08), radius: 14, y: 6)
     }
 }
 
