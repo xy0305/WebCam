@@ -45,14 +45,22 @@ struct ChannelCard: View {
                             .foregroundStyle(AppTheme.favorite)
                             .padding(6)
                             .background(.black.opacity(0.45), in: Circle())
+                            .scaleEffect(1.05)
+                            .shadow(color: AppTheme.favorite.opacity(0.55), radius: 6)
+                            .transition(.scale.combined(with: .opacity))
                     }
-                    LiveBadge(isTimeout: room.loadState == .timeout)
+                    PulsingLiveBadge(isTimeout: room.loadState == .timeout)
                 }
                 .padding(8)
+                .animation(AppMotion.spring, value: isFavorite)
 
                 VStack {
                     Spacer()
-                    HStack {
+                    HStack(spacing: 8) {
+                        EqualizerBars(tint: .white.opacity(0.85))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.black.opacity(0.4), in: Capsule())
                         Spacer()
                         Text(room.tagText)
                             .font(.system(size: 10, weight: .semibold))
@@ -60,8 +68,8 @@ struct ChannelCard: View {
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(.black.opacity(0.55), in: Capsule())
-                            .padding(8)
                     }
+                    .padding(8)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous))
@@ -83,6 +91,11 @@ struct ChannelCard: View {
                     .shadow(
                         color: (room.loadState == .timeout ? Color.clear : AppTheme.live).opacity(0.7),
                         radius: 3
+                    )
+                    .scaleEffect(room.loadState == .timeout ? 1 : 1.15)
+                    .animation(
+                        room.loadState == .timeout ? nil : .easeInOut(duration: 1.0).repeatForever(autoreverses: true),
+                        value: room.loadState
                     )
                 Text(room.viewersText)
                     .font(.caption.weight(.medium))

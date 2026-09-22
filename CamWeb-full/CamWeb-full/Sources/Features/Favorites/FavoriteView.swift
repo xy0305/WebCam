@@ -52,8 +52,10 @@ struct FavoriteView: View {
 
                     HStack {
                         SectionHeader(title: selected.rawValue, systemImage: emptyIcon, tint: sectionTint, trailing: "\(rooms.count)")
+                        GlowDivider().frame(width: 40).padding(.leading, 8)
                     }
                     .padding(.horizontal, 16)
+                    .animation(AppMotion.spring, value: selected)
 
                     if rooms.isEmpty {
                         RichEmptyState(
@@ -66,9 +68,10 @@ struct FavoriteView: View {
                             appState.tab = .channels
                         }
                         .padding(.top, 24)
+                        .transition(.opacity)
                     } else {
                         LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(rooms) { room in
+                            ForEach(Array(rooms.enumerated()), id: \.element.id) { index, room in
                                 Button { appState.openPlayer(username: room.username, room: room) } label: {
                                     ChannelCard(
                                         room: room,
@@ -77,6 +80,7 @@ struct FavoriteView: View {
                                     )
                                 }
                                 .buttonStyle(PressableCardStyle())
+                                .staggerAppear(index: index, enabled: index < 8)
                                 .contextMenu { roomMenu(room) }
                             }
                         }

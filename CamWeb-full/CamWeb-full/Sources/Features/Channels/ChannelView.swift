@@ -104,13 +104,15 @@ struct ChannelListPage: View {
                                     .font(.caption)
                                     .foregroundStyle(AppTheme.inkSecondary)
                             }
+                            GlowDivider()
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
-                                    ForEach(favoriteTags.tags, id: \.self) { tag in
+                                    ForEach(Array(favoriteTags.tags.enumerated()), id: \.element) { index, tag in
                                         Button { appState.openTag(tag) } label: {
                                             GlassChip(title: "#\(tag)", highlighted: true)
                                         }
                                         .buttonStyle(.plain)
+                                        .staggerAppear(index: index)
                                         .contextMenu {
                                             Button(role: .destructive) { favoriteTags.remove(tag) } label: {
                                                 Label("取消收藏标签", systemImage: "star.slash")
@@ -131,13 +133,14 @@ struct ChannelListPage: View {
                             .padding(.vertical, 12)
                     } else {
                         LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(filtered) { room in
+                            ForEach(Array(filtered.enumerated()), id: \.element.id) { index, room in
                                 Button {
                                     appState.openPlayer(username: room.username, room: room)
                                 } label: {
                                     ChannelCard(room: room)
                                 }
                                 .buttonStyle(PressableCardStyle())
+                                .staggerAppear(index: index)
                                 .onAppear {
                                     if room.id == rooms.last?.id { Task { await loadMore() } }
                                 }
