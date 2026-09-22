@@ -110,6 +110,8 @@ struct MainShellView: View {
             MiniPlayerView()
                 .padding(.trailing, 16)
                 .padding(.bottom, 88)
+                .transition(.move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.95)))
+                .animation(AppMotion.spring, value: appState.miniUsername)
         }
     }
 }

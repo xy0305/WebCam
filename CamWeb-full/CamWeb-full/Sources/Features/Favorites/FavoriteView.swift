@@ -49,6 +49,10 @@ struct FavoriteView: View {
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 16)
+                    .onChange(of: selected) { _, _ in
+                        Haptics.selection()
+                        Task { await loadHeat() }
+                    }
 
                     HStack {
                         SectionHeader(title: selected.rawValue, systemImage: emptyIcon, tint: sectionTint, trailing: "\(rooms.count)")

@@ -506,6 +506,8 @@ struct PlayerView: View {
             Spacer()
         }
         .opacity(isMaskVisible || isLocked ? 1 : 0)
+        .blur(radius: isMaskVisible || isLocked ? 0 : 4)
+        .animation(.easeInOut(duration: 0.28), value: isMaskVisible)
         .allowsHitTesting(isMaskVisible || isLocked)
     }
 
@@ -995,6 +997,7 @@ enum OrientationLock {
 
 struct MiniPlayerView: View {
     @EnvironmentObject var appState: AppState
+    @State private var shown = false
 
     var body: some View {
         if let name = appState.miniUsername, let url = appState.miniURL {
@@ -1004,24 +1007,48 @@ struct MiniPlayerView: View {
                         .frame(height: 120)
                     HStack {
                         Button {
-                            appState.stopMini()
+                            Haptics.tap()
+                            withAnimation(AppMotion.quick) { appState.stopMini() }
                         } label: {
                             Image(systemName: "xmark")
                                 .font(.caption.weight(.bold))
                                 .padding(6)
-                                .background(.black.opacity(0.45), in: Circle())
+                                .background(.ultraThinMaterial, in: Circle())
                                 .foregroundStyle(.white)
                         }
+                        .buttonStyle(SoftPress())
                         Spacer()
-                        Text(name).font(.caption.weight(.semibold)).foregroundStyle(.white).padding(.trailing, 8)
+                        Text(name)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .glassChip()
+                            .padding(.trailing, 6)
                     }
                     .padding(6)
                 }
             }
             .frame(width: 210)
             .background(Color.black)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .shadow(radius: 10)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [GlassStyle.edgeLight, .clear, GlassStyle.edgeShade],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+            }
+            .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
+            .scaleEffect(shown ? 1 : 0.92)
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                withAnimation(AppMotion.spring) { shown = true }
+            }
             .padding(.trailing, 12)
             .padding(.bottom, 88)
         }
@@ -1060,16 +1087,21 @@ private struct FlowTags: View {
                             .padding(.leading, 10)
                             .padding(.vertical, 6)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SoftPress())
 
-                    Button { onToggleFavorite(tag) } label: {
+                    Button {
+                        Haptics.selection()
+                        onToggleFavorite(tag)
+                    } label: {
                         Image(systemName: isFavorite(tag) ? "star.fill" : "star")
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(isFavorite(tag) ? .yellow : .white.opacity(0.65))
+                            .foregroundStyle(isFavorite(tag) ? AppTheme.favorite : .white.opacity(0.65))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 6)
+                            .scaleEffect(isFavorite(tag) ? 1.08 : 1)
+                            .animation(AppMotion.quick, value: isFavorite(tag))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SoftPress())
                     .accessibilityLabel(isFavorite(tag) ? "取消收藏标签" : "收藏标签")
                 }
                 .background(Capsule().fill(Color.white.opacity(0.12)))
