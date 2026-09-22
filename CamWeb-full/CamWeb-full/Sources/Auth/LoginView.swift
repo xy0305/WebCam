@@ -113,11 +113,12 @@ struct LoginView: View {
     private func fieldRow<Content: View>(icon: String, @ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .foregroundStyle(AppTheme.inkSecondary)
+                .foregroundStyle(AppTheme.accent.opacity(0.9))
                 .frame(width: 22)
             content()
         }
         .padding(.vertical, 4)
+        .padding(.horizontal, 4)
     }
 
     private func tryPasswordThenWeb() async {

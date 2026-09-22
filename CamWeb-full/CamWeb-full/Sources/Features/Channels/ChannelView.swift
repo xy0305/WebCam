@@ -175,6 +175,7 @@ struct ChannelListPage: View {
                 } label: {
                     Label(currentSectionTitle, systemImage: "line.3.horizontal.decrease.circle")
                         .labelStyle(.titleAndIcon)
+                        .foregroundStyle(AppTheme.ink)
                 }
             }
         }
