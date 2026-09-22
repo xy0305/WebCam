@@ -14,9 +14,46 @@ struct RecordingsView: View {
     @State private var isExportingAll = false
     @State private var isExportingOne = false
     @State private var exportProgress = ""
+    @State private var librarySizeText = ""
+    @State private var hiddenSizeText = ""
+    @State private var cacheSizeText = ""
 
     private var liveSessions: [RecordingSession] {
         recs.sessions.values.sorted { $0.username < $1.username }
+    }
+
+    @ViewBuilder
+    private var storageSection: some View {
+        Section("存储占用") {
+            LabeledContent("录像与分片", value: librarySizeText)
+            LabeledContent("其中隐藏缓存", value: hiddenSizeText)
+            LabeledContent("网页/网络缓存", value: cacheSizeText)
+            Button {
+                Haptics.tap()
+                let message = RecordingStore.sweepHiddenCaches(
+                    excludingActiveUsernames: recs.activeUsernames,
+                    excludingStems: recs.activeFileStems
+                )
+                refreshStorageStats()
+                exportBanner = message
+            } label: {
+                Label("清理隐藏缓存", systemImage: "sparkles")
+            }
+            Text("隐藏缓存包括中断录制的分片、封装失败残留和过期临时文件。列表里的录像要手动删除或「清空全部」。")
+                .font(.footnote)
+                .foregroundStyle(AppTheme.inkSecondary)
+        }
+    }
+
+    private func refreshStorageStats() {
+        librarySizeText = RecordingStore.formatBytes(RecordingStore.libraryBytes())
+        hiddenSizeText = RecordingStore.formatBytes(
+            RecordingStore.hiddenBytes(
+                excludingActiveUsernames: recs.activeUsernames,
+                excludingStems: recs.activeFileStems
+            )
+        )
+        cacheSizeText = RecordingStore.formatBytes(RecordingStore.cacheBytes())
     }
 
     @ViewBuilder
@@ -42,6 +79,7 @@ struct RecordingsView: View {
         NavigationStack {
             List {
                 activeRecordingSection
+                storageSection
 
                 Section {
                     if monitor.entries.isEmpty {
@@ -223,11 +261,21 @@ struct RecordingsView: View {
             .onAppear {
                 RecordingManager.shared.recoverOrphans()
                 files = RecordingStore.list()
+                refreshStorageStats()
                 monitor.startMonitoring()
             }
-            .onChange(of: recs.activeUsernames.count) { _, _ in files = RecordingStore.list() }
-            .onChange(of: recs.banner) { _, _ in files = RecordingStore.list() }
-            .onChange(of: recs.libraryRevision) { _, _ in files = RecordingStore.list() }
+            .onChange(of: recs.activeUsernames.count) { _, _ in
+                files = RecordingStore.list()
+                refreshStorageStats()
+            }
+            .onChange(of: recs.banner) { _, _ in
+                files = RecordingStore.list()
+                refreshStorageStats()
+            }
+            .onChange(of: recs.libraryRevision) { _, _ in
+                files = RecordingStore.list()
+                refreshStorageStats()
+            }
         }
     }
 

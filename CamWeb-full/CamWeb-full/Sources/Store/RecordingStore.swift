@@ -254,7 +254,101 @@ enum RecordingStore {
             let name = url.lastPathComponent.lowercased()
             if isActivePart(name, usernames: active, stems: stems) { continue }
             let isTemporary = name.hasSuffix(".part") || name.contains(".mux.") || name.contains("_v.") || name.contains("_a.")
-            if isTemporary { try? fm.removeItem(at: url) }
+            if isTemporary {
+                // 空壳 / 封装失败残留直接删；有内容且无法进列表的 .part 先尝试提升为恢复录像。
+                if name.hasSuffix(".part") {
+                    if promotePartDirectory(url) == nil {
+                        try? fm.removeItem(at: url)
+                    }
+                } else {
+                    try? fm.removeItem(at: url)
+                }
+            }
+        }
+    }
+
+    /// 清理隐藏录制缓存 + 系统/播放器缓存，返回释放前后的粗略体积描述。
+    @discardableResult
+    static func sweepHiddenCaches(excludingActiveUsernames active: [String], excludingStems stems: [String] = []) -> String {
+        let before = hiddenBytes(excludingActiveUsernames: active, excludingStems: stems)
+            + Int64(URLCache.shared.currentDiskUsage)
+            + tempLeftoverBytes()
+        purgeTemporary(excludingActiveUsernames: active, excludingStems: stems)
+        URLCache.shared.removeAllCachedResponses()
+        clearTemporaryLeftovers()
+        let after = hiddenBytes(excludingActiveUsernames: active, excludingStems: stems)
+            + Int64(URLCache.shared.currentDiskUsage)
+            + tempLeftoverBytes()
+        let freed = max(0, before - after)
+        return freed > 0 ? "已清理隐藏缓存，约释放 \(formatBytes(freed))" : "没有发现可清理的隐藏缓存"
+    }
+
+    /// 录像目录里列表看不见、但占空间的部分（.part / .mux. / 临时轨）。
+    static func hiddenBytes(excludingActiveUsernames active: [String], excludingStems stems: [String] = []) -> Int64 {
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey], options: [.skipsHiddenFiles])) ?? []
+        var total: Int64 = 0
+        for url in urls {
+            let name = url.lastPathComponent.lowercased()
+            if isActivePart(name, usernames: active, stems: stems) { continue }
+            let hidden = name.hasSuffix(".part") || name.contains(".mux.") || name.contains("_v.") || name.contains("_a.")
+            if hidden { total += folderOrFileSize(url) }
+        }
+        return total
+    }
+
+    /// 录像目录总占用（含列表可见与隐藏）。
+    static func libraryBytes() -> Int64 {
+        folderSize(directory)
+    }
+
+    static func cacheBytes() -> Int64 {
+        Int64(URLCache.shared.currentDiskUsage) + tempLeftoverBytes()
+    }
+
+    static func formatBytes(_ n: Int64) -> String {
+        if n >= 1_073_741_824 {
+            return String(format: "%.2f GB", Double(n) / 1_073_741_824)
+        }
+        if n >= 1_048_576 {
+            return String(format: "%.1f MB", Double(n) / 1_048_576)
+        }
+        return String(format: "%.0f KB", Double(n) / 1024)
+    }
+
+    private static func folderOrFileSize(_ url: URL) -> Int64 {
+        let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+        return isDir ? folderSize(url) : Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+    }
+
+    private static func tempLeftoverBytes() -> Int64 {
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: fm.temporaryDirectory, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        var total: Int64 = 0
+        for url in urls {
+            let name = url.lastPathComponent.lowercased()
+            if name.contains("album-export") || name.contains(".mux.") || name.hasPrefix("115-") {
+                total += folderOrFileSize(url)
+            }
+        }
+        return total
+    }
+
+    private static func clearTemporaryLeftovers() {
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: fm.temporaryDirectory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        for url in urls {
+            let name = url.lastPathComponent.lowercased()
+            if name.contains("album-export") || name.contains(".mux.") || name.hasPrefix("115-") {
+                try? fm.removeItem(at: url)
+            }
+        }
+        // 相册导出等中途崩溃留下的散装 mp4
+        let leftovers = (try? fm.contentsOfDirectory(at: fm.temporaryDirectory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])) ?? []
+        let cutoff = Date().addingTimeInterval(-24 * 3600)
+        for url in leftovers where url.pathExtension.lowercased() == "mp4" {
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            if date < cutoff { try? fm.removeItem(at: url) }
         }
     }
 

@@ -25,9 +25,11 @@ final class RecordingManager: ObservableObject {
         recoverOrphans()
     }
 
-    /// 进前台 / 冷启动：把杀进程或封装中断留下的 .part 变成列表可见的恢复录像。
+    /// 进前台 / 冷启动：把杀进程或封装中断留下的 .part 变成列表可见的恢复录像，
+    /// 并清扫 .mux. 等隐藏残留，避免 App「存储占用」看起来莫名其妙多出几百 MB。
     func recoverOrphans() {
         RecordingStore.recoverInterruptedRecordings(excludingStems: activeFileStems)
+        RecordingStore.purgeTemporary(excludingActiveUsernames: activeUsernames, excludingStems: activeFileStems)
         libraryRevision += 1
     }
 
