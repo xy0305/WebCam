@@ -56,8 +56,16 @@ struct FavoriteView: View {
                     .padding(.horizontal, 16)
 
                     if rooms.isEmpty {
-                        ContentUnavailableView(selected.rawValue, systemImage: emptyIcon, description: Text(emptyText))
-                            .padding(.top, 52)
+                        RichEmptyState(
+                            icon: emptyIcon,
+                            title: selected.rawValue,
+                            message: emptyText,
+                            actionTitle: selected == .following ? "去频道看看" : nil
+                        ) {
+                            Haptics.tap()
+                            appState.tab = .channels
+                        }
+                        .padding(.top, 24)
                     } else {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(rooms) { room in
@@ -68,11 +76,14 @@ struct FavoriteView: View {
                                         isFavorite: special.contains(room)
                                     )
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(PressableCardStyle())
                                 .contextMenu { roomMenu(room) }
                             }
                         }
                         .padding(.horizontal, 16)
+                        if rooms.count >= 6 {
+                            GridEndMark(text: "共 \(rooms.count) 条")
+                        }
                     }
                 }
                 .padding(.bottom, 16)
@@ -96,31 +107,33 @@ struct FavoriteView: View {
                     ToolbarItem(placement: .topBarTrailing) { Button("清空最近") { history.clear() } }
                 }
             }
-            .alert("云同步", isPresented: Binding(
-                get: { syncMessage != nil },
-                set: { if !$0 { syncMessage = nil } }
-            )) {
-                Button("好", role: .cancel) { syncMessage = nil }
-            } message: {
-                Text(syncMessage ?? "")
-            }
             .refreshable { await loadRemote(); await loadHeat() }
             .task { await loadRemote(); await loadHeat() }
             .onChange(of: selected) { _, _ in
+                Haptics.selection()
                 Task { await loadHeat() }
             }
             .onChange(of: history.items) { _, _ in
                 if selected == .recent { Task { await loadHeat() } }
             }
         }
+        .toastHost()
     }
 
     @ViewBuilder private func roomMenu(_ room: Room) -> some View {
-        Button { special.toggle(room) } label: {
+        Button {
+            Haptics.selection()
+            special.toggle(room)
+            ToastCenter.shared.show(special.contains(room) ? "已收藏 \(room.username)" : "已取消收藏")
+        } label: {
             Label(special.contains(room) ? "取消收藏" : "收藏", systemImage: special.contains(room) ? "star.slash" : "star")
         }
         if history.items.contains(where: { $0.username == room.username && $0.platform == room.platform }) {
-            Button(role: .destructive) { history.remove(room.username) } label: {
+            Button(role: .destructive) {
+                Haptics.warning()
+                history.remove(room.username)
+                ToastCenter.shared.show("已从最近播放移除")
+            } label: {
                 Label("从最近播放移除", systemImage: "clock.badge.xmark")
             }
         }
@@ -176,6 +189,9 @@ struct FavoriteView: View {
             syncMessage = (followOK && favoriteOK && tagsOK)
                 ? "已从 iCloud 合并收藏、关注和标签。证书不同时请到设置配置坚果云"
                 : "iCloud 暂时无法同步。证书不同时请到设置配置坚果云"
+        }
+        if let syncMessage {
+            ToastCenter.shared.show(syncMessage, success: nutstoreOK || followOK || favoriteOK || tagsOK)
         }
     }
 

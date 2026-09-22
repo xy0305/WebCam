@@ -88,6 +88,7 @@ struct RootFlow: View {
                 MainShellView()
             }
         }
+        .toastHost()
         .task {
             await AlistEmbedded.shared.prepare()
             if Pan115Session.shared.hasCookie {

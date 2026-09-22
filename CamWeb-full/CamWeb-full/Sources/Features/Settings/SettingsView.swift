@@ -20,6 +20,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                profileHeader
                 accountSection
                 chaturbateSection
                 stripchatSection
@@ -71,6 +72,39 @@ struct SettingsView: View {
                 Text(cookieAlert?.message ?? "")
             }
         }
+    }
+
+    private var profileHeader: some View {
+        Section {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [AppTheme.accent, AppTheme.accent.opacity(0.45)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 56, height: 56)
+                    Text(String(auth.account?.username?.prefix(1).uppercased() ?? "C"))
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(auth.account?.username ?? (auth.continueAsGuest ? "游客" : "未登录"))
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.ink)
+                    Text(accountStatus)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.inkSecondary)
+                }
+                Spacer()
+                CountPill(text: auth.isLoggedIn ? "在线" : "本地")
+            }
+            .padding(.vertical, 6)
+        }
+        .listRowBackground(AppTheme.card)
     }
 
     private var accountSection: some View {

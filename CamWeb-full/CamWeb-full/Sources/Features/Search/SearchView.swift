@@ -44,11 +44,12 @@ struct SearchView: View {
                                 ForEach(results) { room in
                                     Button {
                                         searchFocused = false
+                                        Haptics.tap()
                                         appState.openPlayer(username: room.username, room: room)
                                     } label: {
                                         ChannelCard(room: room)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(PressableCardStyle())
                                 }
                             }
                             .padding(.top, 4)
@@ -106,8 +107,7 @@ struct SearchView: View {
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 14) {
-                Text("搜索历史")
-                    .font(.title3.weight(.semibold))
+                SectionHeader(title: "搜索历史", systemImage: "clock.arrow.circlepath", tint: AppTheme.inkSecondary)
                 Spacer()
                 if editingHistory {
                     Button("全部删除", role: .destructive) {
@@ -121,7 +121,7 @@ struct SearchView: View {
                     } label: {
                         Image(systemName: "trash")
                             .font(.system(size: 17))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AppTheme.inkSecondary)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("编辑搜索历史")

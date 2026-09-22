@@ -76,14 +76,22 @@ struct ChannelListPage: View {
     var body: some View {
         Group {
             if let errorText, rooms.isEmpty {
-                ContentUnavailableView {
-                    Label("加载失败", systemImage: "wifi.exclamationmark")
-                } description: {
-                    Text(errorText)
-                } actions: {
-                    Button("重试") { Task { await reload() } }
-                        .buttonStyle(.borderedProminent)
-                        .tint(AppTheme.accent)
+                RichEmptyState(
+                    icon: "wifi.exclamationmark",
+                    title: "加载失败",
+                    message: errorText,
+                    actionTitle: "重试"
+                ) {
+                    Task { await reload() }
+                }
+            } else if rooms.isEmpty && !loading {
+                RichEmptyState(
+                    icon: "sparkles.tv",
+                    title: "这里还空着",
+                    message: "换一个分类或平台看看，也可以下拉刷新。",
+                    actionTitle: "刷新"
+                ) {
+                    Task { await reload() }
                 }
             } else {
                 ScrollView {
@@ -123,7 +131,7 @@ struct ChannelListPage: View {
                             } label: {
                                 ChannelCard(room: room)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(PressableCardStyle())
                             .onAppear {
                                 if room.id == rooms.last?.id { Task { await loadMore() } }
                             }
@@ -133,6 +141,9 @@ struct ChannelListPage: View {
                     .padding(.vertical, 12)
 
                     if loadingMore { ProgressView().tint(AppTheme.accent).padding(.vertical, 16) }
+                    if reachedEnd, !filtered.isEmpty {
+                        GridEndMark(text: "已经到底了 · 共 \(filtered.count) 个频道")
+                    }
                 }
                 .refreshable { await reload() }
             }
@@ -162,7 +173,22 @@ struct ChannelListPage: View {
             localGender = gender
             if rooms.isEmpty { await reload() }
         }
-        .overlay { if loading && rooms.isEmpty { ProgressView() } }
+        .overlay {
+            if loading && rooms.isEmpty {
+                skeletonGrid
+                    .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
+                    .padding(.top, 8)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var skeletonGrid: some View {
+        LazyVGrid(columns: columns, spacing: 16) {
+            ForEach(0..<6, id: \.self) { _ in
+                SkeletonCard()
+            }
+        }
     }
 
     private var currentSectionTitle: String {
@@ -183,6 +209,7 @@ struct ChannelListPage: View {
 
     private func applyGender(_ g: String) {
         guard localGender != g else { return }
+        Haptics.selection()
         requestGeneration += 1
         localGender = g
         rooms = []
