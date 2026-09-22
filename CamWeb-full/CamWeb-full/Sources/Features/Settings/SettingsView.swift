@@ -87,7 +87,7 @@ struct SettingsView: View {
                             )
                         )
                         .frame(width: 56, height: 56)
-                    Text(String(auth.account?.username?.prefix(1).uppercased() ?? "C"))
+                    Text(String((auth.account?.username ?? "C").prefix(1).uppercased()))
                         .font(.title2.weight(.bold))
                         .foregroundStyle(.white)
                 }
