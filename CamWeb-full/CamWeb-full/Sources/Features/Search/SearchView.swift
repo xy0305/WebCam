@@ -49,7 +49,7 @@ struct SearchView: View {
                                     } label: {
                                         ChannelCard(room: room)
                                     }
-                                    .buttonStyle(PressableCardStyle())
+                                    .buttonStyle(SoftPress())
                                 }
                             }
                             .padding(.top, 4)
@@ -97,11 +97,7 @@ struct SearchView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 48)
-        .background(AppTheme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(AppTheme.cardStroke, lineWidth: 1)
-        }
+        .liquidGlass(corner: 16)
     }
 
     private var historySection: some View {

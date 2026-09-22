@@ -76,16 +76,20 @@ struct SkeletonCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
-                .fill(AppTheme.card)
+                .fill(.ultraThinMaterial)
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .overlay {
+                    RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                }
                 .shimmering()
             RoundedRectangle(cornerRadius: 5)
-                .fill(AppTheme.card)
+                .fill(Color.white.opacity(0.08))
                 .frame(height: 12)
                 .frame(maxWidth: 90)
                 .shimmering()
             RoundedRectangle(cornerRadius: 4)
-                .fill(AppTheme.card)
+                .fill(Color.white.opacity(0.06))
                 .frame(height: 10)
                 .frame(maxWidth: 64)
                 .shimmering()
@@ -106,8 +110,11 @@ struct RichEmptyState: View {
         VStack(spacing: 14) {
             ZStack {
                 Circle()
-                    .fill(Color.white.opacity(0.06))
+                    .fill(.ultraThinMaterial)
                     .frame(width: 88, height: 88)
+                    .overlay {
+                        Circle().stroke(Color.white.opacity(0.14), lineWidth: 1)
+                    }
                 Image(systemName: icon)
                     .font(.system(size: 34, weight: .medium))
                     .foregroundStyle(AppTheme.accent)
@@ -128,12 +135,11 @@ struct RichEmptyState: View {
                     Text(actionTitle)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
-                        .background(AppTheme.accent, in: Capsule())
+                        .glassButton(prominent: true)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SoftPress())
                 .padding(.top, 4)
+                .frame(maxWidth: 200)
             }
         }
         .frame(maxWidth: .infinity)

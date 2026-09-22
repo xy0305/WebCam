@@ -56,12 +56,9 @@ struct LoginView: View {
                                 Text("登录")
                                     .font(.headline)
                                     .foregroundStyle(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 14)
-                                    .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                    .glassButton(prominent: true)
                             }
-                            .buttonStyle(.plain)
-                            .glowOnPress()
+                            .buttonStyle(SoftPress())
                             .disabled(username.isEmpty || password.isEmpty || auth.busy)
                             .opacity(username.isEmpty || password.isEmpty || auth.busy ? 0.45 : 1)
 
@@ -71,12 +68,9 @@ struct LoginView: View {
                                 Text(auth.busy ? "正在打开登录页…" : "网页登录（推荐，可过验证码）")
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(AppTheme.ink)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 14)
-                                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                    .glassButton()
                             }
-                            .buttonStyle(.plain)
-                            .glowOnPress()
+                            .buttonStyle(SoftPress())
 
                             Button {
                                 auth.enterGuest()
@@ -87,7 +81,7 @@ struct LoginView: View {
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 10)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(SoftPress())
                         }
                         .staggerAppear(index: 2)
 

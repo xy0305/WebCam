@@ -73,7 +73,7 @@ struct CountPill: View {
             .foregroundStyle(AppTheme.inkSecondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Capsule().fill(Color.white.opacity(0.08)))
+            .glassChip()
     }
 }
 
@@ -92,12 +92,7 @@ struct GlassChip: View {
         .foregroundStyle(highlighted ? AppTheme.favorite : AppTheme.ink)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(
-            Capsule().fill(Color.white.opacity(highlighted ? 0.12 : 0.07))
-        )
-        .overlay(
-            Capsule().stroke(Color.white.opacity(highlighted ? 0.18 : 0.06), lineWidth: 1)
-        )
+        .glassChip(highlighted: highlighted)
     }
 }
 
@@ -129,14 +124,26 @@ struct CardBackground: ViewModifier {
     var radius: CGFloat = AppTheme.cardRadius
     func body(content: Content) -> some View {
         content
-            .background(
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                }
+            }
+            .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(AppTheme.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(AppTheme.cardStroke, lineWidth: 1)
-            )
+                    .stroke(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.2), .clear, Color.black.opacity(0.12)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+            }
+            .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
     }
 }
 

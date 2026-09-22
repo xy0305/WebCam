@@ -111,7 +111,7 @@ struct ChannelListPage: View {
                                         Button { appState.openTag(tag) } label: {
                                             GlassChip(title: "#\(tag)", highlighted: true)
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(SoftPress())
                                         .staggerAppear(index: index)
                                         .contextMenu {
                                             Button(role: .destructive) { favoriteTags.remove(tag) } label: {
@@ -139,7 +139,7 @@ struct ChannelListPage: View {
                                 } label: {
                                     ChannelCard(room: room)
                                 }
-                                .buttonStyle(PressableCardStyle())
+                                .buttonStyle(SoftPress())
                                 .staggerAppear(index: index)
                                 .onAppear {
                                     if room.id == rooms.last?.id { Task { await loadMore() } }

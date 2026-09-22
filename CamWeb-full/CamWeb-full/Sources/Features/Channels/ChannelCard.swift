@@ -75,9 +75,16 @@ struct ChannelCard: View {
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                    .stroke(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.18), .clear, Color.black.opacity(0.15)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
             )
-            .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+            .shadow(color: .black.opacity(0.28), radius: 12, y: 5)
 
             Text(room.title)
                 .font(.subheadline.weight(.semibold))

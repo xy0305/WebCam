@@ -48,20 +48,9 @@ struct AgeGateView: View {
                     Text("我已满 18 岁，进入")
                         .font(.headline)
                         .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(
-                            LinearGradient(
-                                colors: [AppTheme.accent, AppTheme.accent.opacity(0.82)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        )
+                        .glassButton(prominent: true)
                 }
-                .buttonStyle(.plain)
-                .glowOnPress()
-                .shadow(color: AppTheme.accent.opacity(0.35), radius: 14, y: 6)
+                .buttonStyle(SoftPress())
                 .padding(.horizontal, 28)
                 .staggerAppear(index: 2)
 

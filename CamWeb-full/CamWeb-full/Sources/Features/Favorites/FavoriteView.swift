@@ -79,7 +79,7 @@ struct FavoriteView: View {
                                         isFavorite: special.contains(room)
                                     )
                                 }
-                                .buttonStyle(PressableCardStyle())
+                                .buttonStyle(SoftPress())
                                 .staggerAppear(index: index, enabled: index < 8)
                                 .contextMenu { roomMenu(room) }
                             }
