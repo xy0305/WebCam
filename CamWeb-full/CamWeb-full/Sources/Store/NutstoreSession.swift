@@ -250,8 +250,10 @@ enum NutstoreSyncCoordinator {
         _ = FavoriteTagsStore.shared.syncNow()
 
         var remote = NutstoreSnapshot.empty
+        var hadRemoteFile = false
         do {
             if let data = try await nutstore.fetchData() {
+                hadRemoteFile = true
                 remote = (try? JSONDecoder().decode(NutstoreSnapshot.self, from: data)) ?? .empty
             }
         } catch {
@@ -283,7 +285,13 @@ enum NutstoreSyncCoordinator {
             let data = try JSONEncoder().encode(merged)
             try await nutstore.putData(data)
             nutstore.markSynced()
-            if showMessage { nutstore.setMessage("已与坚果云合并同步") }
+            if showMessage {
+                if hadRemoteFile {
+                    nutstore.setMessage("已与坚果云合并同步")
+                } else {
+                    nutstore.setMessage("已上传本机数据到坚果云，另一台设备点「立即同步」即可合并")
+                }
+            }
             return true
         } catch {
             if showMessage {
