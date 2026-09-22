@@ -19,7 +19,7 @@ struct FavoriteView: View {
     @State private var syncing = false
     @State private var syncMessage: String?
 
-    private var columns: [GridItem] { [GridItem(.adaptive(minimum: 160), spacing: 14)] }
+    private var columns: [GridItem] { [GridItem(.adaptive(minimum: 160), spacing: AppTheme.gridSpacing)] }
     private var rooms: [Room] {
         let base: [Room]
         switch selected {
@@ -51,12 +51,7 @@ struct FavoriteView: View {
                     .padding(.horizontal, 16)
 
                     HStack {
-                        Text(selected.rawValue).font(.title3.weight(.semibold))
-                        Text("\(rooms.count)")
-                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
-                        Spacer()
+                        SectionHeader(title: selected.rawValue, systemImage: emptyIcon, tint: sectionTint, trailing: "\(rooms.count)")
                     }
                     .padding(.horizontal, 16)
 
@@ -67,13 +62,11 @@ struct FavoriteView: View {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(rooms) { room in
                                 Button { appState.openPlayer(username: room.username, room: room) } label: {
-                                    ChannelCard(room: room)
-                                        .overlay(alignment: .topLeading) {
-                                            if special.contains(room) {
-                                                Image(systemName: "star.fill").font(.caption.weight(.bold))
-                                                    .foregroundStyle(.yellow).padding(8)
-                                            }
-                                        }
+                                    ChannelCard(
+                                        room: room,
+                                        showFavoriteStar: true,
+                                        isFavorite: special.contains(room)
+                                    )
                                 }
                                 .buttonStyle(.plain)
                                 .contextMenu { roomMenu(room) }
@@ -84,6 +77,7 @@ struct FavoriteView: View {
                 }
                 .padding(.bottom, 16)
             }
+            .background(AppTheme.background.ignoresSafeArea())
             .navigationTitle("收藏")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -134,6 +128,14 @@ struct FavoriteView: View {
 
     private var emptyIcon: String {
         switch selected { case .recent: return "clock"; case .favorites: return "star"; case .following: return "heart" }
+    }
+
+    private var sectionTint: Color {
+        switch selected {
+        case .recent: return AppTheme.inkSecondary
+        case .favorites: return AppTheme.favorite
+        case .following: return AppTheme.accent
+        }
     }
     private var mergedFollows: [Room] {
         var out = local.usernames.map { room(for: $0) }

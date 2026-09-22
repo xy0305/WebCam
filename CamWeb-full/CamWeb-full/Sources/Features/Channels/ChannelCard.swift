@@ -2,61 +2,97 @@ import SwiftUI
 
 struct ChannelCard: View {
     let room: Room
+    var showFavoriteStar = false
+    var isFavorite = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topTrailing) {
-                Color(.secondarySystemBackground)
-                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                    .overlay {
-                        AsyncImage(url: room.thumb) { phase in
-                            switch phase {
-                            case .success(let img):
-                                img.resizable().scaledToFill()
-                            case .failure:
-                                Image(systemName: "photo")
-                                    .font(.title2)
-                                    .foregroundStyle(.secondary)
-                            default:
-                                ProgressView().tint(.accentColor)
-                            }
+                LinearGradient(
+                    colors: [AppTheme.card, AppTheme.surface],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .overlay {
+                    AsyncImage(url: room.thumb) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                        case .failure:
+                            Image(systemName: "photo")
+                                .font(.title2)
+                                .foregroundStyle(AppTheme.inkSecondary)
+                        default:
+                            ProgressView().tint(AppTheme.accent)
                         }
                     }
-                    .clipped()
+                }
+                .overlay(alignment: .bottom) {
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.55)],
+                        startPoint: .center,
+                        endPoint: .bottom
+                    )
+                    .allowsHitTesting(false)
+                }
+                .clipped()
 
-                Text(room.loadState == .timeout ? "超时" : "LIVE")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background((room.loadState == .timeout ? Color.red : Color.accentColor).opacity(0.92), in: RoundedRectangle(cornerRadius: 4))
-                    .padding(6)
+                HStack(spacing: 6) {
+                    if showFavoriteStar && isFavorite {
+                        Image(systemName: "star.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(AppTheme.favorite)
+                            .padding(6)
+                            .background(.black.opacity(0.45), in: Circle())
+                    }
+                    LiveBadge(isTimeout: room.loadState == .timeout)
+                }
+                .padding(8)
 
                 VStack {
                     Spacer()
                     HStack {
                         Spacer()
                         Text(room.tagText)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 7)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.95))
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(.black.opacity(0.55), in: Capsule())
-                            .padding(6)
+                            .padding(8)
                     }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
 
             Text(room.title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(AppTheme.ink)
                 .lineLimit(1)
 
-            HStack(spacing: 4) {
-                Circle().fill(room.loadState == .timeout ? Color.gray : Color.red).frame(width: 6, height: 6)
-                Text(room.viewersText).font(.caption).foregroundStyle(.secondary)
-                Text(room.username).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(room.loadState == .timeout ? AppTheme.inkSecondary : AppTheme.live)
+                    .frame(width: 6, height: 6)
+                    .shadow(
+                        color: (room.loadState == .timeout ? Color.clear : AppTheme.live).opacity(0.7),
+                        radius: 3
+                    )
+                Text(room.viewersText)
+                    .font(.caption.weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(AppTheme.inkSecondary)
+                Text("·").foregroundStyle(AppTheme.inkSecondary.opacity(0.5))
+                Text(room.username)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.inkSecondary)
+                    .lineLimit(1)
             }
         }
         .contentShape(Rectangle())

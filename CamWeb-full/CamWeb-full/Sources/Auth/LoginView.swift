@@ -9,53 +9,91 @@ struct LoginView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    TextField("用户名", text: $username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("密码", text: $password)
-                }
+            ScrollView {
+                VStack(spacing: 22) {
+                    VStack(spacing: 8) {
+                        Text("CamWeb")
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                            .foregroundStyle(AppTheme.ink)
+                        Text("登录后可同步关注列表")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.inkSecondary)
+                    }
+                    .padding(.top, 36)
 
-                if let errorText {
-                    Section {
+                    VStack(spacing: 12) {
+                        fieldRow(icon: "person") {
+                            TextField("用户名", text: $username)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .foregroundStyle(AppTheme.ink)
+                        }
+                        fieldRow(icon: "lock") {
+                            SecureField("密码", text: $password)
+                                .foregroundStyle(AppTheme.ink)
+                        }
+                    }
+                    .padding(14)
+                    .appCard()
+
+                    if let errorText {
                         Text(errorText)
-                            .foregroundStyle(.red)
                             .font(.footnote)
-                    }
-                }
-
-                Section {
-                    Button {
-                        Task { await tryPasswordThenWeb() }
-                    } label: {
-                        Text("登录")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .disabled(username.isEmpty || password.isEmpty || auth.busy)
-
-                    Button {
-                        showWeb = true
-                    } label: {
-                        Text(auth.busy ? "正在打开登录页…" : "网页登录（推荐，可过验证码）")
-                            .frame(maxWidth: .infinity)
+                            .foregroundStyle(AppTheme.danger)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 4)
                     }
 
-                    Button {
-                        auth.enterGuest()
-                    } label: {
-                        Text("先随便看看")
-                            .frame(maxWidth: .infinity)
-                    }
-                }
+                    VStack(spacing: 10) {
+                        Button {
+                            Task { await tryPasswordThenWeb() }
+                        } label: {
+                            Text("登录")
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(username.isEmpty || password.isEmpty || auth.busy)
+                        .opacity(username.isEmpty || password.isEmpty || auth.busy ? 0.45 : 1)
 
-                Section {
+                        Button {
+                            showWeb = true
+                        } label: {
+                            Text(auth.busy ? "正在打开登录页…" : "网页登录（推荐，可过验证码）")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.ink)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            auth.enterGuest()
+                        } label: {
+                            Text("先随便看看")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(AppTheme.inkSecondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     Text("站点若弹出验证码，必须走网页登录。账号密码只提交给官网，不会存进这个 App。")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AppTheme.inkSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 24)
                 }
+                .padding(.horizontal, 24)
             }
-            .navigationTitle("登录")
+            .background(AppTheme.background.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showWeb) {
                 WebLoginView { name in
                     showWeb = false
@@ -65,6 +103,18 @@ struct LoginView: View {
                 }
             }
         }
+        .brandScreen()
+    }
+
+    @ViewBuilder
+    private func fieldRow<Content: View>(icon: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(AppTheme.inkSecondary)
+                .frame(width: 22)
+            content()
+        }
+        .padding(.vertical, 4)
     }
 
     private func tryPasswordThenWeb() async {

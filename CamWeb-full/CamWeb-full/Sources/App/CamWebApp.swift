@@ -18,6 +18,8 @@ struct CamWebApp: App {
             RootFlow()
                 .environmentObject(AuthManager.shared)
                 .environmentObject(AppState.shared)
+                .tint(AppTheme.accent)
+                .preferredColorScheme(.dark)
         }
     }
 }

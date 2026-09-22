@@ -31,6 +31,8 @@ struct SettingsView: View {
                 footerSection
             }
             .navigationTitle("设置")
+            .scrollContentBackground(.hidden)
+            .background(AppTheme.background.ignoresSafeArea())
             .onAppear {
                 nutstoreUser = nutstore.username
                 nutstorePass = ""
@@ -214,8 +216,9 @@ struct SettingsView: View {
         Section {
             Text("登录只为带上你自己的官网会话。不会保存密码。私密/付费房间不会被解锁。")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AppTheme.inkSecondary)
         }
+        .listRowBackground(AppTheme.card.opacity(0.5))
     }
 
     private var accountStatus: String {

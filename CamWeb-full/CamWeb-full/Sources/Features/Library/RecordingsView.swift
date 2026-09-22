@@ -48,12 +48,12 @@ struct RecordingsView: View {
                         VStack(spacing: 10) {
                             Image(systemName: "record.circle")
                                 .font(.system(size: 34))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(AppTheme.accent)
                             Text("添加想自动录制的主播")
                                 .font(.headline)
                             Text("打开 App 后自动检测，在线时开始录制")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(AppTheme.inkSecondary)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 20)

@@ -13,7 +13,7 @@ struct SearchView: View {
     @FocusState private var searchFocused: Bool
 
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: 160), spacing: 14)]
+        [GridItem(.adaptive(minimum: 160), spacing: AppTheme.gridSpacing)]
     }
     private var visibleHistory: [String] {
         editingHistory || historyExpanded ? history.items : Array(history.items.prefix(5))
@@ -59,17 +59,19 @@ struct SearchView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
             }
+            .background(AppTheme.background.ignoresSafeArea())
             .navigationTitle("搜索")
             .navigationBarTitleDisplayMode(.large)
-            .overlay { if searching { ProgressView() } }
+            .overlay { if searching { ProgressView().tint(AppTheme.accent) } }
         }
+        .brandScreen()
     }
 
     private var searchBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 19, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AppTheme.inkSecondary)
 
             TextField("用户名或关键词", text: $query)
                 .textInputAutocapitalization(.never)
@@ -86,7 +88,7 @@ struct SearchView: View {
                     errorText = nil
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AppTheme.inkSecondary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("清空搜索")
@@ -94,10 +96,10 @@ struct SearchView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 48)
-        .background(Color.secondary.opacity(0.11), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(AppTheme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.secondary.opacity(0.16), lineWidth: 0.5)
+                .stroke(AppTheme.cardStroke, lineWidth: 1)
         }
     }
 

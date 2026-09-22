@@ -64,7 +64,7 @@ struct ChannelListPage: View {
     @State private var requestGeneration = 0
 
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: 160), spacing: 14)]
+        [GridItem(.adaptive(minimum: 160), spacing: AppTheme.gridSpacing)]
     }
 
     var filtered: [Room] {
@@ -83,30 +83,24 @@ struct ChannelListPage: View {
                 } actions: {
                     Button("重试") { Task { await reload() } }
                         .buttonStyle(.borderedProminent)
+                        .tint(AppTheme.accent)
                 }
             } else {
                 ScrollView {
                     if gender.isEmpty && keyword.isEmpty && !favoriteTags.tags.isEmpty {
                         VStack(alignment: .leading, spacing: 9) {
                             HStack {
-                                Label("收藏标签", systemImage: "star.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.yellow)
+                                SectionHeader(title: "收藏标签", systemImage: "star.fill", tint: AppTheme.favorite)
                                 Spacer()
                                 Text("点击快速切换")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(AppTheme.inkSecondary)
                             }
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
                                     ForEach(favoriteTags.tags, id: \.self) { tag in
                                         Button { appState.openTag(tag) } label: {
-                                            Text("#\(tag)")
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(.primary)
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 8)
-                                                .background(.thinMaterial, in: Capsule())
+                                            GlassChip(title: "#\(tag)", highlighted: true)
                                         }
                                         .buttonStyle(.plain)
                                         .contextMenu {
@@ -138,7 +132,7 @@ struct ChannelListPage: View {
                     .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
                     .padding(.vertical, 12)
 
-                    if loadingMore { ProgressView().padding(.vertical, 16) }
+                    if loadingMore { ProgressView().tint(AppTheme.accent).padding(.vertical, 16) }
                 }
                 .refreshable { await reload() }
             }
