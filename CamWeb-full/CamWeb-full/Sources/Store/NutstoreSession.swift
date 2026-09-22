@@ -43,8 +43,14 @@ final class NutstoreSession: ObservableObject {
         lastMessage = text
     }
 
-    var remoteFileURL: URL {
-        Self.baseURL.appendingPathComponent(Self.folderName).appendingPathComponent(Self.fileName)
+    var remoteFileURL: URL { Self.fileURL }
+
+    static var folderURL: URL {
+        baseURL.appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    static var fileURL: URL {
+        folderURL.appendingPathComponent(fileName)
     }
 
     /// `appPassword` 留空表示不修改已有应用密码。
@@ -102,16 +108,28 @@ final class NutstoreSession: ObservableObject {
         }
     }
 
-    /// 读云端快照；404 视为还没有文件。
+    /// 读云端快照；不存在/父目录未建时视为还没有文件（404/405/409/410/403）。
     func fetchData() async throws -> Data? {
+        try await ensureFolder()
         var req = URLRequest(url: remoteFileURL)
         req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, http) = try await webdav(req)
-        if http.statusCode == 404 { return nil }
-        guard (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+        let code = http.statusCode
+        if (200..<300).contains(code), !data.isEmpty {
+            return data
         }
-        return data
+        // 空文件 / 尚未创建 / 父目录冲突：都当作无云端快照
+        if code == 204 || code == 404 || code == 405 || code == 409 || code == 410 || code == 403 {
+            return nil
+        }
+        if code == 401 {
+            throw NutstoreWebDAVError.unauthorized
+        }
+        if (200..<300).contains(code) {
+            return nil
+        }
+        throw NutstoreWebDAVError.badStatus(code, data: data)
     }
 
     func putData(_ data: Data) async throws {
@@ -120,31 +138,72 @@ final class NutstoreSession: ObservableObject {
         req.httpMethod = "PUT"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = data
-        let (_, http) = try await webdav(req)
-        guard (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+        let (respData, http) = try await webdav(req)
+        let code = http.statusCode
+        if (200..<300).contains(code) { return }
+        if code == 401 { throw NutstoreWebDAVError.unauthorized }
+        // 父目录不存在时再建一次并重试
+        if code == 409 {
+            try await ensureFolder(force: true)
+            let retry = try await webdav(req)
+            if (200..<300).contains(retry.1.statusCode) { return }
+            throw NutstoreWebDAVError.badStatus(retry.1.statusCode, data: retry.0)
         }
+        throw NutstoreWebDAVError.badStatus(code, data: respData)
     }
 
-    private func ensureFolder() async throws {
-        var req = URLRequest(url: Self.baseURL.appendingPathComponent(Self.folderName))
+    private func ensureFolder(force: Bool = false) async throws {
+        var req = URLRequest(url: Self.folderURL)
         req.httpMethod = "MKCOL"
         let (_, http) = try await webdav(req)
-        // 201 新建 / 405 已存在 / 301 等均可继续 PUT
-        if http.statusCode == 401 {
-            throw URLError(.userAuthenticationRequired)
+        let code = http.statusCode
+        // 201 新建 / 200·405 已存在 / 301 重定向，均可继续
+        if code == 401 { throw NutstoreWebDAVError.unauthorized }
+        if force, code >= 400, code != 405, code != 301 {
+            throw NutstoreWebDAVError.badStatus(code, data: Data())
         }
     }
 
     private func webdav(_ base: URLRequest) async throws -> (Data, HTTPURLResponse) {
         var req = base
         req.timeoutInterval = 25
+        req.cachePolicy = .reloadIgnoringLocalCacheData
         req.setValue("CamWeb/1.3", forHTTPHeaderField: "User-Agent")
         let token = Data("\(username):\(appPassword)".utf8).base64EncodedString()
         req.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        return (data, http)
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse else {
+                throw NutstoreWebDAVError.badStatus(-1, data: data)
+            }
+            return (data, http)
+        } catch let error as NutstoreWebDAVError {
+            throw error
+        } catch let error as URLError {
+            throw NutstoreWebDAVError.network(error.code.rawValue, error.localizedDescription)
+        } catch {
+            throw NutstoreWebDAVError.network(-1, error.localizedDescription)
+        }
+    }
+}
+
+enum NutstoreWebDAVError: LocalizedError {
+    case unauthorized
+    case badStatus(Int, data: Data)
+    case network(Int, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unauthorized:
+            return "认证失败（HTTP 401），请用坚果云「应用密码」"
+        case .badStatus(let code, let data):
+            let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
+            let snippet = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if snippet.isEmpty { return "服务器返回 HTTP \(code)" }
+            return "服务器返回 HTTP \(code)：\(snippet)"
+        case .network(let code, let message):
+            return "网络错误 \(code)：\(message)"
+        }
     }
 }
 
@@ -196,10 +255,16 @@ enum NutstoreSyncCoordinator {
                 remote = (try? JSONDecoder().decode(NutstoreSnapshot.self, from: data)) ?? .empty
             }
         } catch {
-            if showMessage {
-                nutstore.setMessage("拉取失败：\(error.localizedDescription)")
+            // 认证/严重错误直接失败；其它拉取问题先按空云端继续上传，避免卡死首次同步
+            if case NutstoreWebDAVError.unauthorized = error {
+                if showMessage {
+                    nutstore.setMessage("拉取失败：认证失败，请检查应用密码")
+                }
+                return false
             }
-            return false
+            if showMessage {
+                nutstore.setMessage("云端暂无可用快照（\(error.localizedDescription)），将上传本机数据")
+            }
         }
 
         FollowingStore.shared.applyCloudSnapshot(remote.following)
