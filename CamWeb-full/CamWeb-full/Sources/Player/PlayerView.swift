@@ -538,42 +538,49 @@ struct PlayerView: View {
                     Spacer()
                     HStack(spacing: 14) {
                         Button {
+                            Haptics.selection()
                             special.toggle(displayRoom)
                             scheduleAutoHide()
                         } label: {
                             Image(systemName: special.contains(displayRoom) ? "star.fill" : "star")
                                 .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(special.contains(displayRoom) ? .yellow : .white)
+                                .foregroundStyle(special.contains(displayRoom) ? AppTheme.favorite : .white)
                                 .frame(width: 30, height: 30)
+                                .scaleEffect(special.contains(displayRoom) ? 1.1 : 1)
+                                .animation(AppMotion.quick, value: special.contains(displayRoom))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(SoftPress())
                         .accessibilityLabel(special.contains(displayRoom) ? "取消收藏" : "收藏")
 
                         Button {
+                            Haptics.selection()
                             fav.toggle(username)
                             scheduleAutoHide()
                         } label: {
                             Image(systemName: fav.isFollowing(username) ? "heart.fill" : "heart")
                                 .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(fav.isFollowing(username) ? .red : .white)
+                                .foregroundStyle(fav.isFollowing(username) ? AppTheme.live : .white)
                                 .frame(width: 30, height: 30)
+                                .scaleEffect(fav.isFollowing(username) ? 1.1 : 1)
+                                .animation(AppMotion.quick, value: fav.isFollowing(username))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(SoftPress())
                         .accessibilityLabel(fav.isFollowing(username) ? "取消关注" : "关注")
 
                         iconButton("pip") {
                             startSystemPiP()
                         }
                         Button {
+                            Haptics.tap()
                             toggleRecord()
                             scheduleAutoHide()
                         } label: {
                             Image(systemName: recs.isRecording(username) ? "stop.circle.fill" : "record.circle")
                                 .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(recs.isRecording(username) ? .red : .white)
+                                .foregroundStyle(recs.isRecording(username) ? AppTheme.live : .white)
                                 .frame(width: 30, height: 30)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(SoftPress())
                         Menu {
                             Button("复制最高画质 m3u8") { exportCopy() }
                             Button("用 iPlayer 打开") { exportIPlayer() }

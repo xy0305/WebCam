@@ -157,6 +157,7 @@ struct SearchView: View {
         HStack(spacing: 6) {
             Button {
                 guard !editingHistory else { return }
+                Haptics.tap()
                 query = item
                 history.record(item)
                 searchFocused = false
@@ -167,25 +168,25 @@ struct SearchView: View {
                     .lineLimit(1)
                     .frame(maxWidth: 210)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SoftPress())
 
             if editingHistory {
                 Button {
+                    Haptics.tap()
                     withAnimation { history.remove(item) }
                     if history.items.isEmpty { editingHistory = false; historyExpanded = false }
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AppTheme.inkSecondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SoftPress())
                 .accessibilityLabel("删除 \(item)")
             }
         }
         .padding(.horizontal, 13)
         .frame(height: 36)
-        .background(Color.secondary.opacity(0.08), in: Capsule())
-        .overlay(Capsule().stroke(Color.secondary.opacity(0.16), lineWidth: 0.7))
+        .glassChip()
         .contentShape(Capsule())
         .onLongPressGesture(minimumDuration: 0.45) {
             withAnimation(.easeInOut(duration: 0.18)) { editingHistory = true; historyExpanded = true }
