@@ -124,25 +124,32 @@ struct ChannelListPage: View {
                         .padding(.top, 14)
                     }
 
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(filtered) { room in
-                            Button {
-                                appState.openPlayer(username: room.username, room: room)
-                            } label: {
-                                ChannelCard(room: room)
-                            }
-                            .buttonStyle(PressableCardStyle())
-                            .onAppear {
-                                if room.id == rooms.last?.id { Task { await loadMore() } }
+                    if loading && rooms.isEmpty {
+                        // 骨架屏放在内容流里，避免盖住上方的收藏标签
+                        skeletonGrid
+                            .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
+                            .padding(.vertical, 12)
+                    } else {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(filtered) { room in
+                                Button {
+                                    appState.openPlayer(username: room.username, room: room)
+                                } label: {
+                                    ChannelCard(room: room)
+                                }
+                                .buttonStyle(PressableCardStyle())
+                                .onAppear {
+                                    if room.id == rooms.last?.id { Task { await loadMore() } }
+                                }
                             }
                         }
-                    }
-                    .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
-                    .padding(.vertical, 12)
+                        .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
+                        .padding(.vertical, 12)
 
-                    if loadingMore { ProgressView().tint(AppTheme.accent).padding(.vertical, 16) }
-                    if reachedEnd, !filtered.isEmpty {
-                        GridEndMark(text: "已经到底了 · 共 \(filtered.count) 个频道")
+                        if loadingMore { ProgressView().tint(AppTheme.accent).padding(.vertical, 16) }
+                        if reachedEnd, !filtered.isEmpty {
+                            GridEndMark(text: "已经到底了 · 共 \(filtered.count) 个频道")
+                        }
                     }
                 }
                 .refreshable { await reload() }
@@ -172,14 +179,6 @@ struct ChannelListPage: View {
         .task {
             localGender = gender
             if rooms.isEmpty { await reload() }
-        }
-        .overlay {
-            if loading && rooms.isEmpty {
-                skeletonGrid
-                    .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
-                    .padding(.top, 8)
-                    .allowsHitTesting(false)
-            }
         }
     }
 
