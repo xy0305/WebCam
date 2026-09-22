@@ -383,32 +383,52 @@ private struct LiveRecordingRow: View {
     @ObservedObject var session: RecordingSession
     var onOpen: () -> Void
     var onStop: () -> Void
+    @State private var pulse = false
 
     var body: some View {
         HStack(spacing: 12) {
-            Button(action: onOpen) {
+            Button {
+                Haptics.tap()
+                onOpen()
+            } label: {
                 HStack(spacing: 12) {
                     ZStack {
-                        Circle().fill(.red.opacity(0.13)).frame(width: 42, height: 42)
-                        Circle().fill(.red).frame(width: 10, height: 10)
+                        Circle().fill(AppTheme.live.opacity(0.18)).frame(width: 42, height: 42)
+                        Circle().fill(AppTheme.live).frame(width: 10, height: 10)
+                            .scaleEffect(pulse ? 1.25 : 1)
+                            .shadow(color: AppTheme.live.opacity(0.6), radius: pulse ? 5 : 2)
                     }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(session.username).font(.headline).foregroundStyle(.primary)
+                        Text(session.username).font(.headline).foregroundStyle(AppTheme.ink)
                         Text("\(session.phaseText) · \(session.elapsedText) · \(session.bytesText)")
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .font(.caption.monospacedDigit()).foregroundStyle(AppTheme.inkSecondary)
                     }
                     Spacer()
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(AppTheme.inkSecondary.opacity(0.6))
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SoftPress())
 
-            Button(session.isRunning ? "停止" : "保留并结束", action: onStop)
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
+            Button {
+                Haptics.warning()
+                onStop()
+            } label: {
+                Text(session.isRunning ? "停止" : "保留并结束")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.live.opacity(0.85), in: Capsule())
+            }
+            .buttonStyle(SoftPress())
         }
         .padding(.vertical, 4)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
     }
 }
 
@@ -421,12 +441,12 @@ private struct AutoRecordRow: View {
     var onRecord: () -> Void
 
     private var color: Color {
-        if isRecording { return .red }
+        if isRecording { return AppTheme.live }
         switch state {
-        case .online: return .green
-        case .checking: return .orange
-        case .offline: return .gray
-        case .failed: return .orange
+        case .online: return AppTheme.success
+        case .checking: return AppTheme.favorite
+        case .offline: return AppTheme.inkSecondary
+        case .failed: return AppTheme.favorite
         default: return .secondary
         }
     }
@@ -434,12 +454,15 @@ private struct AutoRecordRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Button(action: onOpen) {
-                AsyncImage(url: URL(string: "https://thumb.live.mmcdn.com/ri/\(entry.username).jpg")) { phase in
-                    if case .success(let image) = phase { image.resizable().scaledToFill() }
-                    else { Color.secondary.opacity(0.12).overlay(Image(systemName: "person.fill").foregroundStyle(.secondary)) }
+                HStack(spacing: 12) {
+                    AsyncImage(url: URL(string: "https://thumb.live.mmcdn.com/ri/\(entry.username).jpg")) { phase in
+                        if case .success(let image) = phase { image.resizable().scaledToFill() }
+                        else { Color.secondary.opacity(0.12).overlay(Image(systemName: "person.fill").foregroundStyle(AppTheme.inkSecondary)) }
+                    }
+                    .frame(width: 50, height: 50).clipShape(Circle())
+                    .overlay { Circle().stroke(Color(hex: 0xE8F0F8).opacity(0.2), lineWidth: 1) }
                 }
-                .frame(width: 50, height: 50).clipShape(Circle())
-            }.buttonStyle(.plain)
+            }.buttonStyle(SoftPress())
 
             Button(action: onOpen) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -455,7 +478,7 @@ private struct AutoRecordRow: View {
             }.buttonStyle(.plain)
 
             Toggle("", isOn: Binding(get: { entry.autoRecord }, set: onToggleAuto))
-                .labelsHidden().tint(.red)
+                .labelsHidden().tint(AppTheme.accent)
 
             Button(action: onRecord) {
                 Image(systemName: isRecording ? "stop.fill" : "record.circle")

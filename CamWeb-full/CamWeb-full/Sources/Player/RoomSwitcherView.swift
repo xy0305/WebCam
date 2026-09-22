@@ -50,10 +50,14 @@ struct RoomSwitcherView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button(action: onClose) {
+                    Button {
+                        Haptics.tap()
+                        onClose()
+                    } label: {
                         Image(systemName: "xmark").font(.subheadline.weight(.bold))
-                            .frame(width: 36, height: 36).background(.thinMaterial, in: Circle())
-                    }.buttonStyle(.plain)
+                            .frame(width: 36, height: 36).background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(SoftPress())
                 }
                 .padding(.horizontal, 20).padding(.vertical, 14)
 
@@ -68,21 +72,29 @@ struct RoomSwitcherView: View {
                 } else {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 14)], spacing: 16) {
-                            ForEach(rooms) { room in
-                                Button { onSelect(room) } label: {
+                            ForEach(Array(rooms.enumerated()), id: \.element.id) { index, room in
+                                Button {
+                                    Haptics.tap()
+                                    onSelect(room)
+                                } label: {
                                     VStack(alignment: .leading, spacing: 7) {
                                         AsyncImage(url: room.thumb) { phase in
                                             if case .success(let image) = phase { image.resizable().scaledToFill() }
-                                            else { Color.secondary.opacity(0.15).overlay(Image(systemName: "play.fill").foregroundStyle(.secondary)) }
+                                            else { Color.secondary.opacity(0.15).overlay(Image(systemName: "play.fill").foregroundStyle(AppTheme.inkSecondary)) }
                                         }
                                         .frame(height: 112).frame(maxWidth: .infinity).clipped()
                                         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-                                        Text(room.username).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                                        Text("\(room.platform.title) · \(room.viewersText)").font(.caption).foregroundStyle(.secondary)
+                                        .overlay {
+                                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                                .stroke(Color(hex: 0xE8F0F8).opacity(0.18), lineWidth: 1)
+                                        }
+                                        Text(room.username).font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.ink).lineLimit(1)
+                                        Text("\(room.platform.title) · \(room.viewersText)").font(.caption).foregroundStyle(AppTheme.inkSecondary)
                                     }
                                     .contentShape(Rectangle())
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(SoftPress())
+                                .staggerAppear(index: index, enabled: index < 8)
                             }
                         }
                         .padding(.horizontal, 16).padding(.bottom, 20)
