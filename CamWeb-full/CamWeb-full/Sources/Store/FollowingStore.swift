@@ -3,53 +3,67 @@ import Foundation
 @MainActor
 final class FollowingStore: ObservableObject {
     static let shared = FollowingStore()
-    private let key = "camweb.following"
-    private let cloudKey = "camweb.icloud.following.v1"
-    private let cloud = NSUbiquitousKeyValueStore.default
-    private var cloudObserver: NSObjectProtocol?
-    private var seedTask: Task<Void, Never>?
+    private let legacyKey = "camweb.following"
+    private let legacyCloudKey = "camweb.icloud.following.v1"
+    private let sync = CloudListSync(
+        localKey: "camweb.following.sync.v1",
+        cloudKey: "camweb.icloud.following.v2"
+    )
+    private var state = CloudSyncedMap.empty
 
     @Published private(set) var usernames: [String]
     @Published var lastError: String?
 
     private init() {
-        usernames = Self.normalized(UserDefaults.standard.stringArray(forKey: key) ?? [])
-        if let remote = cloud.array(forKey: cloudKey) as? [String] {
-            usernames = Self.normalized(remote)
-            persistLocal()
+        usernames = []
+        let legacyKey = self.legacyKey
+        let legacyCloudKey = self.legacyCloudKey
+        state = sync.bootstrap {
+            var map = CloudSyncedMap.empty
+            let now = Date().timeIntervalSince1970
+            for name in UserDefaults.standard.stringArray(forKey: legacyKey) ?? [] {
+                let key = Self.clean(name)
+                if !key.isEmpty { map.upsert(key: key, at: now) }
+            }
+            if let remote = NSUbiquitousKeyValueStore.default.array(forKey: legacyCloudKey) as? [String] {
+                for name in remote {
+                    let key = Self.clean(name)
+                    if !key.isEmpty { map.upsert(key: key, at: now) }
+                }
+            }
+            return map
         }
-        cloudObserver = NotificationCenter.default.addObserver(
-            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: cloud,
-            queue: .main
-        ) { [weak self] note in
-            let keys = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
-            Task { @MainActor [weak self] in self?.reloadCloud(changedKeys: keys) }
-        }
-        cloud.synchronize()
-        // 首次安装先给 iCloud 一点下载时间，避免空设备立即覆盖另一台设备。
-        seedTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let self, self.cloud.object(forKey: self.cloudKey) == nil, !self.usernames.isEmpty else { return }
-            self.persistCloud()
+        UserDefaults.standard.removeObject(forKey: legacyKey)
+        NSUbiquitousKeyValueStore.default.removeObject(forKey: legacyCloudKey)
+        publish()
+        sync.onRemoteChange = { [weak self] map in
+            guard let self else { return }
+            self.state = map
+            self.publish()
         }
     }
 
-    /// 手动从 iCloud 拉取；云端没有数据时，把本机列表作为首次种子上传。
+    /// 手动从 iCloud 拉取并合并；云端没有数据时会把本机列表作为首次种子上传。
     @discardableResult
     func syncNow() -> Bool {
-        guard cloud.synchronize() else { return false }
-        if let remote = cloud.array(forKey: cloudKey) as? [String] {
-            usernames = Self.normalized(remote)
-            persistLocal()
-        } else {
-            persistCloud()
-        }
-        return true
+        let result = sync.syncNow(current: state)
+        state = result.map
+        publish()
+        return result.ok
+    }
+
+    var cloudSnapshot: CloudSyncedMap { state }
+
+    func applyCloudSnapshot(_ remote: CloudSyncedMap) {
+        state = CloudSyncedMap.merge(state, remote)
+        state.pruneTombstones()
+        persist()
+        publish()
     }
 
     func isFollowing(_ username: String) -> Bool {
-        usernames.contains(Self.clean(username))
+        let name = Self.clean(username)
+        return state.entries[name]?.isDeleted == false
     }
 
     func toggle(_ username: String) {
@@ -58,6 +72,7 @@ final class FollowingStore: ObservableObject {
 
     func toggleSynced(_ username: String) async {
         let name = Self.clean(username)
+        guard !name.isEmpty else { return }
         let willFollow = !isFollowing(name)
         applyLocal(name, follow: willFollow)
         guard CookieBridge.hasSessionCookie() else { return }
@@ -71,57 +86,39 @@ final class FollowingStore: ObservableObject {
     }
 
     func mergeRemote(_ rooms: [Room]) {
-        var values = usernames
         for room in rooms {
             let name = Self.clean(room.username)
-            if !name.isEmpty, !values.contains(name) { values.insert(name, at: 0) }
+            guard !name.isEmpty else { continue }
+            if !isFollowing(name) {
+                state.upsert(key: name)
+            }
         }
-        usernames = values
         persist()
+        publish()
     }
 
     private func applyLocal(_ name: String, follow: Bool) {
         guard !name.isEmpty else { return }
         if follow {
-            if !usernames.contains(name) { usernames.insert(name, at: 0) }
-        } else if let i = usernames.firstIndex(of: name) {
-            usernames.remove(at: i)
+            state.upsert(key: name)
+        } else {
+            state.remove(key: name)
         }
         persist()
+        publish()
     }
 
     private func persist() {
-        persistLocal()
-        persistCloud()
+        state.pruneTombstones()
+        sync.commit(state)
     }
 
-    private func persistLocal() {
-        UserDefaults.standard.set(usernames, forKey: key)
-    }
-
-    private func persistCloud() {
-        cloud.set(usernames, forKey: cloudKey)
-        cloud.synchronize()
-    }
-
-    private func reloadCloud(changedKeys: [String]?) {
-        guard changedKeys == nil || changedKeys?.contains(cloudKey) == true else { return }
-        guard let remote = cloud.array(forKey: cloudKey) as? [String] else { return }
-        usernames = Self.normalized(remote)
-        persistLocal()
+    private func publish() {
+        usernames = state.activeKeys()
     }
 
     private static func clean(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private static func normalized(_ values: [String]) -> [String] {
-        var seen = Set<String>()
-        return values.compactMap {
-            let value = clean($0)
-            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
-            return value
-        }
     }
 }
 

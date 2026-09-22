@@ -102,7 +102,7 @@ struct FavoriteView: View {
                     ToolbarItem(placement: .topBarTrailing) { Button("清空最近") { history.clear() } }
                 }
             }
-            .alert("iCloud 同步", isPresented: Binding(
+            .alert("云同步", isPresented: Binding(
                 get: { syncMessage != nil },
                 set: { if !$0 { syncMessage = nil } }
             )) {
@@ -159,12 +159,22 @@ struct FavoriteView: View {
         syncing = true
         let followOK = local.syncNow()
         let favoriteOK = special.syncNow()
+        let tagsOK = FavoriteTagsStore.shared.syncNow()
+        let nutstoreOK = await NutstoreSyncCoordinator.syncAll(showMessage: false)
         await loadRemote()
         await loadHeat()
         syncing = false
-        syncMessage = (followOK && favoriteOK)
-            ? "已从 iCloud 更新收藏和关注"
-            : "iCloud 暂时无法同步，请确认两台设备使用同一 Apple 账户"
+        if nutstoreOK {
+            syncMessage = "已通过坚果云合并收藏、关注和标签"
+        } else if NutstoreSession.shared.isConfigured {
+            syncMessage = followOK && favoriteOK && tagsOK
+                ? "已从 iCloud 合并；坚果云同步失败：\(NutstoreSession.shared.lastMessage ?? "请检查网络")"
+                : "同步失败，请检查坚果云与 iCloud 配置"
+        } else {
+            syncMessage = (followOK && favoriteOK && tagsOK)
+                ? "已从 iCloud 合并收藏、关注和标签。证书不同时请到设置配置坚果云"
+                : "iCloud 暂时无法同步。证书不同时请到设置配置坚果云"
+        }
     }
 
     private func loadHeat() async {

@@ -85,12 +85,14 @@ final class WatchHistoryStore: ObservableObject {
 @MainActor
 final class SpecialFollowStore: ObservableObject {
     static let shared = SpecialFollowStore()
-    private let key = "camweb.special.v2"
-    private let legacyKey = "camweb.special"
-    private let cloudKey = "camweb.icloud.special.v1"
-    private let cloud = NSUbiquitousKeyValueStore.default
-    private var cloudObserver: NSObjectProtocol?
-    private var seedTask: Task<Void, Never>?
+    private let legacyKey = "camweb.special.v2"
+    private let olderLegacyKey = "camweb.special"
+    private let legacyCloudKey = "camweb.icloud.special.v1"
+    private let sync = CloudListSync(
+        localKey: "camweb.special.sync.v1",
+        cloudKey: "camweb.icloud.special.v2"
+    )
+    private var state = CloudSyncedMap.empty
 
     struct Item: Codable, Identifiable, Hashable {
         var username: String
@@ -115,51 +117,58 @@ final class SpecialFollowStore: ObservableObject {
     var usernames: [String] { items.map(\.username) }
 
     private init() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let decoded = try? JSONDecoder().decode([Item].self, from: data) {
-            items = Self.normalized(decoded)
-        } else {
-            items = Self.normalized((UserDefaults.standard.stringArray(forKey: legacyKey) ?? []).map {
-                Item(username: $0, platform: .chaturbate, platformRoomID: nil, imageURL: nil)
-            })
+        items = []
+        let legacyKey = self.legacyKey
+        let olderLegacyKey = self.olderLegacyKey
+        let legacyCloudKey = self.legacyCloudKey
+        state = sync.bootstrap {
+            var map = CloudSyncedMap.empty
+            let now = Date().timeIntervalSince1970
+            if let data = UserDefaults.standard.data(forKey: legacyKey),
+               let decoded = try? JSONDecoder().decode([Item].self, from: data) {
+                for item in decoded { map.upsertLegacy(item, at: now) }
+            }
+            for name in UserDefaults.standard.stringArray(forKey: olderLegacyKey) ?? [] {
+                map.upsertLegacy(Item(username: name, platform: .chaturbate, platformRoomID: nil, imageURL: nil), at: now)
+            }
+            if let data = NSUbiquitousKeyValueStore.default.data(forKey: legacyCloudKey),
+               let decoded = try? JSONDecoder().decode([Item].self, from: data) {
+                for item in decoded { map.upsertLegacy(item, at: now) }
+            }
+            return map
         }
-        if let data = cloud.data(forKey: cloudKey),
-           let remote = try? JSONDecoder().decode([Item].self, from: data) {
-            items = Self.normalized(remote)
-            persistLocal()
-        }
-        cloudObserver = NotificationCenter.default.addObserver(
-            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: cloud,
-            queue: .main
-        ) { [weak self] note in
-            let keys = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
-            Task { @MainActor [weak self] in self?.reloadCloud(changedKeys: keys) }
-        }
-        cloud.synchronize()
-        seedTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let self, self.cloud.object(forKey: self.cloudKey) == nil, !self.items.isEmpty else { return }
-            self.persistCloud()
+        UserDefaults.standard.removeObject(forKey: legacyKey)
+        UserDefaults.standard.removeObject(forKey: olderLegacyKey)
+        NSUbiquitousKeyValueStore.default.removeObject(forKey: legacyCloudKey)
+        publish()
+        sync.onRemoteChange = { [weak self] map in
+            guard let self else { return }
+            self.state = map
+            self.publish()
         }
     }
 
-    /// 手动从 iCloud 拉取；云端没有数据时，把本机列表作为首次种子上传。
+    /// 手动从 iCloud 拉取并合并；云端没有数据时会把本机收藏作为首次种子上传。
     @discardableResult
     func syncNow() -> Bool {
-        guard cloud.synchronize() else { return false }
-        if let data = cloud.data(forKey: cloudKey),
-           let remote = try? JSONDecoder().decode([Item].self, from: data) {
-            items = Self.normalized(remote)
-            persistLocal()
-        } else {
-            persistCloud()
-        }
-        return true
+        let result = sync.syncNow(current: state)
+        state = result.map
+        publish()
+        return result.ok
+    }
+
+    var cloudSnapshot: CloudSyncedMap { state }
+
+    func applyCloudSnapshot(_ remote: CloudSyncedMap) {
+        state = CloudSyncedMap.merge(state, remote)
+        state.pruneTombstones()
+        persist()
+        publish()
     }
 
     func contains(_ username: String) -> Bool {
-        items.contains { $0.username == username.lowercased() }
+        let name = username.lowercased()
+        return items.contains { $0.username == name }
     }
 
     func contains(_ room: Room) -> Bool {
@@ -172,54 +181,64 @@ final class SpecialFollowStore: ObservableObject {
 
     func toggle(_ room: Room) {
         let name = room.username.lowercased()
-        if let i = items.firstIndex(where: { $0.username == name && $0.platform == room.platform }) {
-            items.remove(at: i)
+        guard !name.isEmpty else { return }
+        let id = "\(room.platform.rawValue):\(name)"
+        if state.entries[id]?.isDeleted == false {
+            state.remove(key: id)
         } else {
-            items.insert(
-                Item(username: name, platform: room.platform, platformRoomID: room.platformRoomID, imageURL: room.imageURL),
-                at: 0
-            )
+            let item = Item(username: name, platform: room.platform, platformRoomID: room.platformRoomID, imageURL: room.imageURL)
+            state.upsert(key: id, payload: Self.encode(item))
         }
         persist()
+        publish()
     }
 
     func remove(_ username: String) {
-        items.removeAll { $0.username == username.lowercased() }
+        let name = username.lowercased()
+        let ids = state.entries.keys.filter { $0.hasSuffix(":\(name)") || $0 == name }
+        guard !ids.isEmpty else { return }
+        for id in ids where state.entries[id]?.isDeleted == false {
+            state.remove(key: id)
+        }
         persist()
+        publish()
     }
 
     private func persist() {
-        persistLocal()
-        persistCloud()
+        state.pruneTombstones()
+        sync.commit(state)
     }
 
-    private func persistLocal() {
-        if let data = try? JSONEncoder().encode(items) {
-            UserDefaults.standard.set(data, forKey: key)
+    private func publish() {
+        items = state.activeKeys().compactMap { key in
+            if let payload = state.entries[key]?.payload, let item = Self.decode(payload) {
+                return Self.normalized(item)
+            }
+            return Self.normalized(Item(username: key, platform: .chaturbate, platformRoomID: nil, imageURL: nil))
         }
     }
 
-    private func persistCloud() {
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        cloud.set(data, forKey: cloudKey)
-        cloud.synchronize()
+    private static func encode(_ item: Item) -> Data? {
+        try? JSONEncoder().encode(item)
     }
 
-    private func reloadCloud(changedKeys: [String]?) {
-        guard changedKeys == nil || changedKeys?.contains(cloudKey) == true else { return }
-        guard let data = cloud.data(forKey: cloudKey),
-              let remote = try? JSONDecoder().decode([Item].self, from: data) else { return }
-        items = Self.normalized(remote)
-        persistLocal()
+    private static func decode(_ data: Data) -> Item? {
+        try? JSONDecoder().decode(Item.self, from: data)
     }
 
-    private static func normalized(_ values: [Item]) -> [Item] {
-        var seen = Set<String>()
-        return values.compactMap { item in
-            var value = item
-            value.username = item.username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard !value.username.isEmpty, seen.insert(value.id).inserted else { return nil }
-            return value
-        }
+    private static func normalized(_ item: Item) -> Item {
+        var value = item
+        value.username = item.username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value
+    }
+}
+
+private extension CloudSyncedMap {
+    mutating func upsertLegacy(_ item: SpecialFollowStore.Item, at now: TimeInterval) {
+        let name = item.username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !name.isEmpty else { return }
+        var value = item
+        value.username = name
+        upsert(key: value.id, payload: try? JSONEncoder().encode(value), at: now)
     }
 }

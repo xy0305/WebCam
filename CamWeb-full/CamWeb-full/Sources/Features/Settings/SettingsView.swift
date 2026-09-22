@@ -6,6 +6,7 @@ struct SettingsView: View {
     @ObservedObject private var stripchat = StripchatSession.shared
     @ObservedObject private var panda = PandaSession.shared
     @ObservedObject private var pan115 = Pan115Session.shared
+    @ObservedObject private var nutstore = NutstoreSession.shared
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
@@ -13,6 +14,8 @@ struct SettingsView: View {
     @State private var pasteKind: CookiePasteKind?
     @State private var pastedCookie = ""
     @State private var cookieAlert: CookieAlert?
+    @State private var nutstoreUser = ""
+    @State private var nutstorePass = ""
 
     var body: some View {
         NavigationStack {
@@ -22,11 +25,16 @@ struct SettingsView: View {
                 stripchatSection
                 pandaSection
                 pan115Section
+                nutstoreSection
                 playbackSection
                 logoutSection
                 footerSection
             }
             .navigationTitle("设置")
+            .onAppear {
+                nutstoreUser = nutstore.username
+                nutstorePass = ""
+            }
             .sheet(isPresented: $showChaturbateLogin) {
                 WebLoginView { name in
                     showChaturbateLogin = false
@@ -126,6 +134,58 @@ struct SettingsView: View {
             LabeledContent("播放器", value: "KSPlayer")
             LabeledContent("录制", value: "HLS 源流切片")
         }
+    }
+
+    private var nutstoreSection: some View {
+        Section("坚果云同步") {
+            LabeledContent("状态", value: nutstoreStatus)
+            TextField("坚果云邮箱", text: $nutstoreUser)
+                .textContentType(.username)
+                .keyboardType(.emailAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            SecureField(
+                nutstore.hasPassword && nutstorePass.isEmpty ? "已保存应用密码（留空则不改）" : "应用密码",
+                text: $nutstorePass
+            )
+            .textContentType(.password)
+            Button("保存账号") {
+                nutstore.save(username: nutstoreUser, appPassword: nutstorePass)
+                nutstorePass = ""
+            }
+            Button("测试连接") {
+                Task {
+                    nutstore.save(username: nutstoreUser, appPassword: nutstorePass)
+                    nutstorePass = ""
+                    _ = await nutstore.testConnection()
+                }
+            }
+            Button("立即同步") {
+                Task { await NutstoreSyncCoordinator.syncAll() }
+            }
+            .disabled(!nutstore.isConfigured || nutstore.isBusy)
+            if nutstore.isConfigured {
+                Button("清除配置", role: .destructive) {
+                    nutstore.clear()
+                    nutstoreUser = ""
+                    nutstorePass = ""
+                }
+            }
+            if let message = nutstore.lastMessage {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
+            if let at = nutstore.lastSyncAt {
+                LabeledContent("上次同步", value: at.formatted(date: .abbreviated, time: .shortened))
+            }
+            Text("证书不同时 iCloud 不互通。在 iPhone、iPad 各填一次同一坚果云账号的「应用密码」（坚果云 → 账户信息 → 第三方应用管理），即可同步关注/收藏/标签。密码存在本机。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private var nutstoreStatus: String {
+        if nutstore.isBusy { return "同步中…" }
+        if nutstore.isConfigured { return "已配置 \(nutstore.username)" }
+        return "未配置"
     }
 
     private var logoutSection: some View {
