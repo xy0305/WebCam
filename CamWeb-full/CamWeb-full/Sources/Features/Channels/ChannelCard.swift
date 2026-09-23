@@ -92,6 +92,8 @@ struct ChannelCard: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.ink)
                 .lineLimit(1)
+                .contentTransition(.opacity)
+                .animation(AppMotion.soft, value: room.title)
 
             HStack(spacing: 5) {
                 Circle()

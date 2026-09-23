@@ -159,7 +159,10 @@ struct ChannelListPage: View {
                         }
                     }
                 }
-                .refreshable { await reload() }
+                .refreshable {
+                    Haptics.soft()
+                    await reload()
+                }
             }
         }
         .navigationTitle(title)

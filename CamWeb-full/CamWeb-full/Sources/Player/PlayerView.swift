@@ -700,6 +700,7 @@ struct PlayerView: View {
 
     private func iconButton(_ systemName: String, action: @escaping () -> Void) -> some View {
         Button {
+            Haptics.tap()
             action()
             scheduleAutoHide()
         } label: {
@@ -708,7 +709,7 @@ struct PlayerView: View {
                 .foregroundStyle(.white)
                 .frame(width: 30, height: 30)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftPress())
     }
 
     private var landscapeStatusBar: some View {
