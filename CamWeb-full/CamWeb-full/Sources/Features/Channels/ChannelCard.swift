@@ -57,10 +57,12 @@ struct ChannelCard: View {
                 VStack {
                     Spacer()
                     HStack(spacing: 8) {
-                        EqualizerBars(tint: .white.opacity(0.85))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(.black.opacity(0.4), in: Capsule())
+                        if room.loadState != .timeout {
+                            EqualizerBars(tint: .white.opacity(0.85))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(.black.opacity(0.4), in: Capsule())
+                        }
                         Spacer()
                         Text(room.tagText)
                             .font(.system(size: 10, weight: .semibold))

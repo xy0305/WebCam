@@ -49,6 +49,7 @@ struct AgeGateView: View {
                         .font(.headline)
                         .foregroundStyle(.white)
                         .glassButton(prominent: true)
+                        .glassSheen()
                 }
                 .buttonStyle(SoftPress())
                 .padding(.horizontal, 28)
