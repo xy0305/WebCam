@@ -117,7 +117,11 @@ struct FavoriteView: View {
                     ToolbarItem(placement: .topBarTrailing) { Button("清空最近") { history.clear() } }
                 }
             }
-            .refreshable { await loadRemote(); await loadHeat() }
+            .refreshable {
+                Haptics.soft()
+                await loadRemote()
+                await loadHeat()
+            }
             .task { await loadRemote(); await loadHeat() }
             .onChange(of: selected) { _, _ in
                 Haptics.selection()
