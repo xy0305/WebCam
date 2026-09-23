@@ -52,6 +52,7 @@ struct FavoriteView: View {
 
                     HStack {
                         SectionHeader(title: selected.rawValue, systemImage: emptyIcon, tint: sectionTint, trailing: "\(rooms.count)")
+                            .scrollParallax(12)
                         GlowDivider().frame(width: 40).padding(.leading, 8)
                     }
                     .padding(.horizontal, 16)

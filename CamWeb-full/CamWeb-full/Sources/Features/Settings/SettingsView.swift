@@ -173,7 +173,7 @@ struct SettingsView: View {
     }
 
     private var nutstoreSection: some View {
-        Section("坚果云同步") {
+        Section {
             LabeledContent("状态", value: nutstoreStatus)
             TextField("坚果云邮箱", text: $nutstoreUser)
                 .textContentType(.username)
@@ -186,10 +186,12 @@ struct SettingsView: View {
             )
             .textContentType(.password)
             Button("保存账号") {
+                Haptics.tap()
                 nutstore.save(username: nutstoreUser, appPassword: nutstorePass)
                 nutstorePass = ""
             }
             Button("测试连接") {
+                Haptics.tap()
                 Task {
                     nutstore.save(username: nutstoreUser, appPassword: nutstorePass)
                     nutstorePass = ""
@@ -197,6 +199,7 @@ struct SettingsView: View {
                 }
             }
             Button("立即同步") {
+                Haptics.tap()
                 Task { await NutstoreSyncCoordinator.syncAll() }
             }
             .disabled(!nutstore.isConfigured || nutstore.isBusy)

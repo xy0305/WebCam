@@ -124,6 +124,10 @@ struct ChannelListPage: View {
                         }
                         .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
                         .padding(.top, 14)
+                        .liquidGlass(corner: 16)
+                        .padding(.horizontal, 4)
+                        .padding(.top, 8)
+                        .scrollParallax(10)
                     }
 
                     if loading && rooms.isEmpty {

@@ -254,7 +254,41 @@ extension View {
     func glowOnPress() -> some View { modifier(GlowOnPress()) }
 }
 
-// MARK: - Slide-fade page transition
+/// 轻微视差：滚动时上层元素微移，克制使用。
+struct ScrollParallax: ViewModifier {
+    var amount: CGFloat = 18
+    @State private var offset: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .preference(
+                            key: ScrollOffsetKey.self,
+                            value: geo.frame(in: .named("scroll")).minY
+                        )
+                }
+            }
+            .onPreferenceChange(ScrollOffsetKey.self) { y in
+                offset = max(-amount, min(amount, y * 0.08))
+            }
+            .offset(y: offset * 0.25)
+    }
+}
+
+private struct ScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+extension View {
+    func scrollParallax(_ amount: CGFloat = 18) -> some View {
+        modifier(ScrollParallax(amount: amount))
+    }
+}
 
 struct PageFade: ViewModifier {
     var active: Bool

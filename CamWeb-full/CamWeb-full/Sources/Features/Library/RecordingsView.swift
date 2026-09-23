@@ -35,7 +35,7 @@ struct RecordingsView: View {
                     excludingStems: recs.activeFileStems
                 )
                 refreshStorageStats()
-                exportBanner = message
+                ToastCenter.shared.show(message)
             } label: {
                 Label("清理隐藏缓存", systemImage: "sparkles")
             }
