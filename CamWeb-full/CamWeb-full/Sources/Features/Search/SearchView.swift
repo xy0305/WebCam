@@ -98,11 +98,7 @@ struct SearchView: View {
         .padding(.horizontal, 14)
         .frame(height: 48)
         .liquidGlass(corner: 16, strong: searchFocused)
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(AppTheme.accent.opacity(searchFocused ? 0.45 : 0), lineWidth: 1)
-                .shadow(color: AppTheme.accent.opacity(searchFocused ? 0.25 : 0), radius: 8)
-        }
+        .softGlow(searchFocused)
         .animation(AppMotion.soft, value: searchFocused)
     }
 

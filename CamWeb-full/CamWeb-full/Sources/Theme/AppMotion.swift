@@ -158,6 +158,30 @@ struct StarBurst: View {
 
 // MARK: - Count roll
 
+struct SoftGlowRing: ViewModifier {
+    var active: Bool
+    var tint: Color = AppTheme.accent
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if active {
+                    Capsule()
+                        .stroke(tint.opacity(0.4), lineWidth: 1)
+                        .shadow(color: tint.opacity(0.22), radius: 6)
+                        .transition(.opacity)
+                }
+            }
+            .animation(AppMotion.soft, value: active)
+    }
+}
+
+extension View {
+    func softGlow(_ active: Bool, tint: Color = AppTheme.accent) -> some View {
+        modifier(SoftGlowRing(active: active, tint: tint))
+    }
+}
+
 struct RollingCount: View {
     let value: Int
     var font: Font = .caption.weight(.bold)
