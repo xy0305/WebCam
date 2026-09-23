@@ -81,7 +81,7 @@ struct FavoriteView: View {
                                     )
                                 }
                                 .buttonStyle(SoftPress())
-                                .staggerAppear(index: index, enabled: index < 8)
+                                .staggerAppear(index: index, enabled: index < 6)
                                 .contextMenu { roomMenu(room) }
                             }
                         }
