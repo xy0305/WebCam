@@ -96,11 +96,11 @@ struct ChannelListPage: View {
             } else {
                 ScrollView {
                     if gender.isEmpty && keyword.isEmpty && !favoriteTags.tags.isEmpty {
-                        VStack(alignment: .leading, spacing: 9) {
+                        VStack(alignment: .leading, spacing: 10) {
                             HStack {
                                 SectionHeader(title: "收藏标签", systemImage: "star.fill", tint: AppTheme.favorite)
                                 Spacer()
-                                Text("点击快速切换")
+                                Text("点击切换")
                                     .font(.caption)
                                     .foregroundStyle(AppTheme.inkSecondary)
                             }
@@ -108,11 +108,14 @@ struct ChannelListPage: View {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
                                     ForEach(Array(favoriteTags.tags.enumerated()), id: \.element) { index, tag in
-                                        Button { appState.openTag(tag) } label: {
+                                        Button {
+                                            Haptics.tap()
+                                            appState.openTag(tag)
+                                        } label: {
                                             GlassChip(title: "#\(tag)", highlighted: true)
                                         }
                                         .buttonStyle(SoftPress())
-                                        .staggerAppear(index: index)
+                                        .staggerAppear(index: index, enabled: index < 6)
                                         .contextMenu {
                                             Button(role: .destructive) { favoriteTags.remove(tag) } label: {
                                                 Label("取消收藏标签", systemImage: "star.slash")
@@ -120,14 +123,33 @@ struct ChannelListPage: View {
                                         }
                                     }
                                 }
+                                .padding(.vertical, 2)
                             }
                         }
+                        .padding(14)
+                        .background {
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(.ultraThinMaterial)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .fill(Color(hex: 0x8FBCD4).opacity(0.06))
+                                }
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(
+                                            LinearGradient(
+                                                colors: [Color(hex: 0xE8F0F8).opacity(0.28), .clear, Color(hex: 0x1A2433).opacity(0.18)],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            ),
+                                            lineWidth: 1
+                                        )
+                                }
+                        }
+                        // 与下方频道网格同一左右边距，避免“标签一条、卡片一条”不对齐
                         .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
-                        .padding(.top, 14)
-                        .liquidGlass(corner: 16)
-                        .padding(.horizontal, 4)
                         .padding(.top, 8)
-                        .scrollParallax(10)
+                        .scrollParallax(8)
                     }
 
                     if loading && rooms.isEmpty {
