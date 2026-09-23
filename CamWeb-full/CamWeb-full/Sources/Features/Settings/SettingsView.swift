@@ -104,7 +104,8 @@ struct SettingsView: View {
             }
             .padding(.vertical, 6)
         }
-        .listRowBackground(AppTheme.card)
+        .listRowBackground(Color.white.opacity(0.06))
+        .glassSheen()
     }
 
     private var accountSection: some View {

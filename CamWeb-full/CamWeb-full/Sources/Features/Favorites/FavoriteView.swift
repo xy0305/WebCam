@@ -101,7 +101,12 @@ struct FavoriteView: View {
                         Task { await syncCloudNow() }
                     } label: {
                         if syncing {
-                            ProgressView().controlSize(.small)
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("同步中")
+                                    .font(.footnote.weight(.semibold))
+                            }
+                            .foregroundStyle(AppTheme.inkSecondary)
                         } else {
                             Label("立即同步", systemImage: "icloud.and.arrow.down")
                         }

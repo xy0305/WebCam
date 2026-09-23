@@ -68,7 +68,11 @@ struct RoomSwitcherView: View {
                 .padding(.horizontal, 16).padding(.bottom, 12)
 
                 if rooms.isEmpty {
-                    ContentUnavailableView("暂无可切换直播间", systemImage: "rectangle.3.group", description: Text("此分类里还没有其他主播"))
+                    RichEmptyState(
+                        icon: "rectangle.3.group",
+                        title: "暂无可切换直播间",
+                        message: "此分类里还没有其他主播"
+                    )
                 } else {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 14)], spacing: 16) {
