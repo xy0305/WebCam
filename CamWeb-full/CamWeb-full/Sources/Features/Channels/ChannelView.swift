@@ -144,7 +144,7 @@ struct ChannelListPage: View {
                                     ChannelCard(room: room)
                                 }
                                 .buttonStyle(SoftPress())
-                                .staggerAppear(index: index)
+                                .staggerAppear(index: index, enabled: index < 6)
                                 .onAppear {
                                     if room.id == rooms.last?.id { Task { await loadMore() } }
                                 }

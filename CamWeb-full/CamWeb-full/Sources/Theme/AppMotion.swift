@@ -55,14 +55,15 @@ struct StaggeredAppear: ViewModifier {
     func body(content: Content) -> some View {
         content
             .opacity(shown ? 1 : 0)
-            .scaleEffect(shown ? 1 : 0.94)
-            .offset(y: shown ? 0 : 18)
+            .scaleEffect(shown ? 1 : 0.98)
+            .offset(y: shown ? 0 : 8)
             .onAppear {
-                guard enabled else {
+                // 滚动加载后续卡片不要错落延迟，否则列表像“慢慢冒出来”。
+                guard enabled, index < 6 else {
                     shown = true
                     return
                 }
-                withAnimation(AppMotion.spring.delay(Double(min(index, 10)) * 0.045)) {
+                withAnimation(AppMotion.quick.delay(Double(index) * 0.02)) {
                     shown = true
                 }
             }
