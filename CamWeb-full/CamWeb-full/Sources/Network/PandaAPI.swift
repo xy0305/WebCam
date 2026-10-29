@@ -166,7 +166,7 @@ enum PandaAPI {
 }
 
 enum PandaStreamSource {
-    static func resolve(room: Room) async throws -> ResolvedStream {
+    static func resolve(room: Room, forRecording: Bool = false) async throws -> ResolvedStream {
         let userId = room.username
         let idx = try await userIdx(for: room)
         let play = try await PandaAPI.post("/v1/live/play", [
@@ -187,7 +187,8 @@ enum PandaStreamSource {
         }
         let master = try firstPlaylist(play)
         let context = HLSRequestContext.panda(roomId: userId)
-        if let locked = await HLSMaster.lock(master, context: context) {
+        let maxHeight = forRecording ? nil : PlaybackPreferences.playbackMaxHeight()
+        if let locked = await HLSMaster.lock(master, context: context, maxHeight: maxHeight) {
             return ResolvedStream(
                 username: userId,
                 requestContext: context,

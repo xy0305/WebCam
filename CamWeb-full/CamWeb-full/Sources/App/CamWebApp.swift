@@ -106,12 +106,15 @@ struct RootFlow: View {
             switch phase {
             case .active:
                 RecordingManager.shared.recoverOrphans()
+                AutoRecordMonitor.shared.resumeMonitoring()
                 Task {
                     if NutstoreSession.shared.isConfigured {
                         await NutstoreSyncCoordinator.syncAll(showMessage: false)
                     }
                 }
             case .background:
+                // 后台若没有在录，停掉 60s 轮询，减少唤醒与发热。
+                AutoRecordMonitor.shared.pauseMonitoringIfIdle()
                 RecordingManager.shared.keepBackgroundAlive()
                 RecordingManager.shared.recoverOrphans()
                 Pan115Uploader.shared.keepAlive()

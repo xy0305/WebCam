@@ -2,7 +2,6 @@ import SwiftUI
 
 struct AgeGateView: View {
     @EnvironmentObject var appState: AppState
-    @State private var glow = false
 
     var body: some View {
         ZStack {
@@ -15,19 +14,12 @@ struct AgeGateView: View {
                     Circle()
                         .fill(AppTheme.accentSoft)
                         .frame(width: 108, height: 108)
-                        .scaleEffect(glow ? 1.1 : 1)
-                        .opacity(glow ? 0.65 : 1)
                     Image(systemName: "18.circle.fill")
                         .font(.system(size: 64, weight: .semibold))
                         .foregroundStyle(AppTheme.accent)
                 }
-                .shadow(color: AppTheme.accent.opacity(0.35), radius: 18)
+                .shadow(color: AppTheme.accent.opacity(0.28), radius: 16)
                 .staggerAppear(index: 0)
-                .onAppear {
-                    withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                        glow = true
-                    }
-                }
 
                 VStack(spacing: 10) {
                     Text("仅限 18 岁以上")

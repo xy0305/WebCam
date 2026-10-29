@@ -53,18 +53,27 @@ extension Color {
 struct LiveBadge: View {
     var isTimeout = false
     var body: some View {
-        Text(isTimeout ? "超时" : "LIVE")
-            .font(.system(size: 10, weight: .heavy))
-            .tracking(0.6)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(
-                (isTimeout ? AppTheme.danger : AppTheme.live)
-                    .opacity(0.95),
-                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-            )
-            .shadow(color: (isTimeout ? AppTheme.danger : AppTheme.live).opacity(0.45), radius: 6, y: 1)
+        HStack(spacing: 5) {
+            if !isTimeout {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 5, height: 5)
+            }
+            Text(isTimeout ? "超时" : "LIVE")
+                .font(.system(size: 10, weight: .heavy))
+                .tracking(0.6)
+                .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            (isTimeout ? AppTheme.danger : AppTheme.live)
+                .opacity(0.94),
+            in: Capsule()
+        )
+        .overlay(
+            Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.8)
+        )
     }
 }
 

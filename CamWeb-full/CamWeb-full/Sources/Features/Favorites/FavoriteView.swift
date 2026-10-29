@@ -49,10 +49,10 @@ struct FavoriteView: View {
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 16)
+                    .padding(.top, 4)
 
                     HStack {
                         SectionHeader(title: selected.rawValue, systemImage: emptyIcon, tint: sectionTint, trailing: "\(rooms.count)")
-                            .scrollParallax(12)
                         GlowDivider().frame(width: 40).padding(.leading, 8)
                     }
                     .padding(.horizontal, 16)
@@ -93,7 +93,7 @@ struct FavoriteView: View {
                 }
                 .padding(.bottom, 16)
             }
-            .background(AppTheme.background.ignoresSafeArea())
+            .brandScreen()
             .navigationTitle("收藏")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

@@ -875,12 +875,17 @@ struct PlayerView: View {
         } else if displayRoom.platform == .panda {
             recs.startPanda(room: displayRoom, stream: stream)
         } else {
-            recs.start(
-                username: username,
-                videoPlaylist: stream.videoPlaylist,
-                audioPlaylist: stream.audioPlaylist,
-                masterURL: stream.masterURL
-            )
+            // 录制按最高档重新解析，避免跟播放画质设置一起被锁低。
+            let room = displayRoom
+            Task {
+                let fresh = (try? await StreamSource.resolve(room: room, forRecording: true)) ?? stream
+                recs.start(
+                    username: username,
+                    videoPlaylist: fresh.videoPlaylist,
+                    audioPlaylist: fresh.audioPlaylist,
+                    masterURL: fresh.masterURL
+                )
+            }
         }
     }
 

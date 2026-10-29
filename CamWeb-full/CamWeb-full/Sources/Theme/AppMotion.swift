@@ -13,31 +13,38 @@ enum AppMotion {
 
 struct AuroraBackground: View {
     var intensity: Double = 1
-    @State private var shift: CGFloat = 0
 
     var body: some View {
         ZStack {
             AppTheme.background
-            Canvas { context, size in
-                let blobs: [(CGPoint, CGFloat, Color)] = [
-                    (CGPoint(x: size.width * 0.2 + shift, y: size.height * 0.15), 160, AppTheme.accent.opacity(0.22 * intensity)),
-                    (CGPoint(x: size.width * 0.85 - shift, y: size.height * 0.22), 140, AppTheme.accentAlt.opacity(0.16 * intensity)),
-                    (CGPoint(x: size.width * 0.55, y: size.height * 0.88), 180, AppTheme.accent.opacity(0.12 * intensity)),
-                ]
-                for (center, radius, color) in blobs {
-                    let rect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
-                    context.fill(
-                        Path(ellipseIn: rect),
-                        with: .color(color)
-                    )
-                }
-            }
-            .blur(radius: 40)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 6).repeatForever(autoreverses: true)) {
-                    shift = 28
-                }
-            }
+            // 静态光晕：原先 Canvas + blur + 无限位移动画会持续吃 GPU。
+            RadialGradient(
+                colors: [
+                    AppTheme.accent.opacity(0.20 * intensity),
+                    .clear
+                ],
+                center: .topLeading,
+                startRadius: 20,
+                endRadius: 320
+            )
+            RadialGradient(
+                colors: [
+                    AppTheme.accentAlt.opacity(0.14 * intensity),
+                    .clear
+                ],
+                center: UnitPoint(x: 0.9, y: 0.18),
+                startRadius: 10,
+                endRadius: 280
+            )
+            RadialGradient(
+                colors: [
+                    AppTheme.accent.opacity(0.10 * intensity),
+                    .clear
+                ],
+                center: UnitPoint(x: 0.55, y: 1.05),
+                startRadius: 40,
+                endRadius: 360
+            )
         }
         .allowsHitTesting(false)
         .ignoresSafeArea()
@@ -80,43 +87,41 @@ extension View {
 
 struct PulsingLiveBadge: View {
     var isTimeout = false
+    @ObservedObject private var prefs = PlaybackPreferences.shared
     @State private var pulse = false
 
+    private var allowPulse: Bool {
+        !prefs.coolBrowsing && !ProcessInfo.processInfo.isLowPowerModeEnabled && !isTimeout
+    }
+
     var body: some View {
-        HStack(spacing: 6) {
-            if !isTimeout {
+        // 默认走静态 LiveBadge；仅在关闭「浏览省电」且非低电量模式时启用轻脉冲。
+        if !allowPulse {
+            LiveBadge(isTimeout: isTimeout)
+        } else {
+            HStack(spacing: 5) {
                 ZStack {
                     Circle()
-                        .fill(Color.white.opacity(pulse ? 0.35 : 0.05))
-                        .frame(width: pulse ? 10 : 6, height: pulse ? 10 : 6)
+                        .fill(Color.white.opacity(pulse ? 0.3 : 0.08))
+                        .frame(width: pulse ? 9 : 5, height: pulse ? 9 : 5)
                     Circle()
                         .fill(.white)
                         .frame(width: 5, height: 5)
                 }
                 .frame(width: 12, height: 12)
+                Text("LIVE")
+                    .font(.system(size: 10, weight: .heavy))
+                    .tracking(0.6)
+                    .foregroundStyle(.white)
             }
-            Text(isTimeout ? "超时" : "LIVE")
-                .font(.system(size: 10, weight: .heavy))
-                .tracking(0.6)
-                .foregroundStyle(.white)
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(
-            (isTimeout ? AppTheme.danger : AppTheme.live)
-                .opacity(0.92),
-            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .stroke(Color.white.opacity(pulse ? 0.35 : 0.12), lineWidth: 1)
-        )
-        .shadow(color: (isTimeout ? AppTheme.danger : AppTheme.live).opacity(0.5), radius: pulse ? 8 : 4, y: 1)
-        .scaleEffect(pulse ? 1.03 : 1)
-        .onAppear {
-            guard !isTimeout else { return }
-            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                pulse = true
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(AppTheme.live.opacity(0.94), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.8))
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
             }
         }
     }
@@ -213,19 +218,34 @@ struct RollingCount: View {
 // MARK: - Floating equalizer (live energy)
 
 struct EqualizerBars: View {
-    @State private var hop = false
     var tint: Color = AppTheme.accent
+    @ObservedObject private var prefs = PlaybackPreferences.shared
+    @State private var hop = false
+
+    private var allowHop: Bool {
+        !prefs.coolBrowsing && !ProcessInfo.processInfo.isLowPowerModeEnabled
+    }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 2.5) {
-            capsule(hop ? 0.95 : 0.4)
-            capsule(hop ? 0.35 : 0.85)
-            capsule(hop ? 0.7 : 0.45)
+            if allowHop {
+                capsule(hop ? 0.95 : 0.4)
+                capsule(hop ? 0.35 : 0.85)
+                capsule(hop ? 0.7 : 0.45)
+            } else {
+                capsule(0.55)
+                capsule(0.95)
+                capsule(0.4)
+            }
         }
         .onAppear {
-            withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) {
+            guard allowHop else { return }
+            withAnimation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true)) {
                 hop = true
             }
+        }
+        .onChange(of: prefs.coolBrowsing) { _, cool in
+            if cool { hop = false }
         }
     }
 
@@ -233,7 +253,6 @@ struct EqualizerBars: View {
         RoundedRectangle(cornerRadius: 1)
             .fill(tint)
             .frame(width: 3, height: 5 + level * 11)
-            .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: level)
     }
 }
 

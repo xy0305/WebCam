@@ -7,6 +7,7 @@ struct SettingsView: View {
     @ObservedObject private var panda = PandaSession.shared
     @ObservedObject private var pan115 = Pan115Session.shared
     @ObservedObject private var nutstore = NutstoreSession.shared
+    @ObservedObject private var playback = PlaybackPreferences.shared
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
@@ -34,6 +35,7 @@ struct SettingsView: View {
             .navigationTitle("设置")
             .scrollContentBackground(.hidden)
             .background(AppTheme.background.ignoresSafeArea())
+            .tint(AppTheme.accent)
             .onAppear {
                 nutstoreUser = nutstore.username
                 nutstorePass = ""
@@ -167,9 +169,25 @@ struct SettingsView: View {
     }
 
     private var playbackSection: some View {
-        Section("播放") {
+        Section {
+            Picker("播放画质", selection: $playback.quality) {
+                ForEach(PlaybackQuality.allCases) { q in
+                    Text(q.title).tag(q)
+                }
+            }
+            Text(playback.quality.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Toggle("浏览省电", isOn: $playback.coolBrowsing)
+            Text("关闭频道墙 LIVE 脉冲等循环动画，列表滑动更凉更省电，即时生效。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             LabeledContent("播放器", value: "KSPlayer")
-            LabeledContent("录制", value: "HLS 源流切片")
+            LabeledContent("录制", value: "仍用最高画质 HLS 切片")
+        } header: {
+            Text("播放与发热")
+        } footer: {
+            Text("默认 720p + 浏览省电。看不清再调到 1080p / 最高画质；录制不受此限制。")
         }
     }
 

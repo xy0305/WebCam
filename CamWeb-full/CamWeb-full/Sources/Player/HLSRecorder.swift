@@ -74,23 +74,31 @@ final class RecordingManager: ObservableObject {
     }
 
     /// PandaTV：19+ / 登录房必须把 sessKey Cookie、Origin、Referer 带到 playlist 和分片。
+    /// 录制单独按最高档解析，不受播放画质设置影响。
     func startPanda(room: Room, stream: ResolvedStream) {
         let name = room.username.lowercased()
-        guard sessions[name] == nil else { return }
-        let context = stream.requestContext
+        guard sessions[name] == nil, !preparing.contains(name) else { return }
+        preparing.insert(name)
         let captured = room
-        let session = RecordingSession(username: name,
-                                       fileStem: RecordingStore.makeRecordingStem(displayName: captured.title),
-                                       videoPlaylist: stream.videoPlaylist,
-                                       audioPlaylist: stream.audioPlaylist, context: context,
-                                       refresh: { try await PandaStreamSource.resolve(room: captured) })
-        session.onFinished = { [weak self] name, message in
-            self?.sessions[name] = nil; self?.banner = message
-            self?.libraryRevision += 1; self?.refreshIdle()
+        Task { @MainActor in
+            defer { preparing.remove(name) }
+            guard sessions[name] == nil else { return }
+            let rec = (try? await PandaStreamSource.resolve(room: captured, forRecording: true)) ?? stream
+            guard sessions[name] == nil else { return }
+            let context = rec.requestContext
+            let session = RecordingSession(username: name,
+                                           fileStem: RecordingStore.makeRecordingStem(displayName: captured.title),
+                                           videoPlaylist: rec.videoPlaylist,
+                                           audioPlaylist: rec.audioPlaylist, context: context,
+                                           refresh: { try await PandaStreamSource.resolve(room: captured, forRecording: true) })
+            session.onFinished = { [weak self] name, message in
+                self?.sessions[name] = nil; self?.banner = message
+                self?.libraryRevision += 1; self?.refreshIdle()
+            }
+            sessions[name] = session
+            session.start()
+            refreshIdle(masterURL: rec.videoPlaylist)
         }
-        sessions[name] = session
-        session.start()
-        refreshIdle(masterURL: stream.videoPlaylist)
     }
 
     /// Chaturbate 既有录制链路：保持原 RecHLS + HLSPackager 实现不变。

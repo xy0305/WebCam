@@ -135,28 +135,9 @@ struct GlassButtonChrome: ViewModifier {
 
 /// 极缓的玻璃光泽扫过，用于关键面板。
 struct GlassSheen: ViewModifier {
-    @State private var sweep: CGFloat = -1.2
-
     func body(content: Content) -> some View {
+        // 去掉无限扫光；保留静态高光描边即可。
         content
-            .overlay {
-                GeometryReader { geo in
-                    LinearGradient(
-                        colors: [.clear, .white.opacity(0.07), .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                    .frame(width: geo.size.width * 0.45)
-                    .offset(x: sweep * geo.size.width)
-                    .onAppear {
-                        withAnimation(.easeInOut(duration: 3.2).repeatForever(autoreverses: false)) {
-                            sweep = 1.3
-                        }
-                    }
-                }
-                .allowsHitTesting(false)
-                .clipShape(RoundedRectangle(cornerRadius: GlassStyle.corner, style: .continuous))
-            }
     }
 }
 

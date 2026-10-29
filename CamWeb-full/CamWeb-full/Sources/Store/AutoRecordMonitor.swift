@@ -57,6 +57,19 @@ final class AutoRecordMonitor: ObservableObject {
         }
     }
 
+    /// 前台恢复轮询。
+    func resumeMonitoring() {
+        startMonitoring()
+    }
+
+    /// 后台且当前没有录制任务时停止轮询，避免无意义解析直播源。
+    func pauseMonitoringIfIdle() {
+        let recording = entries.contains { RecordingManager.shared.isRecording($0.username) }
+        guard !recording else { return }
+        monitorTask?.cancel()
+        monitorTask = nil
+    }
+
     func add(_ raw: String) -> Bool {
         let name = normalize(raw)
         guard name.count >= 2, !entries.contains(where: { $0.username == name }) else { return false }
@@ -112,7 +125,7 @@ final class AutoRecordMonitor: ObservableObject {
             for entry in snapshot {
                 group.addTask {
                     do {
-                        return .online(entry.username, try await StreamSource.resolve(room: Room(username: entry.username)))
+                        return .online(entry.username, try await StreamSource.resolve(room: Room(username: entry.username), forRecording: true))
                     } catch {
                         return .offline(entry.username, error.localizedDescription)
                     }
@@ -148,7 +161,7 @@ final class AutoRecordMonitor: ObservableObject {
         }
         states[username] = .checking
         do {
-            let stream = try await StreamSource.resolve(room: Room(username: username))
+            let stream = try await StreamSource.resolve(room: Room(username: username), forRecording: true)
             states[username] = .online
             if autoStart, !RecordingManager.shared.isRecording(username) {
                 RecordingManager.shared.start(

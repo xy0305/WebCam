@@ -149,7 +149,6 @@ struct ChannelListPage: View {
                         // 与下方频道网格同一左右边距，避免“标签一条、卡片一条”不对齐
                         .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
                         .padding(.top, 8)
-                        .scrollParallax(8)
                     }
 
                     if loading && rooms.isEmpty {
@@ -187,6 +186,7 @@ struct ChannelListPage: View {
                 }
             }
         }
+        .brandScreen()
         .navigationTitle(title)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -202,9 +202,15 @@ struct ChannelListPage: View {
                         Button("Couples") { applyGender("c") }
                     }
                 } label: {
-                    Label(currentSectionTitle, systemImage: "line.3.horizontal.decrease.circle")
-                        .labelStyle(.titleAndIcon)
-                        .foregroundStyle(AppTheme.ink)
+                    HStack(spacing: 6) {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                        Text(currentSectionTitle)
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundStyle(AppTheme.accent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(AppTheme.accentSoft, in: Capsule())
                 }
             }
         }

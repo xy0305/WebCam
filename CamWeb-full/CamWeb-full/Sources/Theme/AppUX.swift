@@ -57,7 +57,8 @@ struct Shimmer: ViewModifier {
                     .frame(width: max(geo.size.width, 120))
                     .offset(x: phase * geo.size.width * 1.4)
                     .onAppear {
-                        withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) {
+                        guard MotionPolicy.allowDecorativeNow else { return }
+                        withAnimation(.linear(duration: 1.8).repeatForever(autoreverses: false)) {
                             phase = 1.2
                         }
                     }
