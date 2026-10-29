@@ -30,7 +30,7 @@ struct Pan115OfflineView: View {
                             Text(destName).foregroundStyle(.primary)
                         }
                         Spacer()
-                        Text("更改").font(.caption).foregroundStyle(.blue)
+                        Text("更改").font(.caption).foregroundStyle(AppTheme.accent)
                     }
                 }
                 TextField("磁力 / ed2k / http，一行一条", text: $links, axis: .vertical)
@@ -49,7 +49,7 @@ struct Pan115OfflineView: View {
 
             Section {
                 if loading && tasks.isEmpty { ProgressView() }
-                if let errorText { Text(errorText).foregroundStyle(.red).font(.footnote) }
+                if let errorText { Text(errorText).foregroundStyle(AppTheme.danger).font(.footnote) }
                 if tasks.isEmpty, !loading {
                     Text("没有离线任务").foregroundStyle(.secondary)
                 }
@@ -67,7 +67,7 @@ struct Pan115OfflineView: View {
                             Text(byteText(task.size)).foregroundStyle(.secondary)
                         }
                         .font(.caption)
-                        .foregroundStyle(task.status == -1 ? .red : .secondary)
+                        .foregroundStyle(task.status == -1 ? AppTheme.danger : .secondary)
                     }
                     .swipeActions {
                         Button("删除任务", role: .destructive) {
@@ -76,7 +76,7 @@ struct Pan115OfflineView: View {
                         Button("连文件删") {
                             Task { await delete([task], files: true) }
                         }
-                        .tint(.orange)
+                        .tint(AppTheme.accent)
                     }
                 }
             } header: {

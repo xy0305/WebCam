@@ -21,7 +21,7 @@ struct NativeSwipeStack<Root: View, Cover: View>: UIViewControllerRepresentable 
 
     func makeUIViewController(context: Context) -> SwipeNavController {
         let host = UIHostingController(rootView: wrappedRoot())
-        host.view.backgroundColor = UIColor.systemBackground
+        host.view.backgroundColor = AppTheme.uiBackground
         let nav = SwipeNavController(rootViewController: host)
         context.coordinator.nav = nav
         bind(nav, coordinator: context.coordinator)
@@ -101,6 +101,9 @@ final class SwipeNavController: UINavigationController, UIGestureRecognizerDeleg
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard viewControllers.count > 1 else { return false }
+        // 横屏 / iPad 全屏时不允许左滑直接退出：先用返回按钮回到竖屏，和返回按钮一致。
+        if OrientationLock.isLandscape, UIDevice.current.userInterfaceIdiom != .pad { return false }
+        if PlayerChromeState.isFullscreen { return false }
         // 全屏左上角返回按钮附近不抢手势，避免点不到返回。
         let point = gestureRecognizer.location(in: view)
         if point.y < 96 { return false }

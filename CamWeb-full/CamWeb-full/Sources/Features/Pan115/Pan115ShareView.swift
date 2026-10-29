@@ -37,7 +37,7 @@ struct Pan115ShareView: View {
                         }
                     }
                     if loading { ProgressView() }
-                    if let errorText { Text(errorText).foregroundStyle(.red).font(.footnote) }
+                    if let errorText { Text(errorText).foregroundStyle(AppTheme.danger).font(.footnote) }
                     ForEach(nodes.filter(\.isDir)) { node in
                         Button {
                             path.append((node.id, node.name))

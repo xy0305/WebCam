@@ -32,6 +32,7 @@ struct PlayerView: View {
     @ObservedObject private var special = SpecialFollowStore.shared
     @ObservedObject private var favoriteTags = FavoriteTagsStore.shared
     @State private var recommended: [Room] = []
+    @State private var awaitingUprightUnlock = false
 
     private var displayRoom: Room {
         if let room { return room }
@@ -116,9 +117,18 @@ struct PlayerView: View {
             coordinator.isMaskShow = false
             wireCoordinator()
             UIDevice.current.isBatteryMonitoringEnabled = true
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             OrientationLock.unlock()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            guard awaitingUprightUnlock, !isVerticalLive else { return }
+            if UIDevice.current.orientation == .portrait {
+                awaitingUprightUnlock = false
+                OrientationLock.unlock()
+            }
+        }
         .onDisappear {
+            PlayerChromeState.isFullscreen = false
             autoHideTask?.cancel()
             OrientationLock.set(.portrait, keepLocked: true)
         }
@@ -238,7 +248,7 @@ struct PlayerView: View {
                         case .success(let img):
                             img.resizable().scaledToFill()
                         default:
-                            Circle().fill(Color.gray.opacity(0.3))
+                            Circle().fill(AppTheme.elevated)
                                 .overlay(
                                     Image(systemName: "person.fill")
                                         .foregroundStyle(.white.opacity(0.8))
@@ -252,15 +262,15 @@ struct PlayerView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(displayRoom.title)
                             .font(.headline)
-                            .foregroundStyle(Color(white: 0.9))
+                            .foregroundStyle(AppTheme.ink)
                             .lineLimit(1)
                         HStack(spacing: 6) {
                             Image(systemName: "flame.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(AppTheme.accent)
                             Text(displayRoom.viewersText)
                                 .font(.caption)
-                                .foregroundStyle(Color(white: 0.7))
+                                .foregroundStyle(AppTheme.inkSecondary)
                         }
                     }
 
@@ -271,9 +281,9 @@ struct PlayerView: View {
                     } label: {
                         Image(systemName: special.contains(displayRoom) ? "star.fill" : "star")
                             .font(.title3)
-                            .foregroundStyle(special.contains(displayRoom) ? .yellow : Color(white: 0.7))
+                            .foregroundStyle(special.contains(displayRoom) ? AppTheme.favorite : AppTheme.inkSecondary)
                             .frame(width: 44, height: 44)
-                            .background(Circle().fill(.white.opacity(0.1)))
+                            .background(Circle().fill(AppTheme.elevated))
                     }
                     .buttonStyle(.plain)
 
@@ -282,9 +292,9 @@ struct PlayerView: View {
                     } label: {
                         Image(systemName: fav.isFollowing(username) ? "heart.fill" : "heart")
                             .font(.title3)
-                            .foregroundStyle(fav.isFollowing(username) ? .red : Color(white: 0.7))
+                            .foregroundStyle(fav.isFollowing(username) ? AppTheme.live : AppTheme.inkSecondary)
                             .frame(width: 44, height: 44)
-                            .background(Circle().fill(.white.opacity(0.1)))
+                            .background(Circle().fill(AppTheme.elevated))
                     }
                     .buttonStyle(.plain)
                 }
@@ -294,16 +304,16 @@ struct PlayerView: View {
                     Text("当前平台不支持查看弹幕/评论")
                 }
                 .font(.footnote.weight(.medium))
-                .foregroundStyle(Color(red: 1, green: 0.85, blue: 0.35))
+                .foregroundStyle(AppTheme.inkSecondary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Capsule().fill(Color.black.opacity(0.35)))
-                .overlay(Capsule().stroke(Color.yellow.opacity(0.45), lineWidth: 1))
+                .background(Capsule().fill(AppTheme.card))
+                .overlay(Capsule().stroke(AppTheme.cardStroke, lineWidth: 1))
 
                 if let subject = displayRoom.roomSubject, !subject.isEmpty {
                     Text(plainSubject(subject))
                         .font(.subheadline)
-                        .foregroundStyle(Color(white: 0.55))
+                        .foregroundStyle(AppTheme.inkTertiary)
                         .lineLimit(3)
                 }
 
@@ -333,7 +343,7 @@ struct PlayerView: View {
                                                 case .success(let img):
                                                     img.resizable().scaledToFill()
                                                 default:
-                                                    Color.gray.opacity(0.25)
+                                                    AppTheme.card
                                                 }
                                             }
                                             .frame(width: 168, height: 94)
@@ -345,7 +355,7 @@ struct PlayerView: View {
                                                 .lineLimit(1)
                                             Text(room.viewersText)
                                                 .font(.caption2)
-                                                .foregroundStyle(Color(white: 0.55))
+                                                .foregroundStyle(AppTheme.inkTertiary)
                                         }
                                         .frame(width: 168, alignment: .leading)
                                         .contentShape(Rectangle())
@@ -368,8 +378,8 @@ struct PlayerView: View {
         .background(
             LinearGradient(
                 colors: [
-                    Color(red: 0.12, green: 0.10, blue: 0.08),
-                    Color(red: 0.07, green: 0.06, blue: 0.05)
+                    AppTheme.playerPanelTop,
+                    AppTheme.playerPanelBottom
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -671,6 +681,7 @@ struct PlayerView: View {
                             Button {
                                 if UIDevice.current.userInterfaceIdiom == .pad {
                                     withAnimation(.easeInOut(duration: 0.2)) { isPadFullscreen.toggle() }
+                                    PlayerChromeState.isFullscreen = isPadFullscreen
                                     isMaskVisible = true
                                     scheduleAutoHide()
                                 } else {
@@ -818,7 +829,24 @@ struct PlayerView: View {
         }
     }
 
+    /// 返回分两步：横屏 / iPad 全屏先回到竖屏小窗（视频与录制不中断），竖屏再点才离开播放页。
     private func handleBack(isLandscape: Bool) {
+        defer { PlayerChromeState.isFullscreen = isPadFullscreen }
+        let isPad = UIDevice.current.userInterfaceIdiom == .pad
+        if isPad, isPadFullscreen {
+            withAnimation(.easeInOut(duration: 0.2)) { isPadFullscreen = false }
+            isMaskVisible = true
+            scheduleAutoHide()
+            return
+        }
+        if !isPad, isLandscape {
+            // 锁竖屏；等手机真的竖过来后再解锁，避免横着拿时又被转回横屏。
+            OrientationLock.set(.portrait, keepLocked: true)
+            awaitingUprightUnlock = true
+            isMaskVisible = true
+            scheduleAutoHide()
+            return
+        }
         OrientationLock.set(.portrait, keepLocked: true)
         appState.closePlayer()
         nativeDismiss()
@@ -953,6 +981,11 @@ private struct PlayerBackButton: UIViewRepresentable {
         init(action: @escaping () -> Void) { self.action = action }
         @objc func tapped() { action() }
     }
+}
+
+/// 给 UIKit 导航手势读的播放页全屏状态。
+enum PlayerChromeState {
+    static var isFullscreen = false
 }
 
 enum OrientationLock {

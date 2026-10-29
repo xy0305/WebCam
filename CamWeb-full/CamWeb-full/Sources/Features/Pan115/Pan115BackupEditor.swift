@@ -108,7 +108,7 @@ struct Pan115BackupEditor: View {
                                 Text("系统相册")
                             }
                             Spacer()
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(AppTheme.success)
                         }
                         .padding(14)
                     }
@@ -151,7 +151,7 @@ struct Pan115BackupEditor: View {
                             Toggle(isOn: $dest.enabled) { Text(dest.name).lineLimit(2) }
                             Button(role: .destructive) {
                                 task.destinations.removeAll { $0.id == dest.id }
-                            } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.red) }
+                            } label: { Image(systemName: "minus.circle.fill").foregroundStyle(AppTheme.danger) }
                         }
                         .padding(14)
                         Divider().padding(.leading, 14)
@@ -159,7 +159,7 @@ struct Pan115BackupEditor: View {
                 }
                 Button { showDestPicker = true } label: {
                     Label("添加目标位置", systemImage: "plus.circle.fill")
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(AppTheme.accent)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(14)
                 }
@@ -181,7 +181,7 @@ struct Pan115BackupEditor: View {
                         Spacer()
                         Text(task.fullScanInterval <= 0 ? "0 秒" : intervalShort)
                             .foregroundStyle(.secondary)
-                        Image(systemName: "clock").foregroundStyle(.blue)
+                        Image(systemName: "clock").foregroundStyle(AppTheme.accent)
                     }
                     .padding(14)
                 }
@@ -239,7 +239,7 @@ struct Pan115BackupEditor: View {
                             .font(.footnote)
                         Spacer()
                         Button(role: .destructive) { task.filters.removeAll { $0.id == rule.id } } label: {
-                            Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                            Image(systemName: "minus.circle.fill").foregroundStyle(AppTheme.danger)
                         }
                     }
                     .padding(.horizontal, 14)
@@ -251,7 +251,7 @@ struct Pan115BackupEditor: View {
                     showFilter = true
                 } label: {
                     Label("添加规则", systemImage: "plus.circle.fill")
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(AppTheme.accent)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(14)
                 }
@@ -429,7 +429,7 @@ struct Pan115FolderPicker: View {
                             Button("上级") { path.removeLast(); Task { await reload() } }
                         }
                         if loading { ProgressView() }
-                        if let errorText { Text(errorText).foregroundStyle(.red) }
+                        if let errorText { Text(errorText).foregroundStyle(AppTheme.danger) }
                         ForEach(nodes.filter(\.isDir)) { node in
                             Button {
                                 path.append((node.id, node.name))

@@ -138,9 +138,9 @@ struct RecordingsView: View {
                             Button { appState.openRecording(url) } label: {
                                 HStack(spacing: 12) {
                                     Image(systemName: "film.fill")
-                                        .foregroundStyle(.blue)
+                                        .foregroundStyle(AppTheme.accent)
                                         .frame(width: 32, height: 32)
-                                        .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                                        .background(AppTheme.accentSoft, in: RoundedRectangle(cornerRadius: 8))
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(RecordingStore.displayName(url))
                                             .font(.subheadline.weight(.semibold))
@@ -160,7 +160,7 @@ struct RecordingsView: View {
                             .swipeActions(edge: .leading) {
                                 Button { exportToAlbum(url) } label: {
                                     Label("相册", systemImage: "photo.on.rectangle.angled")
-                                }.tint(.blue)
+                                }.tint(AppTheme.accent)
                             }
                             .contextMenu {
                                 Button { exportToAlbum(url) } label: {
@@ -460,7 +460,7 @@ private struct AutoRecordRow: View {
                         else { Color.secondary.opacity(0.12).overlay(Image(systemName: "person.fill").foregroundStyle(AppTheme.inkSecondary)) }
                     }
                     .frame(width: 50, height: 50).clipShape(Circle())
-                    .overlay { Circle().stroke(Color(hex: 0xE8F0F8).opacity(0.2), lineWidth: 1) }
+                    .overlay { Circle().stroke(AppTheme.cardStroke, lineWidth: 1) }
                 }
             }.buttonStyle(SoftPress())
 
@@ -483,9 +483,9 @@ private struct AutoRecordRow: View {
             Button(action: onRecord) {
                 Image(systemName: isRecording ? "stop.fill" : "record.circle")
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(isRecording ? .white : .red)
+                    .foregroundStyle(isRecording ? .white : AppTheme.danger)
                     .frame(width: 38, height: 38)
-                    .background(isRecording ? Color.red : Color.red.opacity(0.1), in: Circle())
+                    .background(isRecording ? AppTheme.danger : AppTheme.danger.opacity(0.14), in: Circle())
             }.buttonStyle(.plain)
         }
         .padding(.vertical, 5)

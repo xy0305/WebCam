@@ -55,7 +55,7 @@ struct LoginView: View {
                             } label: {
                                 Text("登录")
                                     .font(.headline)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(AppTheme.onAccent)
                                     .glassButton(prominent: true)
                             }
                             .buttonStyle(SoftPress())

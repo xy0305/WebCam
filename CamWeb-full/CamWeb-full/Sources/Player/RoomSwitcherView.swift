@@ -90,7 +90,7 @@ struct RoomSwitcherView: View {
                                         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                                         .overlay {
                                             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                                .stroke(Color(hex: 0xE8F0F8).opacity(0.18), lineWidth: 1)
+                                                .stroke(AppTheme.cardStroke, lineWidth: 1)
                                         }
                                         Text(room.username).font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.ink).lineLimit(1)
                                         Text("\(room.platform.title) · \(room.viewersText)").font(.caption).foregroundStyle(AppTheme.inkSecondary)

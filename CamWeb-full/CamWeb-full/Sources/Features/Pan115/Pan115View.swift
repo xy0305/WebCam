@@ -234,7 +234,7 @@ struct Pan115View: View {
                         Spacer()
                         Text("更改")
                             .font(.caption)
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(AppTheme.accent)
                     }
                 }
                 Text("这里只影响手动上传相册/文件，和备份任务的目标互不影响。备份请在「备份」里单独选目录。")
@@ -331,7 +331,7 @@ struct Pan115View: View {
                         }
                     }
                     if loading { ProgressView() }
-                    if let errorText { Text(errorText).foregroundStyle(.red).font(.footnote) }
+                    if let errorText { Text(errorText).foregroundStyle(AppTheme.danger).font(.footnote) }
                     ForEach(folders) { node in
                         Button {
                             path.append((node.id, node.name))
@@ -412,9 +412,9 @@ struct Pan115View: View {
             HStack(alignment: .top) {
                 Image(systemName: icon(for: job))
                     .font(.title3)
-                    .foregroundStyle(.purple)
+                    .foregroundStyle(AppTheme.accent)
                     .frame(width: 36, height: 36)
-                    .background(Color.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .background(AppTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(job.name).font(.subheadline.weight(.semibold)).lineLimit(2)
                     Text(detailLine(job)).font(.caption).foregroundStyle(.secondary)
@@ -424,7 +424,7 @@ struct Pan115View: View {
                     ZStack {
                         Circle().stroke(.quaternary, lineWidth: 3)
                         Circle().trim(from: 0, to: job.progress)
-                            .stroke(Color.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                            .stroke(AppTheme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                             .rotationEffect(.degrees(-90))
                         Text("\(Int(job.progress * 100))%")
                             .font(.caption2.monospacedDigit())
@@ -759,7 +759,7 @@ private struct Pan115BackupTaskRow: View {
                     }
                 }
             } else if let msg = task.lastMessage {
-                Text(msg).font(.caption).foregroundStyle(task.lastError == nil ? Color.secondary : Color.red)
+                Text(msg).font(.caption).foregroundStyle(task.lastError == nil ? Color.secondary : AppTheme.danger)
             }
             HStack {
                 Button("立即扫描", action: onScan)

@@ -132,13 +132,13 @@ struct ChannelListPage: View {
                                 .fill(.ultraThinMaterial)
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .fill(Color(hex: 0x8FBCD4).opacity(0.06))
+                                        .fill(AppTheme.surface.opacity(0.6))
                                 }
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                                         .stroke(
                                             LinearGradient(
-                                                colors: [Color(hex: 0xE8F0F8).opacity(0.28), .clear, Color(hex: 0x1A2433).opacity(0.18)],
+                                                colors: [AppTheme.cardStroke, AppTheme.cardStroke],
                                                 startPoint: .topLeading,
                                                 endPoint: .bottomTrailing
                                             ),

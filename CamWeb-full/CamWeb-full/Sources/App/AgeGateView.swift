@@ -39,7 +39,7 @@ struct AgeGateView: View {
                 } label: {
                     Text("我已满 18 岁，进入")
                         .font(.headline)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AppTheme.onAccent)
                         .glassButton(prominent: true)
                         .glassSheen()
                 }

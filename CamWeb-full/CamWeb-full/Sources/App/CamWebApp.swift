@@ -150,6 +150,28 @@ final class AppState: ObservableObject {
 
     private init() {
         acceptedAge = UserDefaults.standard.bool(forKey: "camweb.age")
+        applyScreenshotArguments()
+    }
+
+    /// CI 截图用：-CamWebShots 跳过年龄门并以游客进入；-CamWebTab <channels|favorites|library|search|settings>；
+    /// -CamWebShotLogin 停在登录页。正常启动不带这些参数，没有任何影响。
+    private func applyScreenshotArguments() {
+        let args = ProcessInfo.processInfo.arguments
+        guard args.contains("-CamWebShots") else { return }
+        acceptedAge = true
+        if !args.contains("-CamWebShotLogin") {
+            AuthManager.shared.continueAsGuest = true
+        }
+        if let i = args.firstIndex(of: "-CamWebTab"), i + 1 < args.count {
+            switch args[i + 1] {
+            case "favorites": tab = .favorites
+            case "library": tab = .library
+            case "search": tab = .search
+            case "settings": tab = .settings
+            case "pan115": tab = .pan115
+            default: tab = .channels
+            }
+        }
     }
 
     func startMini(username: String, url: URL) {

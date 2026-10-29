@@ -1,0 +1,120 @@
+name: Screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shots:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Checkout alist-ios
+        uses: actions/checkout@v4
+        with:
+          repository: gendago/alist-ios
+          path: alist
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: alist/go.mod
+          cache-dependency-path: alist/go.sum
+
+      - name: Fetch Alist web UI
+        working-directory: alist
+        run: |
+          curl -L https://github.com/alist-org/alist-web/releases/latest/download/dist.tar.gz -o dist.tar.gz
+          tar -zxvf dist.tar.gz
+          rm -rf public/dist
+          mv -f dist public
+          rm -rf dist.tar.gz
+
+      - name: Build Alistlib.xcframework
+        working-directory: alist
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile init
+          mkdir -p "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks"
+          gomobile bind -target ios -bundleid com.personal.camweb \
+            -o "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/Alistlib.xcframework" \
+            -ldflags "-s -w -X 'github.com/alist-org/alist/v3/internal/conf.Version=embedded'" \
+            github.com/alist-org/alist/v3/alistlib
+          ls -lh "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/Alistlib.xcframework"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: CamWeb-full/CamWeb-full
+        run: xcodegen generate
+
+      - name: Resolve packages
+        working-directory: CamWeb-full/CamWeb-full
+        run: xcodebuild -project CamWeb.xcodeproj -scheme CamWeb -resolvePackageDependencies
+
+      - name: Build for simulator
+        working-directory: CamWeb-full/CamWeb-full
+        run: |
+          xcodebuild \
+            -project CamWeb.xcodeproj \
+            -scheme CamWeb \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$PWD/derived-sim" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Boot simulator and capture
+        working-directory: CamWeb-full/CamWeb-full
+        run: |
+          set -x
+          APP="$(find derived-sim -path '*Debug-iphonesimulator/CamWeb.app' -type d | head -n 1)"
+          test -n "$APP"
+          RUNTIME="$(xcrun simctl list runtimes -j | python3 -c "import sys,json; r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']]; print(r[-1]['identifier'])")"
+          DTYPE="$(xcrun simctl list devicetypes -j | python3 -c "import sys,json; d=[x['identifier'] for x in json.load(sys.stdin)['devicetypes'] if 'iPhone-16-Pro' in x['identifier'] and 'Max' not in x['identifier']]; print(d[0] if d else '')")"
+          [ -z "$DTYPE" ] && DTYPE="$(xcrun simctl list devicetypes -j | python3 -c "import sys,json; d=[x['identifier'] for x in json.load(sys.stdin)['devicetypes'] if 'iPhone' in x['identifier']]; print(d[-1])")"
+          UDID="$(xcrun simctl create shots "$DTYPE" "$RUNTIME")"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance dark || true
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 || true
+          xcrun simctl install "$UDID" "$APP"
+          mkdir -p shots
+          shoot() {
+            name="$1"; shift
+            xcrun simctl terminate "$UDID" com.personal.camweb || true
+            xcrun simctl launch "$UDID" com.personal.camweb -CamWebShots "$@"
+            sleep "${WAIT:-12}"
+            xcrun simctl io "$UDID" screenshot "shots/$name.png"
+          }
+          WAIT=20 shoot 01-channels -CamWebTab channels
+          shoot 02-favorites -CamWebTab favorites
+          shoot 03-recordings -CamWebTab library
+          shoot 04-settings -CamWebTab settings
+          shoot 05-search -CamWebTab search
+          shoot 06-login -CamWebShotLogin
+          ls -la shots
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CamWeb-screenshots
+          path: CamWeb-full/CamWeb-full/shots
+          retention-days: 30

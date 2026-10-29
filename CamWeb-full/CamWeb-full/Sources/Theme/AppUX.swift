@@ -135,7 +135,7 @@ struct RichEmptyState: View {
                 } label: {
                     Text(actionTitle)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AppTheme.onAccent)
                         .glassButton(prominent: true)
                 }
                 .buttonStyle(SoftPress())

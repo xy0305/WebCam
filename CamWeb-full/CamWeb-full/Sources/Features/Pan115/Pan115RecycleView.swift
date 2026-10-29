@@ -11,7 +11,7 @@ struct Pan115RecycleView: View {
         List {
             Section {
                 if loading && items.isEmpty { ProgressView() }
-                if let errorText { Text(errorText).foregroundStyle(.red).font(.footnote) }
+                if let errorText { Text(errorText).foregroundStyle(AppTheme.danger).font(.footnote) }
                 if items.isEmpty, !loading {
                     Text("回收站是空的").foregroundStyle(.secondary)
                 }
@@ -25,7 +25,7 @@ struct Pan115RecycleView: View {
                         Image(systemName: item.isDir ? "folder.fill" : "doc.fill")
                     }
                     .swipeActions {
-                        Button("还原") { Task { await revert([item.id]) } }.tint(.blue)
+                        Button("还原") { Task { await revert([item.id]) } }.tint(AppTheme.accent)
                     }
                 }
             }

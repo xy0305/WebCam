@@ -1,24 +1,51 @@
 import SwiftUI
+import UIKit
 
-/// CamWeb 视觉规范：淡雅雾蓝液态玻璃，低饱和、舒适耐看。
+/// CamWeb 视觉规范（build 85）：深石墨中性底 + 单一暖琥珀强调色。
+/// 所有颜色只在这里定义，界面里不要再写 Color(hex:) / .blue / .red。
 enum AppTheme {
-    // MARK: Palette
-    static let background = Color(hex: 0x1A2433)
-    static let surface = Color(hex: 0x243044)
-    static let card = Color(hex: 0x2E3C52)
-    static let cardStroke = Color.white.opacity(0.10)
-    static let ink = Color(hex: 0xF0F4F8)
-    static let inkSecondary = Color(hex: 0x9BA8BC)
-    /// 雾青，主操作与玻璃高光
-    static let accent = Color(hex: 0x8FBCD4)
-    static let accentSoft = Color(hex: 0x8FBCD4).opacity(0.20)
-    /// 淡紫，极光辅助
-    static let accentAlt = Color(hex: 0xB5A8D4)
-    static let favorite = Color(hex: 0xE8D5A8)
-    /// LIVE 柔玫，仅语义
-    static let live = Color(hex: 0xE8A8B8)
-    static let danger = Color(hex: 0xE8A0A0)
-    static let success = Color(hex: 0xA8D4C0)
+    // MARK: Neutrals（石墨，从深到浅）
+    /// 页面底色
+    static let background = Color(hex: 0x0E0F12)
+    /// 分区 / 面板底
+    static let surface = Color(hex: 0x16181D)
+    /// 卡片 / 列表行
+    static let card = Color(hex: 0x1E2128)
+    /// 抬升层（按钮底、输入框）
+    static let elevated = Color(hex: 0x272B33)
+    static let cardStroke = Color.white.opacity(0.08)
+    static let hairline = Color.white.opacity(0.06)
+
+    // MARK: Text
+    static let ink = Color(hex: 0xF2F3F5)
+    static let inkSecondary = Color(hex: 0x9AA0AA)
+    static let inkTertiary = Color(hex: 0x6B717C)
+
+    // MARK: Accent（唯一强调色：暖琥珀）
+    static let accent = Color(hex: 0xE3A857)
+    static let accentStrong = Color(hex: 0xC98A3A)
+    static let accentSoft = Color(hex: 0xE3A857).opacity(0.16)
+    /// 兼容旧名：不再引入第二种色相，只是强调色的浅一档
+    static let accentAlt = Color(hex: 0xF0C892)
+    /// 强调色上的文字
+    static let onAccent = Color(hex: 0x1A1408)
+
+    // MARK: Semantic
+    static let favorite = Color(hex: 0xE3A857)
+    static let live = Color(hex: 0xE5484D)
+    static let danger = Color(hex: 0xE5484D)
+    static let success = Color(hex: 0x46A758)
+    static let warning = Color(hex: 0xE3A857)
+    /// 次要信息动作（原先的系统蓝）
+    static let info = Color(hex: 0x8B95A5)
+
+    // MARK: Player chrome
+    static let playerPanelTop = Color(hex: 0x15161A)
+    static let playerPanelBottom = Color(hex: 0x0E0F12)
+    static let scrim = Color.black.opacity(0.55)
+
+    static var uiBackground: UIColor { UIColor(red: 0x0E / 255, green: 0x0F / 255, blue: 0x12 / 255, alpha: 1) }
+    static var uiAccent: UIColor { UIColor(red: 0xE3 / 255, green: 0xA8 / 255, blue: 0x57 / 255, alpha: 1) }
 
     // MARK: Metrics
     static let screenPadding: CGFloat = 16
@@ -140,23 +167,14 @@ struct CardBackground: ViewModifier {
             .background {
                 ZStack {
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .fill(Color(hex: 0x8FBCD4).opacity(0.06))
+                        .fill(AppTheme.card)
                 }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(
-                        LinearGradient(
-                            colors: [Color(hex: 0xE8F0F8).opacity(0.28), .clear, Color(hex: 0x1A2433).opacity(0.2)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
+                    .stroke(AppTheme.cardStroke, lineWidth: 1)
             }
-            .shadow(color: Color(hex: 0x8FBCD4).opacity(0.08), radius: 14, y: 6)
+            .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
     }
 }
 
