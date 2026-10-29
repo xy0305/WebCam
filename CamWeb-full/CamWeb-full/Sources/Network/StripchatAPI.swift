@@ -171,13 +171,12 @@ enum StripchatStreamSource {
         "saawsedge.com", "growcdnssedge.com", "doppiocdn.com"
     ]
 
-    static func resolve(room: Room, forRecording: Bool = false) async throws -> ResolvedStream {
+    static func resolve(room: Room) async throws -> ResolvedStream {
         let id = try await modelID(for: room)
         let context = HLSRequestContext.stripchat(username: room.username)
-        // 拉 _auto.m3u8 后锁单档；播放按设置限高，录制仍走最高档。
+        // 拉 _auto.m3u8 后锁最高档，避免 AVPlayer 自适应降画质。
         let master = playlistURL(id: id, host: cdnHosts[0], file: "\(id)_auto.m3u8", lowLatency: false)
-        let maxHeight = forRecording ? nil : PlaybackPreferences.playbackMaxHeight()
-        if let locked = await HLSMaster.lock(master, context: context, maxHeight: maxHeight) {
+        if let locked = await HLSMaster.lock(master, context: context) {
             return ResolvedStream(
                 username: room.username,
                 requestContext: context,
@@ -201,7 +200,7 @@ enum StripchatStreamSource {
 
     /// 录制才解析带 pkey 的真实媒体清单；不要挡在开播前面。
     static func resolveForRecording(room: Room) async throws -> ResolvedStream {
-        let playback = try await resolve(room: room, forRecording: true)
+        let playback = try await resolve(room: room)
         let id = try await modelID(for: room)
         let media = (try? await recordingPlaylist(id: id, master: playback.masterURL, room: room, context: playback.requestContext))
             ?? playlistURL(id: id, host: cdnHosts[0], file: "\(id)_\(preferredQuality(room.presets)).m3u8", lowLatency: true)

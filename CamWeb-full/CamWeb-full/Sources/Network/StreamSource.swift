@@ -18,7 +18,7 @@ struct HLSRequestContext: Sendable {
 struct ResolvedStream: Sendable {
     let username: String
     let requestContext: HLSRequestContext
-    /// 播放用：有声迷你 master（data: URI），按设置锁档；AVPlayer 直接播
+    /// 播放用：有声最高画质迷你 master（data: URI），AVPlayer 直接播
     let hlsURL: URL
     /// 官方原始 master
     let masterURL: URL
@@ -108,13 +108,8 @@ enum HLSMaster {
         return text
     }
 
-    /// 播放锁死单档：有独立音频就组迷你 master，否则直接播选定档媒体清单。
-    /// - Parameter maxHeight: 高度上限（如 720）；nil 表示取最高档（录制用）。
-    static func lock(
-        _ master: URL,
-        context: HLSRequestContext,
-        maxHeight: Int? = nil
-    ) async -> (play: URL, video: URL, audio: URL?)? {
+    /// 播放锁死单档：有独立音频就组迷你 master，否则直接播最高档媒体清单。
+    static func lock(_ master: URL, context: HLSRequestContext) async -> (play: URL, video: URL, audio: URL?)? {
         guard let text = try? await fetchText(master, context: context), text.contains("#EXTM3U") else {
             return nil
         }
@@ -122,9 +117,7 @@ enum HLSMaster {
             return (master, master, nil)
         }
         let parsed = parse(text, base: master)
-        guard let best = pick(parsed.variants, maxHeight: maxHeight) ?? parsed.best else {
-            return (master, master, parsed.audioUri)
-        }
+        guard let best = parsed.best else { return (master, master, parsed.audioUri) }
         if let audio = parsed.audioUri,
            let mini = miniMaster(audio: audio, video: best.url, bandwidth: best.bandwidth, resolution: best.resolution) {
             return (mini, best.url, audio)
@@ -133,19 +126,6 @@ enum HLSMaster {
             return (play, best.url, parsed.audioUri)
         }
         return (best.url, best.url, parsed.audioUri)
-    }
-
-    /// 在已按高度降序排列的 variants 里，挑不超过 maxHeight 的最高档；没有则退回最高档。
-    static func pick(_ variants: [Variant], maxHeight: Int?) -> Variant? {
-        guard !variants.isEmpty else { return nil }
-        guard let maxHeight, maxHeight > 0 else { return variants.first }
-        if let capped = variants.first(where: { $0.height > 0 && $0.height <= maxHeight }) {
-            return capped
-        }
-        // 清单没标高度时按带宽从高往低猜一档接近的；实在没有就最高档。
-        let labeled = variants.filter { $0.height > 0 }
-        if labeled.isEmpty { return variants.first }
-        return labeled.last ?? variants.first
     }
 
     static func oneVariantMaster(_ best: Variant) -> URL? {
@@ -210,24 +190,18 @@ enum HLSMaster {
 
 enum StreamSource {
     /// 统一入口：录制重连必须按房间平台重新解析，不能把 Stripchat 用户名送进 Chaturbate 接口。
-    /// - Parameter forRecording: true 时不限制画质（录制保持最高档）；播放走设置里的画质上限。
-    static func resolve(room: Room, forRecording: Bool = false) async throws -> ResolvedStream {
-        if room.platform == .stripchat {
-            return try await StripchatStreamSource.resolve(room: room, forRecording: forRecording)
-        }
-        if room.platform == .panda {
-            return try await PandaStreamSource.resolve(room: room, forRecording: forRecording)
-        }
-        return try await resolve(username: room.username, forRecording: forRecording)
+    static func resolve(room: Room) async throws -> ResolvedStream {
+        if room.platform == .stripchat { return try await StripchatStreamSource.resolve(room: room) }
+        if room.platform == .panda { return try await PandaStreamSource.resolve(room: room) }
+        return try await resolve(username: room.username)
     }
 
-    static func resolve(username: String, forRecording: Bool = false) async throws -> ResolvedStream {
-        let maxHeight = forRecording ? nil : PlaybackPreferences.playbackMaxHeight()
+    static func resolve(username: String) async throws -> ResolvedStream {
         var last: Error = StreamSourceError.badResponse
         for _ in 0..<3 {
             do {
                 let master = try await fetchMaster(username: username)
-                if let locked = await HLSMaster.lock(master, context: .chaturbate, maxHeight: maxHeight) {
+                if let locked = await HLSMaster.lock(master, context: .chaturbate) {
                     return ResolvedStream(
                         username: username, requestContext: .chaturbate, hlsURL: locked.play, masterURL: master,
                         videoPlaylist: locked.video, audioPlaylist: locked.audio, status: "public"
