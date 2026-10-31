@@ -56,6 +56,16 @@ jobs:
             github.com/alist-org/alist/v3/alistlib
           ls -lh "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/Alistlib.xcframework"
 
+      - name: Fetch llama.cpp xcframework
+        env:
+          LLAMA_TAG: b12020
+        run: |
+          curl -fsSL -o llama.zip "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}/llama-${LLAMA_TAG}-xcframework.zip"
+          unzip -q llama.zip -d llama-x
+          rm -rf "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/llama.xcframework"
+          mv llama-x/build-apple/llama.xcframework "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/"
+          ls "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks"
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

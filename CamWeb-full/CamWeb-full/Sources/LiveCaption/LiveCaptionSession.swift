@@ -35,6 +35,39 @@ final class LiveCaptionSession {
 
     /// iOS 18–25 Translation bridge exposed for the SwiftUI `.translationTask` host.
     private(set) var translationBridge: AnyObject?
+    /// e.g. "Whisper small.en + Qwen2.5 1.5B".
+    private(set) var engineSummary = ""
+    /// True when Whisper was requested but not ready (Apple Speech used meanwhile).
+    private(set) var whisperFallback = false
+
+    @ObservationIgnored private var translateTask: Task<Void, Never>?
+    @ObservationIgnored private var lastEnglish: String?
+
+    #if os(iOS) || os(macOS)
+    private func makeAppleTranslator() async throws -> any LiveCaptionTranslating {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            #if canImport(Translation)
+            let direct = LiveCaptionDirectTranslator()
+            try await direct.prepare()
+            translationBridge = nil
+            return direct
+            #else
+            throw LiveCaptionEngineError.translationUnsupported
+            #endif
+        } else if #available(iOS 18.0, macOS 15.0, *) {
+            #if canImport(Translation)
+            let bridge = LiveCaptionTranslationBridge()
+            try await bridge.prepare()
+            bridge.activate()
+            translationBridge = bridge
+            return bridge
+            #else
+            throw LiveCaptionEngineError.translationUnsupported
+            #endif
+        }
+        throw LiveCaptionEngineError.unavailable("Apple 翻译需要 iOS 18 或更新系统")
+    }
+    #endif
 
     init() {}
 
@@ -56,44 +89,55 @@ final class LiveCaptionSession {
         let gen = generation
         buffered.removeAll(keepingCapacity: true)
         latest = nil
+        lastEnglish = nil
+        whisperFallback = false
+        engineSummary = ""
         pace.reset(maxLead: maxLeadSeconds)
 
         do {
             #if os(iOS) || os(macOS)
-            let recognizer = try await LiveCaptionEnglishRecognizer.make()
-            try await recognizer.prepare()
+            // ASR: Whisper (default) when its model is ready; otherwise Apple Speech.
+            var asr: (any LiveCaptionRecognizing)?
+            if LiveCaptionPreference.asr == .whisper {
+                statusMessage = "正在加载 Whisper…"
+                asr = await LiveCaptionWhisperRecognizer.makeIfReady(LiveCaptionPreference.whisperModel)
+                if asr == nil { whisperFallback = true }
+            }
+            if asr == nil {
+                let apple = try await LiveCaptionEnglishRecognizer.make()
+                try await apple.prepare()
+                asr = apple
+            }
+            guard let recognizer = asr else { throw LiveCaptionEngineError.notReady }
             self.recognizer = recognizer
 
-            let translator: any LiveCaptionTranslating
-            if #available(iOS 26.0, macOS 26.0, *) {
-                #if canImport(Translation)
-                let direct = LiveCaptionDirectTranslator()
-                try await direct.prepare()
-                translator = direct
-                translationBridge = nil
-                #else
-                throw LiveCaptionEngineError.translationUnsupported
-                #endif
-            } else if #available(iOS 18.0, macOS 15.0, *) {
-                #if canImport(Translation)
-                let bridge = LiveCaptionTranslationBridge()
-                try await bridge.prepare()
-                bridge.activate()
-                translator = bridge
-                translationBridge = bridge
-                #else
-                throw LiveCaptionEngineError.translationUnsupported
-                #endif
-            } else {
-                throw LiveCaptionEngineError.unavailable("实时翻译需要 iOS 18 或更新系统")
+            // MT: Qwen (default, when downloaded + memory/thermal OK) with Apple Translation as fallback.
+            var apple: (any LiveCaptionTranslating)?
+            var appleError: Error?
+            do {
+                apple = try await makeAppleTranslator()
+            } catch {
+                appleError = error
             }
+            var qwen: (any LiveCaptionTranslating)?
+            if LiveCaptionPreference.translator == .qwen {
+                statusMessage = "正在加载 Qwen…"
+                qwen = await LiveCaptionQwenTranslator.makeIfReady()
+            }
+            if qwen == nil, apple == nil {
+                throw appleError ?? LiveCaptionEngineError.translationUnsupported
+            }
+            let translator = LiveCaptionFallbackTranslator(primary: qwen, fallback: apple)
             self.translator = translator
+            engineSummary = "\(recognizer.displayName) + \(translator.displayName)"
             #else
             throw LiveCaptionEngineError.unavailable("当前平台不支持实时翻译")
             #endif
 
+            // Keep only the newest ~7 s of decoded audio: if ASR falls behind, drop old audio, stay live.
             let (stream, cont) = AsyncStream.makeStream(
-                of: (samples: [Float], time: Double, generation: Int).self
+                of: (samples: [Float], time: Double, generation: Int).self,
+                bufferingPolicy: .bufferingNewest(12)
             )
             pcmContinuation = cont
             let pace = self.pace
@@ -118,7 +162,7 @@ final class LiveCaptionSession {
                 await self?.consume(stream, generation: gen)
             }
             phase = .running
-            statusMessage = "实时翻译运行中"
+            statusMessage = whisperFallback ? "Whisper 模型未就绪，暂用 Apple 语音识别" : "实时翻译运行中（\(engineSummary)）"
         } catch {
             phase = .failed
             lastError = error.localizedDescription
@@ -246,6 +290,9 @@ final class LiveCaptionSession {
     }
 
     private func tearDownWorkers() async {
+        translateTask?.cancel()
+        translateTask = nil
+        lastEnglish = nil
         recoverTask?.cancel()
         recoverTask = nil
         processTask?.cancel()
@@ -266,31 +313,50 @@ final class LiveCaptionSession {
     ) async {
         for await packet in stream {
             if Task.isCancelled { break }
-            guard packet.generation == generation else { continue }
+            guard packet.generation == generation, let recognizer else { continue }
             if buffered.isEmpty { bufferStart = packet.time }
             buffered.append(contentsOf: packet.samples)
-            while buffered.count >= LiveCaptionAudio.chunkSamples {
-                let chunk = Array(buffered.prefix(LiveCaptionAudio.chunkSamples))
-                buffered.removeFirst(LiveCaptionAudio.chunkSamples)
+            let chunk = recognizer.chunkSamples
+            let overlap = min(recognizer.overlapSamples, chunk / 2)
+            while buffered.count >= chunk {
+                let window = Array(buffered.prefix(chunk))
+                let advance = chunk - overlap
+                buffered.removeFirst(advance)
                 let start = bufferStart
-                bufferStart += Double(LiveCaptionAudio.chunkSamples) / LiveCaptionAudio.sampleRate
-                await processChunk(chunk, mediaTime: start, generation: generation)
+                bufferStart += Double(advance) / LiveCaptionAudio.sampleRate
+                await processChunk(window, mediaTime: start, generation: generation)
             }
         }
     }
 
+    /// ASR runs inline (off-main inside the recognizer); MT runs in its own task and a newer line cancels
+    /// a still-running older translation so captions never lag behind the stream.
     private func processChunk(_ samples: [Float], mediaTime: Double, generation: Int) async {
         guard generation == self.generation, let recognizer, let translator else { return }
         if LiveCaptionAudio.isSilent(samples) { return }
         do {
-            let english = try await recognizer.transcribe(samples: samples)
+            let raw = try await recognizer.transcribe(samples: samples)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let english = recognizer.overlapSamples > 0
+                ? LiveCaptionOverlap.dedupe(previous: lastEnglish, current: raw)
+                : raw
             guard !english.isEmpty, generation == self.generation else { return }
-            let chinese = try await translator.translate(english)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !chinese.isEmpty, generation == self.generation else { return }
-            latest = LiveCaptionLine(english: english, chinese: chinese, mediaTime: mediaTime)
-            lastError = nil
+            let previous = lastEnglish
+            lastEnglish = raw
+            translateTask?.cancel()
+            translateTask = Task { [weak self] in
+                do {
+                    let chinese = try await translator.translate(english, previous: previous)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !Task.isCancelled, let self, generation == self.generation, !chinese.isEmpty else { return }
+                    self.latest = LiveCaptionLine(english: english, chinese: chinese, mediaTime: mediaTime)
+                    self.lastError = nil
+                } catch is CancellationError {
+                    return
+                } catch {
+                    self?.lastError = error.localizedDescription
+                }
+            }
         } catch is CancellationError {
             return
         } catch {

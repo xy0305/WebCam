@@ -15,12 +15,42 @@ final class LiveCaptionController {
 
     @ObservationIgnored private var syncTask: Task<Void, Never>?
     private var lastIdentity: String?
+    private var lastRoom: Room?
+    private var lastStream: ResolvedStream?
 
     init() {
         showsCaptions = preference.isEnabled
         syncTask = Task { [weak self] in
             await self?.mirrorSession()
         }
+        // Whisper finished downloading while captions are on → restart once to switch from Apple Speech.
+        LiveCaptionModelStore.shared.onWhisperReady = { [weak self] model in
+            guard let self, self.showsCaptions, model == LiveCaptionPreference.whisperModel,
+                  LiveCaptionPreference.asr == .whisper, let room = self.lastRoom, let stream = self.lastStream else { return }
+            self.startSession(room: room, stream: stream)
+        }
+    }
+
+    /// First use of Whisper: kick off the model download (progress shown in overlay + Settings).
+    private func ensureWhisperModel() {
+        guard LiveCaptionPreference.asr == .whisper else { return }
+        let model = LiveCaptionPreference.whisperModel
+        let store = LiveCaptionModelStore.shared
+        switch store.whisperState(model) {
+        case .notDownloaded, .failed:
+            store.downloadWhisper(model)
+        default:
+            break
+        }
+    }
+
+    private func startSession(room: Room, stream: ResolvedStream) {
+        lastRoom = room
+        lastStream = stream
+        lastIdentity = streamIdentity(for: stream)
+        let source = currentSource(room: room, stream: stream)
+        let refresh = makeRefresher(room: room)
+        Task { await session.start(source: source, refresh: refresh) }
     }
 
 
@@ -134,14 +164,12 @@ final class LiveCaptionController {
             Task { await session.stop(clearText: true) }
             return
         }
+        ensureWhisperModel()
         guard let stream else {
             overlayStatus = "等待播放地址…"
             return
         }
-        lastIdentity = streamIdentity(for: stream)
-        let source = currentSource(room: room, stream: stream)
-        let refresh = makeRefresher(room: room)
-        Task { await session.start(source: source, refresh: refresh) }
+        startSession(room: room, stream: stream)
     }
 
     func handleStreamChanged(room: Room, stream: ResolvedStream?) {
@@ -149,6 +177,8 @@ final class LiveCaptionController {
         let identity = streamIdentity(for: stream)
         if lastIdentity == identity { return }
         lastIdentity = identity
+        lastRoom = room
+        lastStream = stream
         let source = currentSource(room: room, stream: stream)
         let refresh = makeRefresher(room: room)
         Task { await session.retarget(source: source, refresh: refresh) }
@@ -157,11 +187,9 @@ final class LiveCaptionController {
     func resumeIfNeeded(room: Room, stream: ResolvedStream?) {
         guard preference.isEnabled else { return }
         showsCaptions = true
+        ensureWhisperModel()
         guard let stream else { return }
-        lastIdentity = streamIdentity(for: stream)
-        let source = currentSource(room: room, stream: stream)
-        let refresh = makeRefresher(room: room)
-        Task { await session.start(source: source, refresh: refresh) }
+        startSession(room: room, stream: stream)
     }
 
     func handlePlaybackBusy(_ busy: Bool) {
@@ -180,10 +208,15 @@ final class LiveCaptionController {
         while !Task.isCancelled {
             if showsCaptions {
                 overlayLine = session.latest
+                let whisper = LiveCaptionModelStore.shared.whisperState(LiveCaptionPreference.whisperModel)
                 if session.phase == .starting || session.phase == .failed {
                     overlayStatus = session.statusMessage
                 } else if overlayLine == nil {
-                    overlayStatus = session.statusMessage
+                    if session.whisperFallback, whisper.isBusy {
+                        overlayStatus = "Whisper \(whisper.label)（暂用 Apple 语音）"
+                    } else {
+                        overlayStatus = session.statusMessage
+                    }
                 } else {
                     overlayStatus = ""
                 }
