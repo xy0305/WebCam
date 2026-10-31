@@ -55,8 +55,10 @@
 
 ## Chaturbate
 
-- 播放地址 token 一次性：字幕 `makeRefresher` 重新 `StreamSource.resolve` 拿新 token，不影响播放器最高画质会话。
-- 只读音频媒体 playlist；失败会有限次重连。
+- 播放地址 token **一次性**：同一 master 第二次 GET → `w3: session_duplicated` / HTTP 403。
+- **Build 88 修复**：字幕不能走 `StreamSource.resolve`（内部 `HLSMaster.lock` 会先消费掉 token 来组最高画质迷你 master）。改为 `StreamSource.mintCaptionMaster` 只申请新 token，由 `LiveCaptionSession.fetchPlaylist` **只拉一次** master，再打开独立音频 media playlist。播放器最高画质路径不动。
+- 头：`APIClient.hlsHeaders`（UA + Accept + Referer；不要 Origin）。
+- 失败会有限次重连（2 分钟内最多 4 次换新 token）。
 
 ## 限制
 

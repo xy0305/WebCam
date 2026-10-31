@@ -104,48 +104,69 @@ final class LiveCaptionController {
     }
 
     /// Mint a caption-only play URL. Separate from the player session / quality lock.
+    ///
+    /// Chaturbate edge master tokens are single-use. `StreamSource.resolve` calls `HLSMaster.lock`,
+    /// which GETs the master once to build the highest-quality mini playlist — that burns the token.
+    /// Returning that already-used `masterURL` made `fetchPlaylist` hit HTTP 403
+    /// (`字幕音频地址不可用: HTTP 403`). Captions mint an unused master via `mintCaptionMaster`
+    /// instead; `LiveCaptionSession` fetches it once and opens the audio media playlist.
     func makeRefresher(room: Room) -> LiveCaptionSession.SourceRefresher {
         return {
-            guard let fresh = try? await StreamSource.resolve(room: room) else { return nil }
-            let headers: [String: String]
-            let ua: String
             switch room.platform {
-            case .stripchat:
-                headers = [
-                    "User-Agent": APIClient.userAgent,
-                    "Accept": "*/*",
-                    "Referer": "https://zh.stripchat.com/",
-                    "Origin": "https://zh.stripchat.com",
-                ]
-                ua = APIClient.userAgent
-            case .panda:
-                var h: [String: String] = [
-                    "User-Agent": PandaAPI.userAgent,
-                    "Accept": "*/*",
-                    "Referer": fresh.requestContext.referer,
-                    "Origin": "https://www.pandalive.co.kr",
-                ]
-                if let cookie = PandaSession.shared.cookieHeader { h["Cookie"] = cookie }
-                headers = h
-                ua = PandaAPI.userAgent
             case .chaturbate:
-                headers = APIClient.hlsHeaders
-                ua = APIClient.userAgent
+                guard let master = try? await StreamSource.mintCaptionMaster(username: room.username) else {
+                    return nil
+                }
+                return LiveCaptionSource(
+                    url: master,
+                    headers: APIClient.hlsHeaders,
+                    userAgent: APIClient.userAgent,
+                    requiresFreshPlaylist: true
+                )
+            case .stripchat, .panda:
+                guard let fresh = try? await StreamSource.resolve(room: room) else { return nil }
+                let headers: [String: String]
+                let ua: String
+                switch room.platform {
+                case .stripchat:
+                    headers = [
+                        "User-Agent": APIClient.userAgent,
+                        "Accept": "*/*",
+                        "Referer": "https://zh.stripchat.com/",
+                        "Origin": "https://zh.stripchat.com",
+                    ]
+                    ua = APIClient.userAgent
+                case .panda:
+                    var h: [String: String] = [
+                        "User-Agent": PandaAPI.userAgent,
+                        "Accept": "*/*",
+                        "Referer": fresh.requestContext.referer,
+                        "Origin": "https://www.pandalive.co.kr",
+                    ]
+                    if let cookie = PandaSession.shared.cookieHeader { h["Cookie"] = cookie }
+                    headers = h
+                    ua = PandaAPI.userAgent
+                case .chaturbate:
+                    headers = APIClient.hlsHeaders
+                    ua = APIClient.userAgent
+                }
+                // Reusable playlists: prefer audio media URI when resolve already extracted it;
+                // otherwise the master / video playlist (session will classify).
+                let url: URL
+                if let audio = fresh.audioPlaylist {
+                    url = audio
+                } else if fresh.masterURL.scheme != "data" {
+                    url = fresh.masterURL
+                } else {
+                    url = fresh.videoPlaylist
+                }
+                return LiveCaptionSource(
+                    url: url,
+                    headers: headers,
+                    userAgent: ua,
+                    requiresFreshPlaylist: false
+                )
             }
-            // Prefer the fresh master so LiveCaptionHLS can pick the audio-only media playlist.
-            // Chaturbate: brand-new token, independent of the player's highest-quality session.
-            let url: URL
-            if fresh.masterURL.scheme != "data" {
-                url = fresh.masterURL
-            } else {
-                url = fresh.audioPlaylist ?? fresh.videoPlaylist
-            }
-            return LiveCaptionSource(
-                url: url,
-                headers: headers,
-                userAgent: ua,
-                requiresFreshPlaylist: room.platform == .chaturbate
-            )
         }
     }
 
