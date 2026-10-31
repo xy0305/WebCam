@@ -50,14 +50,27 @@ actor LiveCaptionWhisperEngine {
     }
 }
 
-/// Whisper (small.en / base.en) English ASR: ~4 s windows with 0.5 s overlap.
+/// Whisper (small.en / base.en) English ASR: short windows for ~2–3 s end-to-end lag.
 final class LiveCaptionWhisperRecognizer: LiveCaptionRecognizing, @unchecked Sendable {
-    let chunkSamples = 64_000      // 4.0 s @ 16 kHz
-    let overlapSamples = 8_000     // 0.5 s
+    let chunkSamples: Int
+    let overlapSamples: Int
     let displayName: String
+    /// Flush early on trailing silence once we have at least this many samples (~1.5 s).
+    let minFlushSamples: Int
 
     private init(model: LiveCaptionWhisperModel) {
         displayName = "Whisper \(model == .smallEn ? "small.en" : "base.en")"
+        // base.en is faster → shorter window; small.en slightly longer for accuracy.
+        switch model {
+        case .baseEn:
+            chunkSamples = 36_000   // 2.25 s @ 16 kHz
+            overlapSamples = 4_800  // 0.30 s
+            minFlushSamples = 24_000 // 1.5 s
+        case .smallEn:
+            chunkSamples = 40_000   // 2.5 s
+            overlapSamples = 4_800  // 0.30 s
+            minFlushSamples = 24_000
+        }
     }
 
     /// Returns nil when the model is not downloaded / prepared yet (caller falls back to Apple Speech).

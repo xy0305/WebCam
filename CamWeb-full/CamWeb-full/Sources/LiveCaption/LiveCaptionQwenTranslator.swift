@@ -240,25 +240,37 @@ final class LiveCaptionFallbackTranslator: LiveCaptionTranslating, @unchecked Se
         try await translate(english, previous: nil)
     }
 
+    /// Prefer Qwen, but never stall the live HUD: after `qwenBudget` seconds hand off to Apple.
+    static let qwenBudgetNanoseconds: UInt64 = 1_500_000_000
+
     func translate(_ english: String, previous: String?) async throws -> String {
+        try Task.checkCancellation()
         lastNote = ""
         var primaryRejected = false
         if usePrimary, let primary {
+            let qwenTask = Task {
+                try await primary.translate(english, previous: previous)
+            }
             do {
-                let out = try await primary.translate(english, previous: previous)
+                let out = try await Self.awaitPrimary(qwenTask, budgetNanos: Self.qwenBudgetNanoseconds)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if LiveCaptionText.isPlausibleChinese(out, sourceEnglish: english) {
                     return out
                 }
-                // Empty or English echo — do not publish; fall through to Apple.
                 primaryRejected = true
                 lock.lock(); primaryFailures += 1; lock.unlock()
                 lastNote = out.isEmpty
                     ? "Qwen 无输出，已用苹果翻译"
                     : "Qwen 未译成中文，已用苹果翻译"
             } catch is CancellationError {
+                qwenTask.cancel()
                 throw CancellationError()
+            } catch is PrimaryTimeout {
+                qwenTask.cancel()
+                primaryRejected = true
+                lastNote = "Qwen 较慢，已用苹果翻译"
             } catch {
+                qwenTask.cancel()
                 primaryRejected = true
                 lock.lock(); primaryFailures += 1; lock.unlock()
                 lastNote = "Qwen 失败，已用苹果翻译"
@@ -267,11 +279,12 @@ final class LiveCaptionFallbackTranslator: LiveCaptionTranslating, @unchecked Se
             // Already on Apple (thermal / too many Qwen echoes). Stay quiet — avoid HUD spam.
         }
 
+        try Task.checkCancellation()
         if let fallback {
             let out = try await fallback.translate(english, previous: previous)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if LiveCaptionText.isPlausibleChinese(out, sourceEnglish: english) {
-                if !primaryRejected, lastNote.isEmpty, primary != nil, !usePrimary {
+                if lastNote.isEmpty, primaryRejected {
                     lastNote = "已用苹果翻译"
                 }
                 return out
@@ -279,11 +292,35 @@ final class LiveCaptionFallbackTranslator: LiveCaptionTranslating, @unchecked Se
             if out.isEmpty {
                 throw LiveCaptionEngineError.unavailable(lastNote.isEmpty ? "翻译失败" : lastNote)
             }
-            // Apple also echoed English / packs missing → refuse so UI does not stick on English.
             lastNote = "翻译失败，已跳过原文"
             throw LiveCaptionEngineError.unavailable(lastNote)
         }
         throw LiveCaptionEngineError.notReady
+    }
+
+    private struct PrimaryTimeout: Error {}
+
+    private static func awaitPrimary(
+        _ task: Task<String, Error>,
+        budgetNanos: UInt64
+    ) async throws -> String {
+        try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask {
+                try await task.value
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: budgetNanos)
+                throw PrimaryTimeout()
+            }
+            do {
+                let value = try await group.next()!
+                group.cancelAll()
+                return value
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+        }
     }
 
     func shutdown() {

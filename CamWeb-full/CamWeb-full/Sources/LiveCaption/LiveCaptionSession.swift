@@ -15,7 +15,7 @@ final class LiveCaptionSession {
     private(set) var lastError: String?
 
     /// Soft lead for the secondary demux so it does not race too far ahead of live.
-    var maxLeadSeconds: TimeInterval = 4
+    var maxLeadSeconds: TimeInterval = 2.5
 
     @ObservationIgnored private let reader = LiveCaptionAudioReader()
     @ObservationIgnored private var recognizer: (any LiveCaptionRecognizing)?
@@ -340,6 +340,7 @@ final class LiveCaptionSession {
             buffered.append(contentsOf: packet.samples)
             let chunk = recognizer.chunkSamples
             let overlap = min(recognizer.overlapSamples, chunk / 2)
+            let minFlush = min(recognizer.minFlushSamples, chunk)
             while buffered.count >= chunk {
                 let window = Array(buffered.prefix(chunk))
                 let advance = chunk - overlap
@@ -348,13 +349,33 @@ final class LiveCaptionSession {
                 bufferStart += Double(advance) / LiveCaptionAudio.sampleRate
                 await processChunk(window, mediaTime: start, generation: generation)
             }
+            // Phrase pause: trailing ~0.25 s silence with ≥ minFlush of audio → flush early
+            // so we do not wait out the rest of the window before MT starts.
+            if buffered.count >= minFlush {
+                let silenceTail = Int(0.25 * LiveCaptionAudio.sampleRate)
+                if buffered.count >= silenceTail {
+                    let tail = buffered.suffix(silenceTail)
+                    if LiveCaptionAudio.isSilent(Array(tail)) {
+                        let window = Array(buffered)
+                        let start = bufferStart
+                        let keep = min(overlap, window.count / 4)
+                        if keep > 0 {
+                            buffered = Array(window.suffix(keep))
+                            bufferStart = start + Double(window.count - keep) / LiveCaptionAudio.sampleRate
+                        } else {
+                            buffered.removeAll(keepingCapacity: true)
+                        }
+                        await processChunk(window, mediaTime: start, generation: generation)
+                    }
+                }
+            }
         }
     }
 
-    /// ASR runs inline (off-main inside the recognizer). MT is a serial "latest wins" queue:
-    /// we never cancel an in-flight translation (that left cues stuck as English when Qwen was
-    /// cancelled mid-flight or its English echo was published). Intermediate ASR lines are
-    /// skipped; the newest pending line always runs to completion (Qwen → Apple fallback).
+    /// ASR runs inline (off-main inside the recognizer). MT is latest-wins: a newer English cue
+    /// cancels the in-flight job, then the newest pending line runs to completion. Qwen is capped
+    /// at 1.5 s then Apple Translation finishes the cue — Chinese is published as soon as it
+    /// returns (never English).
     private func processChunk(_ samples: [Float], mediaTime: Double, generation: Int) async {
         guard generation == self.generation, let recognizer else { return }
         if LiveCaptionAudio.isSilent(samples) { return }
@@ -367,6 +388,8 @@ final class LiveCaptionSession {
             guard !english.isEmpty, generation == self.generation else { return }
             let previous = lastEnglish
             lastEnglish = raw
+            // Always hand English to MT; phrase-end cues are preferred for snappy Chinese.
+            // Incomplete fragments still translate — better a quick Chinese line than waiting.
             enqueueMT(english: english, previous: previous, mediaTime: mediaTime, generation: generation)
         } catch is CancellationError {
             return
@@ -381,7 +404,13 @@ final class LiveCaptionSession {
         if latest == nil, translationNote.isEmpty {
             statusMessage = "翻译中…"
         }
-        pumpMT()
+        // Prefer the newest cue: cancel in-flight Qwen/Apple so we do not finish a stale line
+        // while speech has already moved on. pumpMT restarts for `pendingMT`.
+        if mtBusy {
+            translateTask?.cancel()
+        } else {
+            pumpMT()
+        }
     }
 
     private func pumpMT() {

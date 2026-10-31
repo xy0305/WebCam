@@ -61,6 +61,8 @@ protocol LiveCaptionRecognizing: Sendable {
     var chunkSamples: Int { get }
     /// Samples carried over into the next window so words on the boundary are not cut.
     var overlapSamples: Int { get }
+    /// Earliest silence-flush size (defaults to ~1.5 s).
+    var minFlushSamples: Int { get }
     var displayName: String { get }
     func prepare() async throws
     func transcribe(samples: [Float]) async throws -> String
@@ -69,6 +71,7 @@ protocol LiveCaptionRecognizing: Sendable {
 extension LiveCaptionRecognizing {
     var chunkSamples: Int { LiveCaptionAudio.chunkSamples }
     var overlapSamples: Int { 0 }
+    var minFlushSamples: Int { 24_000 }
     var displayName: String { "Apple 语音识别" }
 }
 
@@ -91,6 +94,13 @@ extension LiveCaptionTranslating {
 
 /// Heuristics so we never treat an English echo as a successful EN→ZH translation.
 enum LiveCaptionText {
+    /// True when ASR text likely finished a spoken phrase (start MT immediately).
+    static func looksLikePhraseEnd(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = t.last else { return false }
+        return ".?!;:…。？！".contains(last)
+    }
+
     /// True when `text` looks like a real Simplified/Traditional Chinese subtitle for `sourceEnglish`.
     static func isPlausibleChinese(_ text: String, sourceEnglish: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -142,8 +152,8 @@ enum LiveCaptionOverlap {
 /// PCM helpers used by the live caption pipeline (16 kHz mono Float32).
 enum LiveCaptionAudio {
     static let sampleRate: Double = 16_000
-    /// ~2.4 s windows keep Apple on-device ASR snappy without starving the player.
-    static let chunkSamples = 38_400
+    /// ~2.0 s windows keep Apple on-device ASR snappy without starving the player.
+    static let chunkSamples = 32_000
     static let silenceRMSThreshold: Float = 0.008
 
     static func isSilent(_ samples: ArraySlice<Float>, threshold: Float = silenceRMSThreshold) -> Bool {
