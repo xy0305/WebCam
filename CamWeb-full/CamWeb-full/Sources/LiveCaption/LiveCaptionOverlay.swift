@@ -13,8 +13,8 @@ struct LiveCaptionOverlay: View {
         VStack {
             Spacer()
             VStack(spacing: 8) {
-                if let line, !line.chinese.isEmpty {
-                    Text(line.chinese)
+                if let line, !line.displayText.isEmpty {
+                    Text(line.displayText)
                         .font(.system(.title3, design: .rounded).weight(.semibold))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
@@ -24,8 +24,8 @@ struct LiveCaptionOverlay: View {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .fill(.black.opacity(0.55))
                         )
-                        .accessibilityLabel("实时翻译")
-                        .accessibilityValue(line.chinese)
+                        .accessibilityLabel(line.showsChinese ? "实时翻译" : "实时识别")
+                        .accessibilityValue(line.displayText)
                 }
                 if !statusMessage.isEmpty {
                     Text(statusMessage)

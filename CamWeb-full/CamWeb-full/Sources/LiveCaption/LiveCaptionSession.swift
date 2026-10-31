@@ -15,7 +15,7 @@ final class LiveCaptionSession {
     private(set) var lastError: String?
 
     /// Soft lead for the secondary demux so it does not race too far ahead of live.
-    var maxLeadSeconds: TimeInterval = 2.5
+    var maxLeadSeconds: TimeInterval = 1.5
 
     @ObservationIgnored private let reader = LiveCaptionAudioReader()
     @ObservationIgnored private var recognizer: (any LiveCaptionRecognizing)?
@@ -156,7 +156,7 @@ final class LiveCaptionSession {
             // Keep only the newest ~7 s of decoded audio: if ASR falls behind, drop old audio, stay live.
             let (stream, cont) = AsyncStream.makeStream(
                 of: (samples: [Float], time: Double, generation: Int).self,
-                bufferingPolicy: .bufferingNewest(12)
+                bufferingPolicy: .bufferingNewest(4)
             )
             pcmContinuation = cont
             let pace = self.pace
@@ -341,7 +341,25 @@ final class LiveCaptionSession {
             let chunk = recognizer.chunkSamples
             let overlap = min(recognizer.overlapSamples, chunk / 2)
             let minFlush = min(recognizer.minFlushSamples, chunk)
+
+            // If ASR fell behind, jump to the newest window — never catch up old audio.
+            if buffered.count >= chunk * 2 {
+                let keep = chunk + overlap
+                let drop = buffered.count - keep
+                if drop > 0 {
+                    buffered.removeFirst(drop)
+                    bufferStart += Double(drop) / LiveCaptionAudio.sampleRate
+                }
+            }
+
             while buffered.count >= chunk {
+                // Re-check backlog each lap (ASR may have taken longer than realtime).
+                if buffered.count >= chunk * 2 {
+                    let keep = chunk + overlap
+                    let drop = buffered.count - keep
+                    buffered.removeFirst(drop)
+                    bufferStart += Double(drop) / LiveCaptionAudio.sampleRate
+                }
                 let window = Array(buffered.prefix(chunk))
                 let advance = chunk - overlap
                 buffered.removeFirst(advance)
@@ -349,17 +367,16 @@ final class LiveCaptionSession {
                 bufferStart += Double(advance) / LiveCaptionAudio.sampleRate
                 await processChunk(window, mediaTime: start, generation: generation)
             }
-            // Phrase pause: trailing ~0.25 s silence with ≥ minFlush of audio → flush early
-            // so we do not wait out the rest of the window before MT starts.
+            // Phrase pause: trailing ~0.2 s silence with ≥ minFlush → flush early.
             if buffered.count >= minFlush {
-                let silenceTail = Int(0.25 * LiveCaptionAudio.sampleRate)
+                let silenceTail = Int(0.20 * LiveCaptionAudio.sampleRate)
                 if buffered.count >= silenceTail {
                     let tail = buffered.suffix(silenceTail)
                     if LiveCaptionAudio.isSilent(Array(tail)) {
                         let window = Array(buffered)
                         let start = bufferStart
-                        let keep = min(overlap, window.count / 4)
-                        if keep > 0 {
+                        let keep = min(overlap, max(1, window.count / 4))
+                        if keep > 0, keep < window.count {
                             buffered = Array(window.suffix(keep))
                             bufferStart = start + Double(window.count - keep) / LiveCaptionAudio.sampleRate
                         } else {
@@ -372,10 +389,9 @@ final class LiveCaptionSession {
         }
     }
 
-    /// ASR runs inline (off-main inside the recognizer). MT is latest-wins: a newer English cue
-    /// cancels the in-flight job, then the newest pending line runs to completion. Qwen is capped
-    /// at 1.5 s then Apple Translation finishes the cue — Chinese is published as soon as it
-    /// returns (never English).
+    /// ASR runs inline. Publish English the moment Whisper returns, then MT (latest-wins) replaces
+    /// it with Chinese. Qwen is capped at 1.5 s → Apple. Backlog is dropped in `consume` so we
+    /// track the live edge instead of catching up old speech.
     private func processChunk(_ samples: [Float], mediaTime: Double, generation: Int) async {
         guard generation == self.generation, let recognizer else { return }
         if LiveCaptionAudio.isSilent(samples) { return }
@@ -388,8 +404,8 @@ final class LiveCaptionSession {
             guard !english.isEmpty, generation == self.generation else { return }
             let previous = lastEnglish
             lastEnglish = raw
-            // Always hand English to MT; phrase-end cues are preferred for snappy Chinese.
-            // Incomplete fragments still translate — better a quick Chinese line than waiting.
+            // Interim English on screen immediately — do not wait for MT.
+            latest = LiveCaptionLine(english: english, chinese: "", mediaTime: mediaTime)
             enqueueMT(english: english, previous: previous, mediaTime: mediaTime, generation: generation)
         } catch is CancellationError {
             return
@@ -400,12 +416,10 @@ final class LiveCaptionSession {
 
     private func enqueueMT(english: String, previous: String?, mediaTime: Double, generation: Int) {
         pendingMT = (english, previous, mediaTime, generation)
-        // Keep prior Chinese on screen while MT runs; only hint when we have nothing Chinese yet.
-        if latest == nil, translationNote.isEmpty {
+        if translationNote.isEmpty {
             statusMessage = "翻译中…"
         }
-        // Prefer the newest cue: cancel in-flight Qwen/Apple so we do not finish a stale line
-        // while speech has already moved on. pumpMT restarts for `pendingMT`.
+        // Prefer the newest cue: cancel in-flight so captions follow live speech.
         if mtBusy {
             translateTask?.cancel()
         } else {
@@ -441,7 +455,13 @@ final class LiveCaptionSession {
                     self.lastError = note
                     return
                 }
-                self.latest = LiveCaptionLine(english: item.english, chinese: chinese, mediaTime: item.mediaTime)
+                let priorID = (self.latest?.english == item.english) ? self.latest?.id : nil
+                self.latest = LiveCaptionLine(
+                    id: priorID ?? UUID(),
+                    english: item.english,
+                    chinese: chinese,
+                    mediaTime: item.mediaTime
+                )
                 self.lastError = nil
                 if let fb = translator as? LiveCaptionFallbackTranslator, !fb.lastNote.isEmpty {
                     self.translationNote = fb.lastNote

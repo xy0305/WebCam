@@ -127,7 +127,7 @@ final class LiveCaptionAudioReader: @unchecked Sendable {
     private enum Outcome { case stopped, ended, failed(String) }
 
     private static let errEOF: Int32 = -541_478_725
-    private static let chunkSamples = LiveCaptionAudio.chunkSamples / 4 // flush ~0.6 s pieces upstream
+    private static let chunkSamples = 5_600 // ~0.35 s pieces upstream so ASR can start sooner
 
     private func session(_ source: Source, tok: Int, generation: Int) -> Outcome {
         var fmt: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
@@ -162,11 +162,11 @@ final class LiveCaptionAudioReader: @unchecked Sendable {
         av_dict_set(&opts, "allowed_extensions", "ALL", 0)
         // Live HLS (Chaturbate LL-HLS fMP4 audio chunklist): start near the live edge like the player,
         // retry a missing live segment instead of failing the whole session, never seek on live.
-        av_dict_set(&opts, "live_start_index", "-3", 0)
+        av_dict_set(&opts, "live_start_index", "-1", 0)
         av_dict_set(&opts, "seg_max_retry", "3", 0)
         av_dict_set(&opts, "http_persistent", "1", 0)
-        av_dict_set(&opts, "probesize", "2000000", 0)
-        av_dict_set(&opts, "analyzeduration", "2000000", 0)
+        av_dict_set(&opts, "probesize", "65536", 0)
+        av_dict_set(&opts, "analyzeduration", "500000", 0)
 
         let urlString = source.url.isFileURL ? source.url.path : source.url.absoluteString
         let openErr = avformat_open_input(&fmt, urlString, nil, &opts)

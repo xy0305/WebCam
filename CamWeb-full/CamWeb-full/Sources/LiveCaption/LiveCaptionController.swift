@@ -228,17 +228,22 @@ final class LiveCaptionController {
     private func mirrorSession() async {
         while !Task.isCancelled {
             if showsCaptions {
-                // Never mirror an English-echo "chinese" field into the overlay.
-                if let line = session.latest,
-                   LiveCaptionText.isPlausibleChinese(line.chinese, sourceEnglish: line.english) {
-                    overlayLine = line
-                } else if session.latest == nil {
-                    overlayLine = nil
-                }
-                // Keep a bad prior overlayLine only if session.latest is a rejected echo —
-                // drop it so we do not stick on English.
-                if let line = session.latest,
-                   !LiveCaptionText.isPlausibleChinese(line.chinese, sourceEnglish: line.english) {
+                // Mirror ASAP: interim English (chinese == "") then real Chinese when MT lands.
+                // Never keep a fake "chinese" that is just an English echo.
+                if let line = session.latest {
+                    if line.showsChinese || line.chinese.isEmpty {
+                        overlayLine = line
+                    } else if !line.english.isEmpty {
+                        // Bad MT echo — keep showing English interim for this cue.
+                        overlayLine = LiveCaptionLine(
+                            id: line.id,
+                            english: line.english,
+                            chinese: "",
+                            mediaTime: line.mediaTime,
+                            createdAt: line.createdAt
+                        )
+                    }
+                } else {
                     overlayLine = nil
                 }
 
@@ -246,6 +251,8 @@ final class LiveCaptionController {
                 let note = session.translationNote
                 if session.phase == .starting || session.phase == .failed {
                     overlayStatus = session.statusMessage
+                } else if let line = overlayLine, !line.showsChinese, note.isEmpty {
+                    overlayStatus = "翻译中…"
                 } else if !note.isEmpty {
                     overlayStatus = note
                 } else if overlayLine == nil {
@@ -255,7 +262,6 @@ final class LiveCaptionController {
                         overlayStatus = session.statusMessage
                     }
                 } else {
-                    // Keep engine summary visible under Chinese captions when useful.
                     let status = session.statusMessage
                     overlayStatus = status.contains("·") ? status : ""
                 }

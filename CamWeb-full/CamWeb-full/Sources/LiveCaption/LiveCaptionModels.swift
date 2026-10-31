@@ -22,6 +22,18 @@ struct LiveCaptionLine: Sendable, Equatable, Identifiable {
         self.mediaTime = mediaTime
         self.createdAt = createdAt
     }
+
+    /// Prefer real Chinese; otherwise show interim English so ASR lag is visible/usable ASAP.
+    var displayText: String {
+        if LiveCaptionText.isPlausibleChinese(chinese, sourceEnglish: english) {
+            return chinese
+        }
+        return english
+    }
+
+    var showsChinese: Bool {
+        LiveCaptionText.isPlausibleChinese(chinese, sourceEnglish: english)
+    }
 }
 
 enum LiveCaptionPhase: String, Sendable, Equatable {
@@ -71,7 +83,7 @@ protocol LiveCaptionRecognizing: Sendable {
 extension LiveCaptionRecognizing {
     var chunkSamples: Int { LiveCaptionAudio.chunkSamples }
     var overlapSamples: Int { 0 }
-    var minFlushSamples: Int { 24_000 }
+    var minFlushSamples: Int { 16_000 }
     var displayName: String { "Apple 语音识别" }
 }
 
@@ -152,8 +164,8 @@ enum LiveCaptionOverlap {
 /// PCM helpers used by the live caption pipeline (16 kHz mono Float32).
 enum LiveCaptionAudio {
     static let sampleRate: Double = 16_000
-    /// ~2.0 s windows keep Apple on-device ASR snappy without starving the player.
-    static let chunkSamples = 32_000
+    /// ~1.75 s windows keep Apple on-device ASR snappy without starving the player.
+    static let chunkSamples = 28_000
     static let silenceRMSThreshold: Float = 0.008
 
     static func isSilent(_ samples: ArraySlice<Float>, threshold: Float = silenceRMSThreshold) -> Bool {

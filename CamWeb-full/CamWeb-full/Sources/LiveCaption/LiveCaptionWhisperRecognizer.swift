@@ -63,13 +63,13 @@ final class LiveCaptionWhisperRecognizer: LiveCaptionRecognizing, @unchecked Sen
         // base.en is faster → shorter window; small.en slightly longer for accuracy.
         switch model {
         case .baseEn:
-            chunkSamples = 36_000   // 2.25 s @ 16 kHz
-            overlapSamples = 4_800  // 0.30 s
-            minFlushSamples = 24_000 // 1.5 s
+            chunkSamples = 28_000   // 1.75 s @ 16 kHz — ASR text arrives sooner
+            overlapSamples = 3_200  // 0.20 s
+            minFlushSamples = 16_000 // 1.0 s silence flush
         case .smallEn:
-            chunkSamples = 40_000   // 2.5 s
-            overlapSamples = 4_800  // 0.30 s
-            minFlushSamples = 24_000
+            chunkSamples = 32_000   // 2.0 s
+            overlapSamples = 3_200  // 0.20 s
+            minFlushSamples = 16_000
         }
     }
 
