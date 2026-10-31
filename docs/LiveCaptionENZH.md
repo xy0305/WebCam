@@ -60,6 +60,15 @@
 - 头：`APIClient.hlsHeaders`（UA + Accept + Referer；不要 Origin）。
 - 失败会有限次重连（2 分钟内最多 4 次换新 token）。
 
+## Build 89：英文原文不再当字幕
+
+此前 Qwen 偶尔把英文原句原样吐回，管道又把非空结果当成「译文」写进字幕栏，所以状态显示 `Whisper + Qwen` 却只看到英文。Build 89：
+
+1. 译文必须像中文（含汉字、且不能等于英文原文），否则视为失败；
+2. Qwen 失败 / 回英文时自动改用苹果翻译，并在状态栏提示原因；
+3. 翻译改为串行「只保留最新一句」，不再中途取消导致字幕停在原文；
+4. 苹果 TranslationSession（iOS 18–25）会等 `.translationTask` 挂上再开听写。
+
 ## 限制
 
 - 需要 iOS 18+（Translation）。

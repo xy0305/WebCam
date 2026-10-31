@@ -42,6 +42,11 @@ final class LiveCaptionSession {
 
     @ObservationIgnored private var translateTask: Task<Void, Never>?
     @ObservationIgnored private var lastEnglish: String?
+    /// Newest ASR line waiting for MT. Intermediate lines are dropped; the latest always runs to completion.
+    @ObservationIgnored private var pendingMT: (english: String, previous: String?, mediaTime: Double, generation: Int)?
+    @ObservationIgnored private var mtBusy = false
+    /// Short UI note: why we fell back / skipped a cue (cleared when a good Chinese line lands).
+    private(set) var translationNote: String = ""
 
     #if os(iOS) || os(macOS)
     private func makeAppleTranslator() async throws -> any LiveCaptionTranslating {
@@ -60,6 +65,12 @@ final class LiveCaptionSession {
             try await bridge.prepare()
             bridge.activate()
             translationBridge = bridge
+            // .translationTask only attaches after the next SwiftUI render. Wait so Apple
+            // fallback is actually usable when the first ASR line arrives.
+            for _ in 0 ..< 40 {
+                if bridge.attached { break }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
             return bridge
             #else
             throw LiveCaptionEngineError.translationUnsupported
@@ -90,6 +101,9 @@ final class LiveCaptionSession {
         buffered.removeAll(keepingCapacity: true)
         latest = nil
         lastEnglish = nil
+        pendingMT = nil
+        mtBusy = false
+        translationNote = ""
         whisperFallback = false
         engineSummary = ""
         pace.reset(maxLead: maxLeadSeconds)
@@ -129,6 +143,11 @@ final class LiveCaptionSession {
             }
             let translator = LiveCaptionFallbackTranslator(primary: qwen, fallback: apple)
             self.translator = translator
+            if qwen == nil, apple != nil {
+                translationNote = LiveCaptionPreference.translator == .qwen
+                    ? "Qwen 未下载或暂不可用，已用苹果翻译"
+                    : ""
+            }
             engineSummary = "\(recognizer.displayName) + \(translator.displayName)"
             #else
             throw LiveCaptionEngineError.unavailable("当前平台不支持实时翻译")
@@ -292,6 +311,9 @@ final class LiveCaptionSession {
     private func tearDownWorkers() async {
         translateTask?.cancel()
         translateTask = nil
+        pendingMT = nil
+        mtBusy = false
+        translationNote = ""
         lastEnglish = nil
         recoverTask?.cancel()
         recoverTask = nil
@@ -329,10 +351,12 @@ final class LiveCaptionSession {
         }
     }
 
-    /// ASR runs inline (off-main inside the recognizer); MT runs in its own task and a newer line cancels
-    /// a still-running older translation so captions never lag behind the stream.
+    /// ASR runs inline (off-main inside the recognizer). MT is a serial "latest wins" queue:
+    /// we never cancel an in-flight translation (that left cues stuck as English when Qwen was
+    /// cancelled mid-flight or its English echo was published). Intermediate ASR lines are
+    /// skipped; the newest pending line always runs to completion (Qwen → Apple fallback).
     private func processChunk(_ samples: [Float], mediaTime: Double, generation: Int) async {
-        guard generation == self.generation, let recognizer, let translator else { return }
+        guard generation == self.generation, let recognizer else { return }
         if LiveCaptionAudio.isSilent(samples) { return }
         do {
             let raw = try await recognizer.transcribe(samples: samples)
@@ -343,24 +367,68 @@ final class LiveCaptionSession {
             guard !english.isEmpty, generation == self.generation else { return }
             let previous = lastEnglish
             lastEnglish = raw
-            translateTask?.cancel()
-            translateTask = Task { [weak self] in
-                do {
-                    let chinese = try await translator.translate(english, previous: previous)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !Task.isCancelled, let self, generation == self.generation, !chinese.isEmpty else { return }
-                    self.latest = LiveCaptionLine(english: english, chinese: chinese, mediaTime: mediaTime)
-                    self.lastError = nil
-                } catch is CancellationError {
-                    return
-                } catch {
-                    self?.lastError = error.localizedDescription
-                }
-            }
+            enqueueMT(english: english, previous: previous, mediaTime: mediaTime, generation: generation)
         } catch is CancellationError {
             return
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    private func enqueueMT(english: String, previous: String?, mediaTime: Double, generation: Int) {
+        pendingMT = (english, previous, mediaTime, generation)
+        // Keep prior Chinese on screen while MT runs; only hint when we have nothing Chinese yet.
+        if latest == nil, translationNote.isEmpty {
+            statusMessage = "翻译中…"
+        }
+        pumpMT()
+    }
+
+    private func pumpMT() {
+        guard !mtBusy, let item = pendingMT, item.generation == generation, let translator else { return }
+        pendingMT = nil
+        mtBusy = true
+        let gen = item.generation
+        translateTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.mtBusy = false
+                self.pumpMT()
+            }
+            do {
+                let chinese = try await translator.translate(item.english, previous: item.previous)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !Task.isCancelled, gen == self.generation else { return }
+                // Belt-and-suspenders: never publish English into the Chinese overlay field.
+                guard LiveCaptionText.isPlausibleChinese(chinese, sourceEnglish: item.english) else {
+                    let note: String
+                    if let fb = translator as? LiveCaptionFallbackTranslator, !fb.lastNote.isEmpty {
+                        note = fb.lastNote
+                    } else {
+                        note = "翻译失败，已跳过原文"
+                    }
+                    self.translationNote = note
+                    self.statusMessage = note
+                    self.lastError = note
+                    return
+                }
+                self.latest = LiveCaptionLine(english: item.english, chinese: chinese, mediaTime: item.mediaTime)
+                self.lastError = nil
+                if let fb = translator as? LiveCaptionFallbackTranslator, !fb.lastNote.isEmpty {
+                    self.translationNote = fb.lastNote
+                    self.statusMessage = "实时翻译运行中（\(self.engineSummary)）· \(fb.lastNote)"
+                } else {
+                    self.translationNote = ""
+                    self.statusMessage = "实时翻译运行中（\(self.engineSummary)）"
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                let message = error.localizedDescription
+                self.lastError = message
+                self.translationNote = message
+                self.statusMessage = message
+            }
         }
     }
 }

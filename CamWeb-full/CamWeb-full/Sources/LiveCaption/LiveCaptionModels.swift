@@ -87,6 +87,39 @@ extension LiveCaptionTranslating {
     }
 }
 
+
+
+/// Heuristics so we never treat an English echo as a successful EN→ZH translation.
+enum LiveCaptionText {
+    /// True when `text` looks like a real Simplified/Traditional Chinese subtitle for `sourceEnglish`.
+    static func isPlausibleChinese(_ text: String, sourceEnglish: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let norm: (String) -> String = { s in
+            s.lowercased().filter { $0.isLetter || $0.isNumber }
+        }
+        // Exact / near echo of the English source (common Qwen failure mode on short cues).
+        if !norm(sourceEnglish).isEmpty, norm(trimmed) == norm(sourceEnglish) { return false }
+        if trimmed.compare(sourceEnglish, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+            return false
+        }
+        var cjk = 0
+        var latin = 0
+        for scalar in trimmed.unicodeScalars {
+            let v = scalar.value
+            if (0x4E00...0x9FFF).contains(v) || (0x3400...0x4DBF).contains(v) || (0xF900...0xFAFF).contains(v) {
+                cjk += 1
+            } else if (0x41...0x5A).contains(v) || (0x61...0x7A).contains(v) {
+                latin += 1
+            }
+        }
+        guard cjk > 0 else { return false }
+        // Allow a little Latin (OK / LOL) but Chinese must dominate.
+        if latin > 0 && cjk * 3 < latin { return false }
+        return true
+    }
+}
+
 /// Removes words repeated because of the window overlap ("... going to" + "to the store" → "the store").
 enum LiveCaptionOverlap {
     static func dedupe(previous: String?, current: String) -> String {

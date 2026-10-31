@@ -228,10 +228,26 @@ final class LiveCaptionController {
     private func mirrorSession() async {
         while !Task.isCancelled {
             if showsCaptions {
-                overlayLine = session.latest
+                // Never mirror an English-echo "chinese" field into the overlay.
+                if let line = session.latest,
+                   LiveCaptionText.isPlausibleChinese(line.chinese, sourceEnglish: line.english) {
+                    overlayLine = line
+                } else if session.latest == nil {
+                    overlayLine = nil
+                }
+                // Keep a bad prior overlayLine only if session.latest is a rejected echo —
+                // drop it so we do not stick on English.
+                if let line = session.latest,
+                   !LiveCaptionText.isPlausibleChinese(line.chinese, sourceEnglish: line.english) {
+                    overlayLine = nil
+                }
+
                 let whisper = LiveCaptionModelStore.shared.whisperState(LiveCaptionPreference.whisperModel)
+                let note = session.translationNote
                 if session.phase == .starting || session.phase == .failed {
                     overlayStatus = session.statusMessage
+                } else if !note.isEmpty {
+                    overlayStatus = note
                 } else if overlayLine == nil {
                     if session.whisperFallback, whisper.isBusy {
                         overlayStatus = "Whisper \(whisper.label)（暂用 Apple 语音）"
@@ -239,7 +255,9 @@ final class LiveCaptionController {
                         overlayStatus = session.statusMessage
                     }
                 } else {
-                    overlayStatus = ""
+                    // Keep engine summary visible under Chinese captions when useful.
+                    let status = session.statusMessage
+                    overlayStatus = status.contains("·") ? status : ""
                 }
             }
             try? await Task.sleep(nanoseconds: 200_000_000)

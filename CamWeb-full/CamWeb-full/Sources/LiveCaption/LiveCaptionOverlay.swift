@@ -12,33 +12,37 @@ struct LiveCaptionOverlay: View {
     var body: some View {
         VStack {
             Spacer()
-            if let line, !line.chinese.isEmpty {
-                Text(line.chinese)
-                    .font(.system(.title3, design: .rounded).weight(.semibold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(.black.opacity(0.55))
-                    )
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 72)
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
-                    .accessibilityLabel("实时翻译")
-                    .accessibilityValue(line.chinese)
-            } else if !statusMessage.isEmpty {
-                Text(statusMessage)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Capsule().fill(.black.opacity(0.45)))
-                    .padding(.bottom, 72)
+            VStack(spacing: 8) {
+                if let line, !line.chinese.isEmpty {
+                    Text(line.chinese)
+                        .font(.system(.title3, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(.black.opacity(0.55))
+                        )
+                        .accessibilityLabel("实时翻译")
+                        .accessibilityValue(line.chinese)
+                }
+                if !statusMessage.isEmpty {
+                    Text(statusMessage)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(.black.opacity(0.45)))
+                }
             }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 72)
+            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: line?.id)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: statusMessage)
         .allowsHitTesting(false)
     }
 }
