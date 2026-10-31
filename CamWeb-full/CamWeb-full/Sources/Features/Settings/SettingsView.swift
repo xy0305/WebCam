@@ -177,6 +177,10 @@ struct SettingsView: View {
             LabeledContent("播放画质", value: "始终最高画质")
             LabeledContent("播放器", value: "KSPlayer")
             LabeledContent("录制", value: "HLS 源流切片")
+            LabeledContent("实时翻译", value: "英语 → 简体中文")
+            Text("播放页左下角气泡按钮开关。需 iOS 18+，并在「设置 → 通用 → 语言与地区 → 翻译语言」下载英语与简体中文。字幕走独立音频，不改最高画质播放。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         } header: {
             Text("播放与省电")
         }
