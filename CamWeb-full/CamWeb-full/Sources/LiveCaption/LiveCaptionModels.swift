@@ -347,15 +347,119 @@ enum LiveCaptionAudio {
     /// Fallback ~2.0 s window (pace-aware recognizers override).
     static let chunkSamples = 32_000
     static let silenceRMSThreshold: Float = 0.008
+    /// Stricter gate before ASR — drop pads / bed music that are louder than silence but not speech.
+    static let speechRMSThreshold: Float = 0.012
 
     static func isSilent(_ samples: ArraySlice<Float>, threshold: Float = silenceRMSThreshold) -> Bool {
         guard !samples.isEmpty else { return true }
-        var sum: Float = 0
-        for s in samples { sum += s * s }
-        return sqrt(sum / Float(samples.count)) < threshold
+        return rms(samples) < threshold
     }
 
     static func isSilent(_ samples: [Float], threshold: Float = silenceRMSThreshold) -> Bool {
         isSilent(samples[...], threshold: threshold)
+    }
+
+    static func rms(_ samples: ArraySlice<Float>) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        var sum: Float = 0
+        for s in samples { sum += s * s }
+        return sqrt(sum / Float(samples.count))
+    }
+
+    static func rms(_ samples: [Float]) -> Float { rms(samples[...]) }
+
+    /// True when energy / steadiness look like speech rather than silence, pad, or steady noise.
+    static func isSpeechCandidate(_ samples: [Float]) -> Bool {
+        guard !samples.isEmpty else { return false }
+        let level = rms(samples)
+        if level < speechRMSThreshold { return false }
+        // Frame energy variance: speech fluctuates; drone / bed music is flatter.
+        let frame = max(160, Int(sampleRate * 0.02)) // 20 ms
+        guard samples.count >= frame * 4 else { return true }
+        var energies: [Float] = []
+        energies.reserveCapacity(samples.count / frame)
+        var i = 0
+        while i + frame <= samples.count {
+            energies.append(rms(samples[i ..< (i + frame)]))
+            i += frame
+        }
+        guard energies.count >= 4 else { return true }
+        let mean = energies.reduce(0, +) / Float(energies.count)
+        guard mean > 1e-6 else { return false }
+        var varSum: Float = 0
+        for e in energies {
+            let d = e - mean
+            varSum += d * d
+        }
+        let cv = sqrt(varSum / Float(energies.count)) / mean
+        // Very flat loud pad / steady noise → skip. Speech CV is typically higher.
+        if cv < 0.22, level < 0.08 { return false }
+        if cv < 0.15 { return false }
+        return true
+    }
+
+    /// Lightweight high-pass (~180 Hz) to de-emphasize bass-heavy beds before ASR. No extra deps.
+    static func emphasizeVocals(_ samples: [Float]) -> [Float] {
+        guard samples.count > 1 else { return samples }
+        var out = [Float](repeating: 0, count: samples.count)
+        let alpha: Float = 0.93
+        var yPrev: Float = 0
+        var xPrev = samples[0]
+        out[0] = 0
+        for i in 1 ..< samples.count {
+            let x = samples[i]
+            let y = alpha * (yPrev + x - xPrev)
+            out[i] = y
+            yPrev = y
+            xPrev = x
+        }
+        var peak: Float = 0
+        for s in out { peak = max(peak, abs(s)) }
+        if peak > 1 {
+            let inv = 1 / peak
+            for i in out.indices { out[i] *= inv }
+        }
+        return out
+    }
+}
+
+/// Drop lyrics / music markers / singing hooks before translation.
+enum LiveCaptionMusicText {
+    static func isLikelyMusicOrNonSpeech(_ text: String) -> Bool {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return true }
+        if raw.contains("♪") || raw.contains("♫") || raw.contains("🎵") || raw.contains("🎶") { return true }
+        let lower = raw.lowercased()
+        let markers = [
+            "[music]", "(music)", "[applause]", "(applause)", "[laughter]", "(laughter)",
+            "[singing]", "(singing)", "[inaudible]", "[blank_audio]",
+        ]
+        if markers.contains(where: { lower.contains($0) }) { return true }
+
+        let cleaned = LiveCaptionWhisperRecognizer.clean(raw)
+        if cleaned.isEmpty { return true }
+
+        let norm = LiveCaptionText.normalizeEnglish(cleaned)
+        guard !norm.isEmpty else { return true }
+        let hooks: Set<String> = [
+            "la la la", "na na na", "oh oh oh", "ah ah ah", "yeah yeah yeah",
+            "baby baby", "ooh ooh", "mmm mmm", "do do do", "da da da",
+            "hey hey hey", "no no no", "yes yes yes", "come on come on",
+        ]
+        if hooks.contains(norm) { return true }
+
+        let words = norm.split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return true }
+        let filler: Set<String> = [
+            "oh", "ah", "uh", "la", "na", "yeah", "yo", "ooh", "mmm", "hmm",
+            "baby", "whoa", "woo", "ow", "hey", "mm", "huh",
+        ]
+        if words.count >= 2, words.allSatisfy({ filler.contains($0) }) { return true }
+        // Highly repetitive short hook ("love love love love").
+        if words.count >= 4 {
+            let unique = Set(words)
+            if unique.count <= 2 { return true }
+        }
+        return false
     }
 }

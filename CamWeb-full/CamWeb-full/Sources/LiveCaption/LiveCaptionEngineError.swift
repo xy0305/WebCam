@@ -14,7 +14,7 @@ enum LiveCaptionEngineError: LocalizedError, Sendable {
         case .translationUnsupported:
             return "此设备不支持英语→简体中文系统翻译"
         case .translationNeedsDownload:
-            return "请先下载英语→简体中文翻译语言包"
+            return "请先下载英语和简体中文翻译语言包（设置 → App → 翻译 → 语言）"
         case .unavailable(let message):
             return message
         case .notReady:

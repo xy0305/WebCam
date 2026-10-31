@@ -74,9 +74,11 @@ final class LiveCaptionEnglishRecognizer: LiveCaptionRecognizing, @unchecked Sen
     func prepare() async throws {}
 
     func transcribe(samples: [Float]) async throws -> String {
-        guard !samples.isEmpty, !LiveCaptionAudio.isSilent(samples) else { return "" }
+        guard !samples.isEmpty, LiveCaptionAudio.isSpeechCandidate(samples) else { return "" }
+        let samples = LiveCaptionAudio.emphasizeVocals(samples)
         if #available(iOS 26.0, macOS 26.0, *), legacy == nil {
-            return try await analyze(samples)
+            let raw = try await analyze(samples)
+            return LiveCaptionMusicText.isLikelyMusicOrNonSpeech(raw) ? "" : LiveCaptionWhisperRecognizer.clean(raw)
         }
         guard let legacy, let buf = Self.buffer(samples) else { return "" }
         let req = SFSpeechAudioBufferRecognitionRequest()
@@ -103,7 +105,11 @@ final class LiveCaptionEnglishRecognizer: LiveCaptionRecognizing, @unchecked Sen
         return try await withCheckedThrowingContinuation { cont in
             once.task = legacy.recognitionTask(with: req) { result, error in
                 if let result, result.isFinal {
-                    if once.claim() { cont.resume(returning: result.bestTranscription.formattedString) }
+                    if once.claim() {
+                        let raw = result.bestTranscription.formattedString
+                        let cleaned = LiveCaptionWhisperRecognizer.clean(raw)
+                        cont.resume(returning: LiveCaptionMusicText.isLikelyMusicOrNonSpeech(cleaned) ? "" : cleaned)
+                    }
                 } else if let error {
                     if once.claim() { cont.resume(throwing: error) }
                 }

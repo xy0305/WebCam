@@ -55,6 +55,8 @@ final class LiveCaptionSession {
     @ObservationIgnored private var mtStartedAt: Date?
     /// True while a Chinese cue is expected soon (hold previous Chinese / blank, not English).
     private(set) var awaitingChinese = false
+    @ObservationIgnored private var musicSkipTipTask: Task<Void, Never>?
+    @ObservationIgnored private var lastMusicSkipTipAt: Date?
 
     #if os(iOS) || os(macOS)
     private func makeAppleTranslator() async throws -> any LiveCaptionTranslating {
@@ -116,6 +118,9 @@ final class LiveCaptionSession {
         engineSummary = ""
         awaitingChinese = false
         mtStartedAt = nil
+        musicSkipTipTask?.cancel()
+        musicSkipTipTask = nil
+        lastMusicSkipTipAt = nil
         paceMode = LiveCaptionPreference.pace
         showEnglish = LiveCaptionPreference.showEnglishSource
         utterance = LiveCaptionUtteranceAssembler(pace: paceMode)
@@ -141,7 +146,8 @@ final class LiveCaptionSession {
             guard let recognizer = asr else { throw LiveCaptionEngineError.notReady }
             self.recognizer = recognizer
 
-            // MT: Qwen (default, when downloaded + memory/thermal OK) with Apple Translation as fallback.
+            // MT: Apple Translation is default. Qwen is optional (Settings) and only a silent
+            // emergency fallback when already downloaded and Apple packs are missing.
             var apple: (any LiveCaptionTranslating)?
             var appleError: Error?
             do {
@@ -149,22 +155,53 @@ final class LiveCaptionSession {
             } catch {
                 appleError = error
             }
+            let pref = LiveCaptionPreference.translator
             var qwen: (any LiveCaptionTranslating)?
-            if LiveCaptionPreference.translator == .qwen {
+            if pref == .qwen {
                 statusMessage = "正在加载 Qwen…"
                 qwen = await LiveCaptionQwenTranslator.makeIfReady()
             }
-            if qwen == nil, apple == nil {
-                throw appleError ?? LiveCaptionEngineError.translationUnsupported
+
+            let translator: any LiveCaptionTranslating
+            if pref == .apple {
+                if let apple {
+                    // Apple only — do not preload Qwen into memory on the default path.
+                    translator = apple
+                    engineSummary = "\(recognizer.displayName) + \(apple.displayName)"
+                    let st = await LiveCaptionAppleTranslation.status()
+                    if st == .needsDownload {
+                        translationNote = "请下载英语和简体中文翻译语言包（设置 → App → 翻译 → 语言）"
+                    }
+                } else if LiveCaptionModelStore.qwenPathIfPresent() != nil,
+                          let ready = await LiveCaptionQwenTranslator.makeIfReady() {
+                    // Packs missing / Apple unavailable: only then use an already-downloaded Qwen.
+                    translator = ready
+                    translationNote = "苹果翻译语言包未就绪，暂用 Qwen。建议到「设置 → App → 翻译 → 语言」下载英语和简体中文。"
+                    engineSummary = "\(recognizer.displayName) + \(ready.displayName)"
+                } else {
+                    let tip = (appleError as? LocalizedError)?.errorDescription
+                        ?? LiveCaptionEngineError.translationNeedsDownload.localizedDescription
+                    throw LiveCaptionEngineError.unavailable(
+                        "\(tip)。请到「设置 → App → 翻译 → 语言」下载英语和简体中文。"
+                    )
+                }
+            } else {
+                if qwen == nil, apple == nil {
+                    throw appleError ?? LiveCaptionEngineError.translationUnsupported
+                }
+                let fb = LiveCaptionFallbackTranslator(
+                    primary: qwen,
+                    fallback: apple,
+                    budgetPrimaryNanos: LiveCaptionFallbackTranslator.qwenBudgetNanoseconds,
+                    dropPrimaryOnThermal: true
+                )
+                translator = fb
+                if qwen == nil, apple != nil {
+                    translationNote = "Qwen 未下载或暂不可用，已用苹果翻译"
+                }
+                engineSummary = "\(recognizer.displayName) + \(fb.summaryName)"
             }
-            let translator = LiveCaptionFallbackTranslator(primary: qwen, fallback: apple)
             self.translator = translator
-            if qwen == nil, apple != nil {
-                translationNote = LiveCaptionPreference.translator == .qwen
-                    ? "Qwen 未下载或暂不可用，已用苹果翻译"
-                    : ""
-            }
-            engineSummary = "\(recognizer.displayName) + \(translator.displayName)"
             #else
             throw LiveCaptionEngineError.unavailable("当前平台不支持实时翻译")
             #endif
@@ -198,9 +235,13 @@ final class LiveCaptionSession {
             }
             phase = .running
             let paceLabel = paceMode == .accurate ? "更准" : "更快"
-            statusMessage = whisperFallback
-                ? "Whisper 模型未就绪，暂用 Apple 语音识别"
-                : "实时翻译运行中（\(engineSummary)，\(paceLabel)）"
+            if !translationNote.isEmpty {
+                statusMessage = translationNote
+            } else if whisperFallback {
+                statusMessage = "Whisper 模型未就绪，暂用 Apple 语音识别"
+            } else {
+                statusMessage = "实时翻译运行中（\(engineSummary)，\(paceLabel)）"
+            }
         } catch {
             phase = .failed
             lastError = error.localizedDescription
@@ -336,6 +377,8 @@ final class LiveCaptionSession {
         lastEnglish = nil
         awaitingChinese = false
         mtStartedAt = nil
+        musicSkipTipTask?.cancel()
+        musicSkipTipTask = nil
         utterance.reset()
         recoverTask?.cancel()
         recoverTask = nil
@@ -419,15 +462,27 @@ final class LiveCaptionSession {
         fromSilence: Bool = false
     ) async {
         guard generation == self.generation, let recognizer else { return }
-        if LiveCaptionAudio.isSilent(samples) {
-            if fromSilence, let flushed = utterance.flushOnSilence() {
-                commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
+        if !LiveCaptionAudio.isSpeechCandidate(samples) {
+            if LiveCaptionAudio.isSilent(samples) {
+                if fromSilence, let flushed = utterance.flushOnSilence() {
+                    commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
+                }
+            } else {
+                // Loud but non-speech (bed music / pad) — drop entirely, tip once.
+                noteMusicSkipped()
             }
             return
         }
         do {
             let raw = try await recognizer.transcribe(samples: samples)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            if LiveCaptionMusicText.isLikelyMusicOrNonSpeech(raw) {
+                noteMusicSkipped()
+                if fromSilence, let flushed = utterance.flushOnSilence() {
+                    commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
+                }
+                return
+            }
             let english = recognizer.overlapSamples > 0
                 ? LiveCaptionOverlap.dedupe(previous: lastEnglish, current: raw)
                 : raw
@@ -435,6 +490,10 @@ final class LiveCaptionSession {
                 if fromSilence, let flushed = utterance.flushOnSilence() {
                     commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
                 }
+                return
+            }
+            if LiveCaptionMusicText.isLikelyMusicOrNonSpeech(english) {
+                noteMusicSkipped()
                 return
             }
             lastEnglish = raw
@@ -459,6 +518,28 @@ final class LiveCaptionSession {
             return
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Tip once when a music-dominated chunk is dropped (auto-hides).
+    private func noteMusicSkipped() {
+        let now = Date()
+        if let last = lastMusicSkipTipAt, now.timeIntervalSince(last) < 8 { return }
+        lastMusicSkipTipAt = now
+        translationNote = "已跳过背景音乐"
+        statusMessage = "已跳过背景音乐"
+        musicSkipTipTask?.cancel()
+        let gen = generation
+        musicSkipTipTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, !Task.isCancelled, gen == self.generation else { return }
+            if self.translationNote == "已跳过背景音乐" {
+                self.translationNote = ""
+                if self.phase == .running {
+                    let paceLabel = self.paceMode == .accurate ? "更准" : "更快"
+                    self.statusMessage = "实时翻译运行中（\(self.engineSummary)，\(paceLabel)）"
+                }
+            }
         }
     }
 

@@ -197,18 +197,29 @@ final class LiveCaptionQwenTranslator: LiveCaptionTranslating, @unchecked Sendab
     }
 }
 
-/// Primary (Qwen) with automatic fallback (Apple Translation) on failure / English-echo / thermal.
+/// Primary translator with automatic fallback on failure / English-echo / (optional) thermal / timeout.
 final class LiveCaptionFallbackTranslator: LiveCaptionTranslating, @unchecked Sendable {
     let primary: (any LiveCaptionTranslating)?
     let fallback: (any LiveCaptionTranslating)?
+    /// When set, hand off to fallback if primary exceeds this budget (Qwen path).
+    let budgetPrimaryNanos: UInt64?
+    /// Drop heavy primary (Qwen) when the device is hot. Do not use when Apple is primary.
+    let dropPrimaryOnThermal: Bool
     private let lock = NSLock()
     private var primaryFailures = 0
     /// Last human-readable reason we switched engines or rejected a result (UI status line).
     private(set) var lastNote: String = ""
 
-    init(primary: (any LiveCaptionTranslating)?, fallback: (any LiveCaptionTranslating)?) {
+    init(
+        primary: (any LiveCaptionTranslating)?,
+        fallback: (any LiveCaptionTranslating)?,
+        budgetPrimaryNanos: UInt64? = LiveCaptionFallbackTranslator.qwenBudgetNanoseconds,
+        dropPrimaryOnThermal: Bool = true
+    ) {
         self.primary = primary
         self.fallback = fallback
+        self.budgetPrimaryNanos = budgetPrimaryNanos
+        self.dropPrimaryOnThermal = dropPrimaryOnThermal
     }
 
     var displayName: String {
@@ -216,7 +227,7 @@ final class LiveCaptionFallbackTranslator: LiveCaptionTranslating, @unchecked Se
         return fallback?.displayName ?? primary?.displayName ?? "翻译"
     }
 
-    /// Prefer naming both when Qwen is present but we may fall back mid-session.
+    /// Prefer naming both when a secondary engine may take over mid-session.
     var summaryName: String {
         switch (primary, fallback) {
         case (let p?, let f?):
@@ -233,8 +244,11 @@ final class LiveCaptionFallbackTranslator: LiveCaptionTranslating, @unchecked Se
     private var usePrimary: Bool {
         lock.lock(); defer { lock.unlock() }
         guard primary != nil, primaryFailures < 3 else { return false }
-        let thermal = ProcessInfo.processInfo.thermalState
-        return !(thermal == .serious || thermal == .critical)
+        if dropPrimaryOnThermal {
+            let thermal = ProcessInfo.processInfo.thermalState
+            if thermal == .serious || thermal == .critical { return false }
+        }
+        return true
     }
 
     func prepare() async throws {}
@@ -250,36 +264,43 @@ final class LiveCaptionFallbackTranslator: LiveCaptionTranslating, @unchecked Se
         try Task.checkCancellation()
         lastNote = ""
         var primaryRejected = false
+        let fallbackName = fallback?.displayName ?? "备用翻译"
         if usePrimary, let primary {
-            let qwenTask = Task {
+            let primaryName = primary.displayName
+            let work = Task {
                 try await primary.translate(english, previous: previous)
             }
             do {
-                let out = try await Self.awaitPrimary(qwenTask, budgetNanos: Self.qwenBudgetNanoseconds)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let out: String
+                if let budget = budgetPrimaryNanos {
+                    out = try await Self.awaitPrimary(work, budgetNanos: budget)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    out = try await work.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
                 if LiveCaptionText.isPlausibleChinese(out, sourceEnglish: english) {
                     return out
                 }
                 primaryRejected = true
                 lock.lock(); primaryFailures += 1; lock.unlock()
                 lastNote = out.isEmpty
-                    ? "Qwen 无输出，已用苹果翻译"
-                    : "Qwen 未译成中文，已用苹果翻译"
+                    ? "\(primaryName) 无输出，已用 \(fallbackName)"
+                    : "\(primaryName) 未译成中文，已用 \(fallbackName)"
             } catch is CancellationError {
-                qwenTask.cancel()
+                work.cancel()
                 throw CancellationError()
             } catch is PrimaryTimeout {
-                qwenTask.cancel()
+                work.cancel()
                 primaryRejected = true
-                lastNote = "Qwen 较慢，已用苹果翻译"
+                lastNote = "\(primaryName) 较慢，已用 \(fallbackName)"
             } catch {
-                qwenTask.cancel()
+                work.cancel()
                 primaryRejected = true
                 lock.lock(); primaryFailures += 1; lock.unlock()
-                lastNote = "Qwen 失败，已用苹果翻译"
+                lastNote = "\(primaryName) 失败，已用 \(fallbackName)"
             }
         } else if primary != nil, fallback != nil {
-            // Already on Apple (thermal / too many Qwen echoes). Stay quiet — avoid HUD spam.
+            // Already on fallback (thermal / too many primary rejects). Stay quiet — avoid HUD spam.
         }
 
         try Task.checkCancellation()
@@ -288,7 +309,7 @@ final class LiveCaptionFallbackTranslator: LiveCaptionTranslating, @unchecked Se
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if LiveCaptionText.isPlausibleChinese(out, sourceEnglish: english) {
                 if lastNote.isEmpty, primaryRejected {
-                    lastNote = "已用苹果翻译"
+                    lastNote = "已用 \(fallback.displayName)"
                 }
                 return out
             }

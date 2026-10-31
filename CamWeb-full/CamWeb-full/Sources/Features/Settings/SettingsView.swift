@@ -11,7 +11,7 @@ struct SettingsView: View {
     @ObservedObject private var captionModels = LiveCaptionModelStore.shared
     @AppStorage(LiveCaptionPreference.asrKey) private var captionASR = LiveCaptionASREngine.whisper.rawValue
     @AppStorage(LiveCaptionPreference.whisperModelKey) private var captionWhisperModel = LiveCaptionWhisperModel.smallEn.rawValue
-    @AppStorage(LiveCaptionPreference.translatorKey) private var captionTranslator = LiveCaptionTranslatorEngine.qwen.rawValue
+    @AppStorage(LiveCaptionPreference.translatorKey) private var captionTranslator = LiveCaptionTranslatorEngine.apple.rawValue
     @AppStorage(LiveCaptionPreference.paceKey) private var captionPace = LiveCaptionPaceMode.accurate.rawValue
     @AppStorage(LiveCaptionPreference.showEnglishKey) private var captionShowEnglish = false
     @State private var showChaturbateLogin = false
@@ -225,6 +225,11 @@ struct SettingsView: View {
             Picker("翻译引擎", selection: $captionTranslator) {
                 ForEach(LiveCaptionTranslatorEngine.allCases) { Text($0.title).tag($0.rawValue) }
             }
+            if captionTranslator == LiveCaptionTranslatorEngine.apple.rawValue {
+                Text("推荐。请确认已下载英语和简体中文语言包：设置 → App → 翻译 → 语言（或打开系统「翻译」App）。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             if captionTranslator == LiveCaptionTranslatorEngine.qwen.rawValue {
                 modelRow(
                     title: "Qwen 模型（约 1.1 GB）",
@@ -235,7 +240,7 @@ struct SettingsView: View {
                 )
             }
 
-            Text("播放页左下角气泡按钮开关字幕。默认「更准」：凑齐短句再翻成中文，避免英文闪一下、碎句难读。Whisper 首次开启会自动下载；未就绪时自动用 Apple 语音识别。Qwen 未下载、内存不足或机身过热时自动改用 Apple 翻译（需 iOS 18+，语言包在「设置 → App → 翻译 → 语言」下载英语和简体中文）。字幕走独立音频，不影响最高画质播放。")
+            Text("播放页左下角气泡按钮开关字幕。默认「更准」+ Apple 翻译：凑齐短句再翻成中文。Whisper 识别默认；未就绪时用 Apple 语音识别。识别端会过滤背景音乐/歌词，少把 BGM 翻成字幕。Apple 翻译需 iOS 18+，语言包在「设置 → App → 翻译 → 语言」下载英语和简体中文。Qwen 为可选本机大模型。字幕走独立音频，不影响最高画质播放。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } header: {

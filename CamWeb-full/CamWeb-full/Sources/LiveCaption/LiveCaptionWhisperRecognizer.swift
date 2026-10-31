@@ -43,7 +43,7 @@ actor LiveCaptionWhisperEngine {
             skipSpecialTokens: true,
             withoutTimestamps: true,
             suppressBlank: true,
-            noSpeechThreshold: 0.6
+            noSpeechThreshold: 0.65
         )
         let results: [TranscriptionResult] = try await kit.transcribe(audioArray: samples, decodeOptions: options)
         return results.map(\.text).joined(separator: " ")
@@ -103,15 +103,18 @@ final class LiveCaptionWhisperRecognizer: LiveCaptionRecognizing, @unchecked Sen
     func prepare() async throws {}
 
     func transcribe(samples: [Float]) async throws -> String {
-        guard !samples.isEmpty, !LiveCaptionAudio.isSilent(samples) else { return "" }
-        let raw = try await LiveCaptionWhisperEngine.shared.transcribe(samples)
-        return Self.clean(raw)
+        guard !samples.isEmpty, LiveCaptionAudio.isSpeechCandidate(samples) else { return "" }
+        let gated = LiveCaptionAudio.emphasizeVocals(samples)
+        let raw = try await LiveCaptionWhisperEngine.shared.transcribe(gated)
+        let cleaned = Self.clean(raw)
+        if LiveCaptionMusicText.isLikelyMusicOrNonSpeech(cleaned) { return "" }
+        return cleaned
     }
 
     /// Drop Whisper non-speech tags and the classic music/silence hallucinations.
     static func clean(_ text: String) -> String {
         var s = text
-        for pattern in [#"\[[^\]]*\]"#, #"\([^)]*\)"#, #"♪+"#, #"<\|[^|]*\|>"#] {
+        for pattern in [#"\[[^\]]*\]"#, #"\([^)]*\)"#, #"♪+"#, #"♫+"#, #"<\|[^|]*\|>"#] {
             s = s.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
         }
         s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
@@ -120,8 +123,11 @@ final class LiveCaptionWhisperRecognizer: LiveCaptionRecognizing, @unchecked Sen
         let hallucinations: Set<String> = [
             "thank you", "thanks for watching", "thank you for watching", "you", "bye", "music",
             "please subscribe", "subscribe", "thank you so much for watching",
+            "thanks for watching.", "subtitles by the amara.org community",
+            "mbc", "copyright", "lyrics", "instrumental",
         ]
         if lowered.isEmpty || hallucinations.contains(lowered) { return "" }
+        if lowered.hasPrefix("字幕") || lowered.hasPrefix("subtitles by") { return "" }
         return s
     }
 }

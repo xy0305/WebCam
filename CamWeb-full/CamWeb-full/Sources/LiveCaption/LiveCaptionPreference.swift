@@ -31,13 +31,13 @@ enum LiveCaptionWhisperModel: String, CaseIterable, Identifiable, Sendable {
 
 /// English→Chinese translator.
 enum LiveCaptionTranslatorEngine: String, CaseIterable, Identifiable, Sendable {
-    case qwen
     case apple
+    case qwen
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .apple: return "Apple 翻译（推荐）"
         case .qwen: return "Qwen2.5 1.5B（本机大模型）"
-        case .apple: return "Apple 翻译"
         }
     }
 }
@@ -98,9 +98,9 @@ final class LiveCaptionPreference {
         LiveCaptionWhisperModel(rawValue: UserDefaults.standard.string(forKey: whisperModelKey) ?? "") ?? .smallEn
     }
 
-    /// Default: Qwen (used only when downloaded; otherwise Apple Translation).
+    /// Default: Apple Translation. Qwen stays optional in Settings.
     static var translator: LiveCaptionTranslatorEngine {
-        LiveCaptionTranslatorEngine(rawValue: UserDefaults.standard.string(forKey: translatorKey) ?? "") ?? .qwen
+        LiveCaptionTranslatorEngine(rawValue: UserDefaults.standard.string(forKey: translatorKey) ?? "") ?? .apple
     }
 
     /// Default: 更准 (sentence buffer).

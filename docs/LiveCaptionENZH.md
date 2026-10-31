@@ -1,16 +1,16 @@
 # 实时翻译（英语 → 简体中文）
 
-播放页能力：把直播流里的英语语音识别成英文，再用系统翻译成中文字幕叠在画面上。
+播放页能力：把直播流里的英语人声识别成英文，再用 **Apple 翻译**（默认）成中文字幕；识别端过滤背景音乐。
 
 ## 技术栈
 
 | 阶段 | 实现 |
 |------|------|
 | 音频 | `LiveCaptionAudioReader`：独立 FFmpeg 音频 demux。HLS master 先在 Swift 里解析（`LiveCaptionHLS`），只把独立音频 rendition / 最低码率变体交给 FFmpeg；起播/卡顿时 `holdForBandwidth` 让出带宽 |
-| ASR（默认） | **Whisper**（WhisperKit 0.18.0，CoreML）`small.en`（约 218 MB 量化版）或 `base.en`（约 147 MB）。窗口随「更准/更快」变化（更准约 2.5–3.0 秒）；句末静音提前送识别，碎片先拼句再翻，静音窗口直接跳过，过滤 `[Music]` / “Thank you.” 这类幻听。首次开启自动下载；未就绪 / 加载失败自动用 Apple Speech |
+| ASR（默认） | **Whisper**（WhisperKit 0.18.0，CoreML）`small.en` / `base.en`。能量/VAD + 轻度人声高通；过滤 `[Music]` / 歌词钩子 / 重复垫词；音乐主导片段整段丢弃（提示「已跳过背景音乐」）。首次开启自动下载；未就绪用 Apple Speech |
 | ASR（备选） | Apple `Speech`：`en-US`，优先本机 |
-| MT（默认） | **Qwen2.5-1.5B-Instruct Q4_K_M**（GGUF 约 1.12 GB，llama.cpp b12020 xcframework，Metal）。逐句翻，带上一句作语境；贪心解码；Qwen 超过 1.5 秒改用苹果翻译；新句子取消旧任务 |
-| MT（备选/兜底） | Apple `Translation`：`en` → `zh-Hans`（需 iOS 18+）。Qwen 未下载、可用内存 < 1.6 GB、低电量模式、机身过热（serious）或连续失败时自动改用 |
+| MT（默认） | **Apple `Translation`**：`en` → `zh-Hans`（需 iOS 18+；语言包：设置 → App → 翻译 → 语言） |
+| MT（可选） | **Qwen2.5-1.5B-Instruct Q4_K_M**（设置里切换；约 1.12 GB）。选 Qwen 时超过 1.5 秒 / 失败 / 过热改用苹果翻译；Apple 为默认时若语言包缺失且本机已有 Qwen，才临时用 Qwen |
 | UI | 播放页左下角 `character.bubble`；关闭时先清字幕再异步停管道 |
 
 **不改播放最高画质**：字幕不碰 `HLSMaster.lock` / 迷你 master /「始终最高画质」逻辑；Chaturbate 单次 token 由字幕单独申请，不复用播放器地址。
@@ -35,7 +35,8 @@
 - 显示原文：默认关（只显示中文）
 - 语音识别：Whisper（默认）/ Apple 语音识别
 - Whisper 模型：small.en（默认）/ base.en，含下载进度、删除
-- 翻译引擎：Qwen（默认，下载后才生效）/ Apple 翻译；Qwen 需在这里手动下载（约 1.1 GB，有进度，可取消）
+- 翻译引擎：**Apple 翻译（默认）** / Qwen（可选，约 1.1 GB，需手动下载）
+- 音乐：在识别端过滤，尽量不把 BGM/歌词送去翻译
 
 模型存放在 Application Support/LiveCaptionModels（不进 iCloud 备份）。
 
@@ -61,6 +62,15 @@
 - **Build 88 修复**：字幕不能走 `StreamSource.resolve`（内部 `HLSMaster.lock` 会先消费掉 token 来组最高画质迷你 master）。改为 `StreamSource.mintCaptionMaster` 只申请新 token，由 `LiveCaptionSession.fetchPlaylist` **只拉一次** master，再打开独立音频 media playlist。播放器最高画质路径不动。
 - 头：`APIClient.hlsHeaders`（UA + Accept + Referer；不要 Origin）。
 - 失败会有限次重连（2 分钟内最多 4 次换新 token）。
+
+## Build 93：默认苹果翻译 + 过滤背景音乐
+
+用户反馈「苹果翻译最好」且不想翻直播间音乐。93：
+
+1. **默认翻译引擎改为 Apple Translation**；Qwen 仍可在设置里选用；
+2. **识别端过滤音乐**：更严能量/VAD、轻度人声高通、丢弃 `[Music]`/歌词钩子/重复垫词；音乐主导片段不送翻译，状态提示「已跳过背景音乐」后自动收起；
+3. 苹果语言包未下载时状态栏给出明确路径；若本机已有 Qwen 才临时兜底；
+4. 保留 92 的中文优先 /「更准」默认；最高画质播放未改。
 
 ## Build 92：可读性优先（默认只显示中文）
 
