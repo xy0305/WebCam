@@ -50,35 +50,51 @@ actor LiveCaptionWhisperEngine {
     }
 }
 
-/// Whisper (small.en / base.en) English ASR: short windows for ~2–3 s end-to-end lag.
+/// Whisper (small.en / base.en) English ASR. Window size depends on「更快 / 更准」.
 final class LiveCaptionWhisperRecognizer: LiveCaptionRecognizing, @unchecked Sendable {
     let chunkSamples: Int
     let overlapSamples: Int
     let displayName: String
-    /// Flush early on trailing silence once we have at least this many samples (~1.5 s).
     let minFlushSamples: Int
+    let silenceTailSamples: Int
 
-    private init(model: LiveCaptionWhisperModel) {
+    private init(model: LiveCaptionWhisperModel, pace: LiveCaptionPaceMode) {
         displayName = "Whisper \(model == .smallEn ? "small.en" : "base.en")"
-        // base.en is faster → shorter window; small.en slightly longer for accuracy.
-        switch model {
-        case .baseEn:
-            chunkSamples = 28_000   // 1.75 s @ 16 kHz — ASR text arrives sooner
+        switch (pace, model) {
+        case (.fast, .baseEn):
+            // Lowest lag; fragments are assembled upstream when possible.
+            chunkSamples = 28_000   // 1.75 s
             overlapSamples = 3_200  // 0.20 s
-            minFlushSamples = 16_000 // 1.0 s silence flush
-        case .smallEn:
+            minFlushSamples = 14_000 // 0.875 s
+            silenceTailSamples = Int(0.35 * LiveCaptionAudio.sampleRate)
+        case (.fast, .smallEn):
             chunkSamples = 32_000   // 2.0 s
-            overlapSamples = 3_200  // 0.20 s
+            overlapSamples = 3_200
             minFlushSamples = 16_000
+            silenceTailSamples = Int(0.40 * LiveCaptionAudio.sampleRate)
+        case (.accurate, .baseEn):
+            // Prefer complete short utterances over ultra-short fragments.
+            chunkSamples = 40_000   // 2.5 s
+            overlapSamples = 4_800  // 0.30 s
+            minFlushSamples = 20_000 // 1.25 s
+            silenceTailSamples = Int(0.50 * LiveCaptionAudio.sampleRate)
+        case (.accurate, .smallEn):
+            chunkSamples = 48_000   // 3.0 s
+            overlapSamples = 4_800
+            minFlushSamples = 24_000 // 1.5 s
+            silenceTailSamples = Int(0.55 * LiveCaptionAudio.sampleRate)
         }
     }
 
     /// Returns nil when the model is not downloaded / prepared yet (caller falls back to Apple Speech).
-    static func makeIfReady(_ model: LiveCaptionWhisperModel) async -> LiveCaptionWhisperRecognizer? {
+    static func makeIfReady(
+        _ model: LiveCaptionWhisperModel,
+        pace: LiveCaptionPaceMode = LiveCaptionPreference.pace
+    ) async -> LiveCaptionWhisperRecognizer? {
         guard let folder = LiveCaptionModelStore.readyWhisperFolder(model) else { return nil }
         do {
             try await LiveCaptionWhisperEngine.shared.load(folder: folder)
-            return LiveCaptionWhisperRecognizer(model: model)
+            return LiveCaptionWhisperRecognizer(model: model, pace: pace)
         } catch {
             return nil
         }

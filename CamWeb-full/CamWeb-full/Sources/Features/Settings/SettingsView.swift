@@ -12,6 +12,8 @@ struct SettingsView: View {
     @AppStorage(LiveCaptionPreference.asrKey) private var captionASR = LiveCaptionASREngine.whisper.rawValue
     @AppStorage(LiveCaptionPreference.whisperModelKey) private var captionWhisperModel = LiveCaptionWhisperModel.smallEn.rawValue
     @AppStorage(LiveCaptionPreference.translatorKey) private var captionTranslator = LiveCaptionTranslatorEngine.qwen.rawValue
+    @AppStorage(LiveCaptionPreference.paceKey) private var captionPace = LiveCaptionPaceMode.accurate.rawValue
+    @AppStorage(LiveCaptionPreference.showEnglishKey) private var captionShowEnglish = false
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
@@ -191,6 +193,18 @@ struct SettingsView: View {
 
     private var liveCaptionSection: some View {
         Section {
+            Picker("出字节奏", selection: $captionPace) {
+                ForEach(LiveCaptionPaceMode.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            Text((LiveCaptionPaceMode(rawValue: captionPace) ?? .accurate).subtitle)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Toggle("显示原文（英文）", isOn: $captionShowEnglish)
+            Text("默认只显示中文，不等待翻译时也不闪英文。打开后可在「更快」模式下预览英文。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
             Picker("语音识别", selection: $captionASR) {
                 ForEach(LiveCaptionASREngine.allCases) { Text($0.title).tag($0.rawValue) }
             }
@@ -221,7 +235,7 @@ struct SettingsView: View {
                 )
             }
 
-            Text("播放页左下角气泡按钮开关字幕。Whisper 首次开启会自动下载；未就绪时自动用 Apple 语音识别。Qwen 未下载、内存不足或机身过热时自动改用 Apple 翻译（需 iOS 18+，在「设置 → 通用 → 语言与地区 → 翻译语言」下载英语和简体中文）。字幕走独立音频，不影响最高画质播放。")
+            Text("播放页左下角气泡按钮开关字幕。默认「更准」：凑齐短句再翻成中文，避免英文闪一下、碎句难读。Whisper 首次开启会自动下载；未就绪时自动用 Apple 语音识别。Qwen 未下载、内存不足或机身过热时自动改用 Apple 翻译（需 iOS 18+，语言包在「设置 → App → 翻译 → 语言」下载英语和简体中文）。字幕走独立音频，不影响最高画质播放。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } header: {

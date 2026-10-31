@@ -8,33 +8,42 @@ struct LiveCaptionOverlay: View {
     let line: LiveCaptionLine?
     let statusMessage: String
     let reduceMotion: Bool
+    /// When false (default), never show English interim — Chinese only.
+    var allowEnglish: Bool = false
+
+    private var caption: String {
+        guard let line else { return "" }
+        return line.displayText(allowEnglish: allowEnglish)
+    }
 
     var body: some View {
         VStack {
             Spacer()
-            VStack(spacing: 8) {
-                if let line, !line.displayText.isEmpty {
-                    Text(line.displayText)
+            VStack(spacing: 6) {
+                if !caption.isEmpty {
+                    Text(caption)
                         .font(.system(.title3, design: .rounded).weight(.semibold))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
+                        .lineLimit(3)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .background(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .fill(.black.opacity(0.55))
                         )
-                        .accessibilityLabel(line.showsChinese ? "实时翻译" : "实时识别")
-                        .accessibilityValue(line.displayText)
+                        .accessibilityLabel(line?.showsChinese == true ? "实时翻译" : "实时识别")
+                        .accessibilityValue(caption)
                 }
                 if !statusMessage.isEmpty {
                     Text(statusMessage)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.85))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.55))
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(.black.opacity(0.45)))
+                        .lineLimit(2)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(.black.opacity(0.28)))
                 }
             }
             .padding(.horizontal, 24)

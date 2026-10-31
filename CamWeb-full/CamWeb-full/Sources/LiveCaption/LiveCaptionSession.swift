@@ -42,11 +42,19 @@ final class LiveCaptionSession {
 
     @ObservationIgnored private var translateTask: Task<Void, Never>?
     @ObservationIgnored private var lastEnglish: String?
-    /// Newest ASR line waiting for MT. Intermediate lines are dropped; the latest always runs to completion.
+    /// Newest ASR utterance waiting for MT. Intermediate lines are dropped; the latest always runs.
     @ObservationIgnored private var pendingMT: (english: String, previous: String?, mediaTime: Double, generation: Int)?
     @ObservationIgnored private var mtBusy = false
     /// Short UI note: why we fell back / skipped a cue (cleared when a good Chinese line lands).
     private(set) var translationNote: String = ""
+
+    @ObservationIgnored private var paceMode: LiveCaptionPaceMode = .accurate
+    @ObservationIgnored private var showEnglish: Bool = false
+    @ObservationIgnored private var utterance = LiveCaptionUtteranceAssembler(pace: .accurate)
+    /// Wall clock when current MT job started — used to avoid flashing English while waiting briefly.
+    @ObservationIgnored private var mtStartedAt: Date?
+    /// True while a Chinese cue is expected soon (hold previous Chinese / blank, not English).
+    private(set) var awaitingChinese = false
 
     #if os(iOS) || os(macOS)
     private func makeAppleTranslator() async throws -> any LiveCaptionTranslating {
@@ -106,6 +114,11 @@ final class LiveCaptionSession {
         translationNote = ""
         whisperFallback = false
         engineSummary = ""
+        awaitingChinese = false
+        mtStartedAt = nil
+        paceMode = LiveCaptionPreference.pace
+        showEnglish = LiveCaptionPreference.showEnglishSource
+        utterance = LiveCaptionUtteranceAssembler(pace: paceMode)
         pace.reset(maxLead: maxLeadSeconds)
 
         do {
@@ -114,7 +127,10 @@ final class LiveCaptionSession {
             var asr: (any LiveCaptionRecognizing)?
             if LiveCaptionPreference.asr == .whisper {
                 statusMessage = "正在加载 Whisper…"
-                asr = await LiveCaptionWhisperRecognizer.makeIfReady(LiveCaptionPreference.whisperModel)
+                asr = await LiveCaptionWhisperRecognizer.makeIfReady(
+                    LiveCaptionPreference.whisperModel,
+                    pace: paceMode
+                )
                 if asr == nil { whisperFallback = true }
             }
             if asr == nil {
@@ -181,7 +197,10 @@ final class LiveCaptionSession {
                 await self?.consume(stream, generation: gen)
             }
             phase = .running
-            statusMessage = whisperFallback ? "Whisper 模型未就绪，暂用 Apple 语音识别" : "实时翻译运行中（\(engineSummary)）"
+            let paceLabel = paceMode == .accurate ? "更准" : "更快"
+            statusMessage = whisperFallback
+                ? "Whisper 模型未就绪，暂用 Apple 语音识别"
+                : "实时翻译运行中（\(engineSummary)，\(paceLabel)）"
         } catch {
             phase = .failed
             lastError = error.localizedDescription
@@ -315,6 +334,9 @@ final class LiveCaptionSession {
         mtBusy = false
         translationNote = ""
         lastEnglish = nil
+        awaitingChinese = false
+        mtStartedAt = nil
+        utterance.reset()
         recoverTask?.cancel()
         recoverTask = nil
         processTask?.cancel()
@@ -341,6 +363,7 @@ final class LiveCaptionSession {
             let chunk = recognizer.chunkSamples
             let overlap = min(recognizer.overlapSamples, chunk / 2)
             let minFlush = min(recognizer.minFlushSamples, chunk)
+            let silenceTail = min(recognizer.silenceTailSamples, minFlush)
 
             // If ASR fell behind, jump to the newest window — never catch up old audio.
             if buffered.count >= chunk * 2 {
@@ -367,9 +390,8 @@ final class LiveCaptionSession {
                 bufferStart += Double(advance) / LiveCaptionAudio.sampleRate
                 await processChunk(window, mediaTime: start, generation: generation)
             }
-            // Phrase pause: trailing ~0.2 s silence with ≥ minFlush → flush early.
+            // Phrase pause: trailing silence with ≥ minFlush → flush ASR window early, then utterance.
             if buffered.count >= minFlush {
-                let silenceTail = Int(0.20 * LiveCaptionAudio.sampleRate)
                 if buffered.count >= silenceTail {
                     let tail = buffered.suffix(silenceTail)
                     if LiveCaptionAudio.isSilent(Array(tail)) {
@@ -382,36 +404,78 @@ final class LiveCaptionSession {
                         } else {
                             buffered.removeAll(keepingCapacity: true)
                         }
-                        await processChunk(window, mediaTime: start, generation: generation)
+                        await processChunk(window, mediaTime: start, generation: generation, fromSilence: true)
                     }
                 }
             }
         }
     }
 
-    /// ASR runs inline. Publish English the moment Whisper returns, then MT (latest-wins) replaces
-    /// it with Chinese. Qwen is capped at 1.5 s → Apple. Backlog is dropped in `consume` so we
-    /// track the live edge instead of catching up old speech.
-    private func processChunk(_ samples: [Float], mediaTime: Double, generation: Int) async {
+    /// ASR → utterance assemble → MT. Chinese-first: do not flash English unless「显示原文」.
+    private func processChunk(
+        _ samples: [Float],
+        mediaTime: Double,
+        generation: Int,
+        fromSilence: Bool = false
+    ) async {
         guard generation == self.generation, let recognizer else { return }
-        if LiveCaptionAudio.isSilent(samples) { return }
+        if LiveCaptionAudio.isSilent(samples) {
+            if fromSilence, let flushed = utterance.flushOnSilence() {
+                commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
+            }
+            return
+        }
         do {
             let raw = try await recognizer.transcribe(samples: samples)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let english = recognizer.overlapSamples > 0
                 ? LiveCaptionOverlap.dedupe(previous: lastEnglish, current: raw)
                 : raw
-            guard !english.isEmpty, generation == self.generation else { return }
-            let previous = lastEnglish
+            guard !english.isEmpty, generation == self.generation else {
+                if fromSilence, let flushed = utterance.flushOnSilence() {
+                    commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
+                }
+                return
+            }
             lastEnglish = raw
-            // Interim English on screen immediately — do not wait for MT.
-            latest = LiveCaptionLine(english: english, chinese: "", mediaTime: mediaTime)
-            enqueueMT(english: english, previous: previous, mediaTime: mediaTime, generation: generation)
+
+            // Optional interim English only in「更快」+「显示原文」.
+            if showEnglish, paceMode == .fast {
+                // Keep any existing Chinese until MT replaces; still allow English preview as a new line.
+                if latest?.showsChinese != true {
+                    latest = LiveCaptionLine(english: english, chinese: "", mediaTime: mediaTime)
+                }
+            }
+
+            if let flushed = utterance.append(english, mediaTime: mediaTime) {
+                commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
+            } else if fromSilence, let flushed = utterance.flushOnSilence() {
+                commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
+            } else if LiveCaptionText.looksLikePhraseEnd(english), let flushed = utterance.forceFlush() {
+                // append already returned nil only if empty; forceFlush after phrase-end append is rare.
+                commitUtterance(flushed.english, mediaTime: flushed.mediaTime, generation: generation)
+            }
         } catch is CancellationError {
             return
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private func commitUtterance(_ english: String, mediaTime: Double, generation: Int) {
+        let text = english.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, generation == self.generation else { return }
+        let previous = lastEnglish
+        awaitingChinese = true
+        // Do NOT publish English into overlay by default — keep previous Chinese or blank.
+        if showEnglish {
+            let priorChinese = latest?.showsChinese == true ? (latest?.chinese ?? "") : ""
+            // If we already have Chinese on screen, leave it; else optional English interim.
+            if priorChinese.isEmpty {
+                latest = LiveCaptionLine(english: text, chinese: "", mediaTime: mediaTime)
+            }
+        }
+        enqueueMT(english: text, previous: previous, mediaTime: mediaTime, generation: generation)
     }
 
     private func enqueueMT(english: String, previous: String?, mediaTime: Double, generation: Int) {
@@ -431,11 +495,15 @@ final class LiveCaptionSession {
         guard !mtBusy, let item = pendingMT, item.generation == generation, let translator else { return }
         pendingMT = nil
         mtBusy = true
+        mtStartedAt = Date()
+        awaitingChinese = true
         let gen = item.generation
+        let allowEnglish = showEnglish
         translateTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 self.mtBusy = false
+                self.mtStartedAt = nil
                 self.pumpMT()
             }
             do {
@@ -453,22 +521,32 @@ final class LiveCaptionSession {
                     self.translationNote = note
                     self.statusMessage = note
                     self.lastError = note
+                    self.awaitingChinese = false
+                    // Last resort: show English only if user asked for 原文, or both engines failed hard.
+                    if allowEnglish {
+                        self.latest = LiveCaptionLine(
+                            english: item.english,
+                            chinese: "",
+                            mediaTime: item.mediaTime
+                        )
+                    }
                     return
                 }
-                let priorID = (self.latest?.english == item.english) ? self.latest?.id : nil
+                let fitted = LiveCaptionText.fitChineseCaption(chinese)
                 self.latest = LiveCaptionLine(
-                    id: priorID ?? UUID(),
                     english: item.english,
-                    chinese: chinese,
+                    chinese: fitted,
                     mediaTime: item.mediaTime
                 )
+                self.awaitingChinese = false
                 self.lastError = nil
                 if let fb = translator as? LiveCaptionFallbackTranslator, !fb.lastNote.isEmpty {
                     self.translationNote = fb.lastNote
                     self.statusMessage = "实时翻译运行中（\(self.engineSummary)）· \(fb.lastNote)"
                 } else {
                     self.translationNote = ""
-                    self.statusMessage = "实时翻译运行中（\(self.engineSummary)）"
+                    let paceLabel = self.paceMode == .accurate ? "更准" : "更快"
+                    self.statusMessage = "实时翻译运行中（\(self.engineSummary)，\(paceLabel)）"
                 }
             } catch is CancellationError {
                 return
@@ -477,6 +555,14 @@ final class LiveCaptionSession {
                 self.lastError = message
                 self.translationNote = message
                 self.statusMessage = message
+                self.awaitingChinese = false
+                if allowEnglish {
+                    self.latest = LiveCaptionLine(
+                        english: item.english,
+                        chinese: "",
+                        mediaTime: item.mediaTime
+                    )
+                }
             }
         }
     }

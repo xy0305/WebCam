@@ -7,7 +7,7 @@
 | 阶段 | 实现 |
 |------|------|
 | 音频 | `LiveCaptionAudioReader`：独立 FFmpeg 音频 demux。HLS master 先在 Swift 里解析（`LiveCaptionHLS`），只把独立音频 rendition / 最低码率变体交给 FFmpeg；起播/卡顿时 `holdForBandwidth` 让出带宽 |
-| ASR（默认） | **Whisper**（WhisperKit 0.18.0，CoreML）`small.en`（约 218 MB 量化版）或 `base.en`（约 147 MB）。约 2.25–2.5 秒窗口、0.3 秒重叠；句末静音提前送识别，静音窗口直接跳过，过滤 `[Music]` / “Thank you.” 这类幻听。首次开启自动下载；未就绪 / 加载失败自动用 Apple Speech |
+| ASR（默认） | **Whisper**（WhisperKit 0.18.0，CoreML）`small.en`（约 218 MB 量化版）或 `base.en`（约 147 MB）。窗口随「更准/更快」变化（更准约 2.5–3.0 秒）；句末静音提前送识别，碎片先拼句再翻，静音窗口直接跳过，过滤 `[Music]` / “Thank you.” 这类幻听。首次开启自动下载；未就绪 / 加载失败自动用 Apple Speech |
 | ASR（备选） | Apple `Speech`：`en-US`，优先本机 |
 | MT（默认） | **Qwen2.5-1.5B-Instruct Q4_K_M**（GGUF 约 1.12 GB，llama.cpp b12020 xcframework，Metal）。逐句翻，带上一句作语境；贪心解码；Qwen 超过 1.5 秒改用苹果翻译；新句子取消旧任务 |
 | MT（备选/兜底） | Apple `Translation`：`en` → `zh-Hans`（需 iOS 18+）。Qwen 未下载、可用内存 < 1.6 GB、低电量模式、机身过热（serious）或连续失败时自动改用 |
@@ -31,6 +31,8 @@
 ## 引擎设置
 
 **设置 →「实时翻译（英 → 中）」**：
+- 出字节奏：更准（整句，默认）/ 更快（更碎）
+- 显示原文：默认关（只显示中文）
 - 语音识别：Whisper（默认）/ Apple 语音识别
 - Whisper 模型：small.en（默认）/ base.en，含下载进度、删除
 - 翻译引擎：Qwen（默认，下载后才生效）/ Apple 翻译；Qwen 需在这里手动下载（约 1.1 GB，有进度，可取消）
@@ -59,6 +61,18 @@
 - **Build 88 修复**：字幕不能走 `StreamSource.resolve`（内部 `HLSMaster.lock` 会先消费掉 token 来组最高画质迷你 master）。改为 `StreamSource.mintCaptionMaster` 只申请新 token，由 `LiveCaptionSession.fetchPlaylist` **只拉一次** master，再打开独立音频 media playlist。播放器最高画质路径不动。
 - 头：`APIClient.hlsHeaders`（UA + Accept + Referer；不要 Origin）。
 - 失败会有限次重连（2 分钟内最多 4 次换新 token）。
+
+## Build 92：可读性优先（默认只显示中文）
+
+用户反馈「观看体验特别差，很难读懂意思」——英文闪一下、碎短句、意思接不上。92：
+
+1. **默认只显示中文**：翻译未完成时保留上一句中文或空白，不再闪英文；设置里可开「显示原文」；
+2. **出字节奏**：默认「更准」——识别碎片先拼成一句（静音约 0.5 s / 标点 / 最多约 3.5 s）再翻译一次；「更快」窗口更短、更碎；
+3. **屏幕上一句中文**：约 ≤28 字 / 1–2 短句，下一句替换，不叠长串；
+4. **Qwen 提示词**面向直播口语/俚语，强制只出简体中文；
+5. 状态条更淡、运行中约 2 秒自动收起（错误仍保留）。
+
+**M1 预估（更准）**：一句说完后约 **2–3.5 秒** 出中文（未真机实测）。最高画质播放未改。
 
 ## Build 91：识别也提速（英文先出）
 

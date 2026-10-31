@@ -23,12 +23,18 @@ struct LiveCaptionLine: Sendable, Equatable, Identifiable {
         self.createdAt = createdAt
     }
 
-    /// Prefer real Chinese; otherwise show interim English so ASR lag is visible/usable ASAP.
-    var displayText: String {
+    /// Prefer real Chinese. English only when `allowEnglish` (「显示原文」or both MT failed).
+    func displayText(allowEnglish: Bool) -> String {
         if LiveCaptionText.isPlausibleChinese(chinese, sourceEnglish: english) {
-            return chinese
+            return LiveCaptionText.fitChineseCaption(chinese)
         }
-        return english
+        if allowEnglish { return english }
+        return ""
+    }
+
+    /// Legacy helper used by accessibility / older call sites — Chinese first, else English.
+    var displayText: String {
+        displayText(allowEnglish: true)
     }
 
     var showsChinese: Bool {
@@ -75,6 +81,8 @@ protocol LiveCaptionRecognizing: Sendable {
     var overlapSamples: Int { get }
     /// Earliest silence-flush size (defaults to ~1.5 s).
     var minFlushSamples: Int { get }
+    /// Trailing silence (samples) that triggers an early flush when ≥ minFlushSamples.
+    var silenceTailSamples: Int { get }
     var displayName: String { get }
     func prepare() async throws
     func transcribe(samples: [Float]) async throws -> String
@@ -84,6 +92,7 @@ extension LiveCaptionRecognizing {
     var chunkSamples: Int { LiveCaptionAudio.chunkSamples }
     var overlapSamples: Int { 0 }
     var minFlushSamples: Int { 16_000 }
+    var silenceTailSamples: Int { Int(0.45 * LiveCaptionAudio.sampleRate) }
     var displayName: String { "Apple 语音识别" }
 }
 
@@ -101,8 +110,6 @@ extension LiveCaptionTranslating {
         try await translate(english)
     }
 }
-
-
 
 /// Heuristics so we never treat an English echo as a successful EN→ZH translation.
 enum LiveCaptionText {
@@ -140,6 +147,43 @@ enum LiveCaptionText {
         if latin > 0 && cjk * 3 < latin { return false }
         return true
     }
+
+    /// Keep on-screen Chinese readable: prefer 1–2 short sentences, ≈≤28 characters.
+    static func fitChineseCaption(_ text: String, maxChars: Int = 28) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+        let breaks = CharacterSet(charactersIn: "。！？!?…")
+        var sentences: [String] = []
+        var current = ""
+        for ch in trimmed {
+            current.append(ch)
+            if String(ch).rangeOfCharacter(from: breaks) != nil {
+                let s = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty { sentences.append(s) }
+                current = ""
+            }
+        }
+        let tail = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty { sentences.append(tail) }
+        if sentences.isEmpty { sentences = [trimmed] }
+
+        var out = sentences[0]
+        if out.count < 12, sentences.count > 1 {
+            let combined = out + sentences[1]
+            if combined.count <= maxChars + 6 { out = combined }
+        }
+        if out.count <= maxChars { return out }
+        let idx = out.index(out.startIndex, offsetBy: maxChars)
+        return String(out[..<idx]) + "…"
+    }
+
+    /// Normalize for duplicate / merge checks.
+    static func normalizeEnglish(_ text: String) -> String {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
 }
 
 /// Removes words repeated because of the window overlap ("... going to" + "to the store" → "the store").
@@ -161,11 +205,147 @@ enum LiveCaptionOverlap {
     }
 }
 
+/// Accumulates short ASR fragments into one utterance before MT (readable Chinese).
+struct LiveCaptionUtteranceAssembler: Sendable {
+    private(set) var english: String = ""
+    private(set) var mediaTime: Double = 0
+    private(set) var startedAt: Date?
+    /// Max wall time to hold fragments before forcing a translate.
+    let maxHold: TimeInterval
+    /// Soft max English characters before flush.
+    let maxChars: Int
+
+    init(pace: LiveCaptionPaceMode) {
+        switch pace {
+        case .accurate:
+            maxHold = 3.5
+            maxChars = 110
+        case .fast:
+            maxHold = 2.0
+            maxChars = 70
+        }
+    }
+
+    var isEmpty: Bool { english.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    mutating func reset() {
+        english = ""
+        mediaTime = 0
+        startedAt = nil
+    }
+
+    /// Append an ASR fragment. Returns a flushed utterance when we should translate now
+    /// (phrase end, max hold, or length). Duplicate / echo fragments are merged away.
+    mutating func append(_ fragment: String, mediaTime: Double, now: Date = Date()) -> (english: String, mediaTime: Double)? {
+        let piece = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !piece.isEmpty else { return nil }
+
+        if english.isEmpty {
+            english = piece
+            self.mediaTime = mediaTime
+            startedAt = now
+        } else {
+            let merged = Self.merge(existing: english, incoming: piece)
+            if merged == english {
+                // Pure duplicate — still check age flush below.
+            } else {
+                english = merged
+            }
+        }
+
+        if LiveCaptionText.looksLikePhraseEnd(english) {
+            return flush()
+        }
+        if english.count >= maxChars {
+            return flush()
+        }
+        if let startedAt, now.timeIntervalSince(startedAt) >= maxHold {
+            return flush()
+        }
+        return nil
+    }
+
+    /// Call when trailing silence is detected after we already have text.
+    mutating func flushOnSilence() -> (english: String, mediaTime: Double)? {
+        guard !isEmpty else { return nil }
+        // Need a little content — skip lone "uh" / one letter.
+        let words = english.split(separator: " ")
+        if words.count <= 1, english.count < 4 { return nil }
+        return flush()
+    }
+
+    mutating func forceFlush() -> (english: String, mediaTime: Double)? {
+        flush()
+    }
+
+    private mutating func flush() -> (english: String, mediaTime: Double)? {
+        let text = english.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = mediaTime
+        reset()
+        guard !text.isEmpty else { return nil }
+        return (text, t)
+    }
+
+    /// Merge overlapping / repeated short cues ("come on" + "come on" → one; "hey" + "hey you" → "hey you").
+    static func merge(existing: String, incoming: String) -> String {
+        let a = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+        let b = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !a.isEmpty else { return b }
+        guard !b.isEmpty else { return a }
+
+        let na = LiveCaptionText.normalizeEnglish(a)
+        let nb = LiveCaptionText.normalizeEnglish(b)
+        if nb.isEmpty { return a }
+        if na == nb { return a }
+        if na.hasSuffix(nb) { return a }
+        if nb.hasPrefix(na), nb.count > na.count { return b }
+        if na.hasPrefix(nb) { return a }
+
+        // Word-level overlap at the boundary.
+        let deduped = LiveCaptionOverlap.dedupe(previous: a, current: b)
+        if deduped.isEmpty { return a }
+        if LiveCaptionText.normalizeEnglish(deduped) == nb || !deduped.isEmpty {
+            let joined = (a + " " + deduped)
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Collapse immediate repeated bigrams ("come on come on").
+            return collapseRepeats(joined)
+        }
+        return collapseRepeats(a + " " + b)
+    }
+
+    private static func collapseRepeats(_ text: String) -> String {
+        let words = text.split(separator: " ").map(String.init)
+        guard words.count >= 2 else { return text }
+        var out: [String] = []
+        var i = 0
+        while i < words.count {
+            // Try 2-word then 1-word repeat.
+            if i + 3 < words.count,
+               words[i].lowercased() == words[i + 2].lowercased(),
+               words[i + 1].lowercased() == words[i + 3].lowercased() {
+                out.append(words[i])
+                out.append(words[i + 1])
+                i += 4
+                continue
+            }
+            if i + 1 < words.count, words[i].lowercased() == words[i + 1].lowercased() {
+                out.append(words[i])
+                i += 2
+                continue
+            }
+            out.append(words[i])
+            i += 1
+        }
+        return out.joined(separator: " ")
+    }
+}
+
 /// PCM helpers used by the live caption pipeline (16 kHz mono Float32).
 enum LiveCaptionAudio {
     static let sampleRate: Double = 16_000
-    /// ~1.75 s windows keep Apple on-device ASR snappy without starving the player.
-    static let chunkSamples = 28_000
+    /// Fallback ~2.0 s window (pace-aware recognizers override).
+    static let chunkSamples = 32_000
     static let silenceRMSThreshold: Float = 0.008
 
     static func isSilent(_ samples: ArraySlice<Float>, threshold: Float = silenceRMSThreshold) -> Bool {

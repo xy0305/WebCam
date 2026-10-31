@@ -18,6 +18,11 @@ final class LiveCaptionController {
     private var lastRoom: Room?
     private var lastStream: ResolvedStream?
 
+    /// Status auto-hide: pin errors / starting; clear quiet "running" after 2 s.
+    @ObservationIgnored private var statusShownAt: Date?
+    @ObservationIgnored private var lastStatusValue = ""
+    private let statusAutoHide: TimeInterval = 2.0
+
     init() {
         showsCaptions = preference.isEnabled
         syncTask = Task { [weak self] in
@@ -182,12 +187,14 @@ final class LiveCaptionController {
         if !enabled {
             overlayLine = nil
             overlayStatus = ""
+            statusShownAt = nil
+            lastStatusValue = ""
             Task { await session.stop(clearText: true) }
             return
         }
         ensureWhisperModel()
         guard let stream else {
-            overlayStatus = "等待播放地址…"
+            publishStatus("等待播放地址…", sticky: true)
             return
         }
         startSession(room: room, stream: stream)
@@ -222,49 +229,97 @@ final class LiveCaptionController {
         showsCaptions = false
         overlayLine = nil
         overlayStatus = ""
+        statusShownAt = nil
+        lastStatusValue = ""
         Task { await session.stop(clearText: true) }
+    }
+
+    private func publishStatus(_ text: String, sticky: Bool) {
+        if text != lastStatusValue {
+            lastStatusValue = text
+            statusShownAt = text.isEmpty ? nil : Date()
+        }
+        if sticky {
+            overlayStatus = text
+            return
+        }
+        guard !text.isEmpty, let shown = statusShownAt else {
+            overlayStatus = text
+            return
+        }
+        if Date().timeIntervalSince(shown) >= statusAutoHide {
+            overlayStatus = ""
+        } else {
+            overlayStatus = text
+        }
     }
 
     private func mirrorSession() async {
         while !Task.isCancelled {
             if showsCaptions {
-                // Mirror ASAP: interim English (chinese == "") then real Chinese when MT lands.
-                // Never keep a fake "chinese" that is just an English echo.
+                let allowEnglish = LiveCaptionPreference.showEnglishSource
                 if let line = session.latest {
-                    if line.showsChinese || line.chinese.isEmpty {
+                    if line.showsChinese {
+                        // Replace with clear Chinese (one cue — no stacking).
                         overlayLine = line
-                    } else if !line.english.isEmpty {
-                        // Bad MT echo — keep showing English interim for this cue.
-                        overlayLine = LiveCaptionLine(
-                            id: line.id,
-                            english: line.english,
-                            chinese: "",
-                            mediaTime: line.mediaTime,
-                            createdAt: line.createdAt
-                        )
+                    } else if allowEnglish, !line.english.isEmpty {
+                        // User opted into 原文 — may show interim English.
+                        overlayLine = line
+                    } else if session.awaitingChinese {
+                        // Hold previous Chinese (or blank). Never flash English while MT is pending.
+                        if overlayLine?.showsChinese != true {
+                            // Keep blank rather than English.
+                            if !(overlayLine?.showsChinese ?? false) {
+                                // If previous was English interim from older build path, clear it.
+                                if let prev = overlayLine, !prev.showsChinese {
+                                    overlayLine = nil
+                                }
+                            }
+                        }
+                    } else if !line.english.isEmpty, allowEnglish {
+                        overlayLine = line
+                    } else if !line.showsChinese {
+                        // Both translators failed and 原文 off — clear fake English.
+                        if let prev = overlayLine, !prev.showsChinese {
+                            overlayLine = nil
+                        }
                     }
-                } else {
+                } else if !session.awaitingChinese {
                     overlayLine = nil
                 }
 
                 let whisper = LiveCaptionModelStore.shared.whisperState(LiveCaptionPreference.whisperModel)
                 let note = session.translationNote
-                if session.phase == .starting || session.phase == .failed {
-                    overlayStatus = session.statusMessage
-                } else if let line = overlayLine, !line.showsChinese, note.isEmpty {
-                    overlayStatus = "翻译中…"
+                let phase = session.phase
+                let sticky: Bool
+                let text: String
+                if phase == .starting || phase == .failed {
+                    text = session.statusMessage
+                    sticky = true
+                } else if let err = session.lastError, !err.isEmpty, overlayLine?.showsChinese != true {
+                    text = err
+                    sticky = true
                 } else if !note.isEmpty {
-                    overlayStatus = note
+                    text = note
+                    sticky = true
+                } else if session.awaitingChinese, overlayLine?.showsChinese != true {
+                    text = "翻译中…"
+                    sticky = false
                 } else if overlayLine == nil {
                     if session.whisperFallback, whisper.isBusy {
-                        overlayStatus = "Whisper \(whisper.label)（暂用 Apple 语音）"
+                        text = "Whisper \(whisper.label)（暂用 Apple 语音）"
+                        sticky = true
                     } else {
-                        overlayStatus = session.statusMessage
+                        text = session.statusMessage
+                        sticky = phase != .running
                     }
                 } else {
+                    // Running with a Chinese cue — briefly show engine note then auto-hide.
                     let status = session.statusMessage
-                    overlayStatus = status.contains("·") ? status : ""
+                    text = status.contains("·") ? status : status
+                    sticky = false
                 }
+                publishStatus(text, sticky: sticky)
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }

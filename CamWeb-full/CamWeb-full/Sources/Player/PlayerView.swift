@@ -209,7 +209,8 @@ struct PlayerView: View {
                 LiveCaptionOverlay(
                     line: liveCaption.overlayLine,
                     statusMessage: liveCaption.overlayStatus,
-                    reduceMotion: reduceMotion
+                    reduceMotion: reduceMotion,
+                    allowEnglish: LiveCaptionPreference.showEnglishSource
                 )
             }
 
