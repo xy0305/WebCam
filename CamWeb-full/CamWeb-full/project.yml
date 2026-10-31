@@ -13,11 +13,14 @@ packages:
   FFmpegKit:
     url: https://github.com/kingslay/FFmpegKit.git
     from: "6.1.4"
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit.git
+    exactVersion: "0.18.0"
 
 settings:
   base:
     MARKETING_VERSION: "1.3.1"
-    CURRENT_PROJECT_VERSION: "85"
+    CURRENT_PROJECT_VERSION: "88"
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1,2"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -39,6 +42,12 @@ targets:
       - framework: Frameworks/Alistlib.xcframework
         embed: true
         codeSign: false
+      # llama.cpp (Qwen on-device translator); CI downloads the official release xcframework.
+      - framework: Frameworks/llama.xcframework
+        embed: true
+        codeSign: false
+      - package: WhisperKit
+        product: WhisperKit
       - package: KSPlayer
         product: KSPlayer
       - package: FFmpegKit
@@ -49,6 +58,8 @@ targets:
         product: Libavcodec
       - package: FFmpegKit
         product: Libavutil
+      - package: FFmpegKit
+        product: Libswresample
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.personal.camweb

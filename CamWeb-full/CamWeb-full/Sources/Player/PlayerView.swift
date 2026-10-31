@@ -33,6 +33,8 @@ struct PlayerView: View {
     @ObservedObject private var favoriteTags = FavoriteTagsStore.shared
     @State private var recommended: [Room] = []
     @State private var awaitingUprightUnlock = false
+    @State private var liveCaption = LiveCaptionController()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var displayRoom: Room {
         if let room { return room }
@@ -130,6 +132,7 @@ struct PlayerView: View {
         .onDisappear {
             PlayerChromeState.isFullscreen = false
             autoHideTask?.cancel()
+            liveCaption.shutdown()
             OrientationLock.set(.portrait, keepLocked: true)
         }
         .sheet(isPresented: $showRoomSwitcher) {
@@ -201,6 +204,16 @@ struct PlayerView: View {
                 controlsLayer(isLandscape: isLandscape, topSafeInset: topSafeInset)
                     .transition(.opacity)
             }
+
+            if liveCaption.showsCaptions {
+                LiveCaptionOverlay(
+                    line: liveCaption.overlayLine,
+                    statusMessage: liveCaption.overlayStatus,
+                    reduceMotion: reduceMotion
+                )
+            }
+
+            LiveCaptionTranslationHost(bridge: liveCaption.translationBridge)
         }
         .frame(height: height)
         .clipped()
@@ -645,6 +658,22 @@ struct PlayerView: View {
                         iconButton("arrow.counterclockwise") {
                             Task { await resolve() }
                         }
+                        Button {
+                            Haptics.selection()
+                            liveCaption.setEnabled(
+                                !liveCaption.showsCaptions,
+                                room: displayRoom,
+                                stream: stream
+                            )
+                            scheduleAutoHide()
+                        } label: {
+                            Image(systemName: liveCaption.showsCaptions ? "character.bubble.fill" : "character.bubble")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(liveCaption.showsCaptions ? AppTheme.accent : .white)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(SoftPress())
+                        .accessibilityLabel(liveCaption.showsCaptions ? "关闭实时翻译" : "开启实时翻译")
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -795,9 +824,15 @@ struct PlayerView: View {
         coordinator.isMaskShow = false
         coordinator.onStateChanged = { layer, state in
             isPlaying = state.isPlaying
-            isBuffering = state == .buffering || state == .preparing
+            let buffering = state == .buffering || state == .preparing
+            isBuffering = buffering
+            liveCaption.handlePlaybackBusy(buffering)
             if state.isPlaying || state == .readyToPlay || state == .paused {
+                let first = !hasStarted
                 hasStarted = true
+                if first, liveCaption.preference.isEnabled {
+                    liveCaption.resumeIfNeeded(room: displayRoom, stream: stream)
+                }
             }
             if state == .readyToPlay {
                 let size = layer.player.naturalSize
@@ -891,6 +926,9 @@ struct PlayerView: View {
         catch { errorText = error.localizedDescription; stream = nil }
         loading = false
         wireCoordinator()
+        if let stream {
+            liveCaption.handleStreamChanged(room: displayRoom, stream: stream)
+        }
         scheduleAutoHide()
     }
 

@@ -3,7 +3,7 @@ name: Build IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, feature/live-caption-en-zh]
 
 permissions:
   contents: write
@@ -55,6 +55,16 @@ jobs:
             -ldflags "-s -w -X 'github.com/alist-org/alist/v3/internal/conf.Version=embedded'" \
             github.com/alist-org/alist/v3/alistlib
           ls -lh "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/Alistlib.xcframework"
+
+      - name: Fetch llama.cpp xcframework
+        env:
+          LLAMA_TAG: b12020
+        run: |
+          curl -fsSL -o llama.zip "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}/llama-${LLAMA_TAG}-xcframework.zip"
+          unzip -q llama.zip -d llama-x
+          rm -rf "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/llama.xcframework"
+          mv llama-x/build-apple/llama.xcframework "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks/"
+          ls "$GITHUB_WORKSPACE/CamWeb-full/CamWeb-full/Frameworks"
 
       - name: Install XcodeGen
         run: brew install xcodegen

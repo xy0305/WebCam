@@ -8,6 +8,10 @@ struct SettingsView: View {
     @ObservedObject private var pan115 = Pan115Session.shared
     @ObservedObject private var nutstore = NutstoreSession.shared
     @ObservedObject private var playback = PlaybackPreferences.shared
+    @ObservedObject private var captionModels = LiveCaptionModelStore.shared
+    @AppStorage(LiveCaptionPreference.asrKey) private var captionASR = LiveCaptionASREngine.whisper.rawValue
+    @AppStorage(LiveCaptionPreference.whisperModelKey) private var captionWhisperModel = LiveCaptionWhisperModel.smallEn.rawValue
+    @AppStorage(LiveCaptionPreference.translatorKey) private var captionTranslator = LiveCaptionTranslatorEngine.qwen.rawValue
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
@@ -29,6 +33,7 @@ struct SettingsView: View {
                 pan115Section
                 nutstoreSection
                 playbackSection
+                liveCaptionSection
                 logoutSection
                 footerSection
             }
@@ -180,6 +185,80 @@ struct SettingsView: View {
         } header: {
             Text("播放与省电")
         }
+    }
+
+    // MARK: - 实时翻译（英 → 中）
+
+    private var liveCaptionSection: some View {
+        Section {
+            Picker("语音识别", selection: $captionASR) {
+                ForEach(LiveCaptionASREngine.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            if captionASR == LiveCaptionASREngine.whisper.rawValue {
+                Picker("Whisper 模型", selection: $captionWhisperModel) {
+                    ForEach(LiveCaptionWhisperModel.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                let model = LiveCaptionWhisperModel(rawValue: captionWhisperModel) ?? .smallEn
+                modelRow(
+                    title: "Whisper 模型状态",
+                    state: captionModels.whisperState(model),
+                    download: { captionModels.downloadWhisper(model) },
+                    cancel: nil,
+                    delete: { captionModels.deleteWhisper(model) }
+                )
+            }
+
+            Picker("翻译引擎", selection: $captionTranslator) {
+                ForEach(LiveCaptionTranslatorEngine.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            if captionTranslator == LiveCaptionTranslatorEngine.qwen.rawValue {
+                modelRow(
+                    title: "Qwen 模型（约 1.1 GB）",
+                    state: captionModels.qwenState,
+                    download: { captionModels.downloadQwen() },
+                    cancel: { captionModels.cancelQwen() },
+                    delete: { captionModels.deleteQwen() }
+                )
+            }
+
+            Text("播放页左下角气泡按钮开关字幕。Whisper 首次开启会自动下载；未就绪时自动用 Apple 语音识别。Qwen 未下载、内存不足或机身过热时自动改用 Apple 翻译（需 iOS 18+，在「设置 → 通用 → 语言与地区 → 翻译语言」下载英语和简体中文）。字幕走独立音频，不影响最高画质播放。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("实时翻译（英 → 中）")
+        }
+    }
+
+    @ViewBuilder
+    private func modelRow(
+        title: String,
+        state: LiveCaptionModelStore.State,
+        download: @escaping () -> Void,
+        cancel: (() -> Void)?,
+        delete: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(state.label)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            switch state {
+            case .downloading(let p):
+                ProgressView(value: p)
+                if let cancel { Button("取消下载", role: .cancel, action: cancel).font(.footnote) }
+            case .preparing:
+                ProgressView()
+            case .ready:
+                Button("删除模型", role: .destructive, action: delete).font(.footnote)
+            case .notDownloaded, .failed:
+                Button("下载", action: download).font(.footnote)
+            }
+        }
+        .buttonStyle(.borderless)
     }
 
     private var nutstoreSection: some View {
