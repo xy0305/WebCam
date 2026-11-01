@@ -8,6 +8,13 @@ struct SettingsView: View {
     @ObservedObject private var pan115 = Pan115Session.shared
     @ObservedObject private var nutstore = NutstoreSession.shared
     @ObservedObject private var playback = PlaybackPreferences.shared
+    @ObservedObject private var captionModels = LiveCaptionModelStore.shared
+    @AppStorage(LiveCaptionPreference.asrKey) private var captionASR = LiveCaptionASREngine.whisper.rawValue
+    @AppStorage(LiveCaptionPreference.whisperModelKey) private var captionWhisperModel = LiveCaptionWhisperModel.smallEn.rawValue
+    @AppStorage(LiveCaptionPreference.translatorKey) private var captionTranslator = LiveCaptionTranslatorEngine.apple.rawValue
+    @AppStorage(LiveCaptionPreference.paceKey) private var captionPace = LiveCaptionPaceMode.accurate.rawValue
+    @AppStorage(LiveCaptionPreference.showEnglishKey) private var captionShowEnglish = false
+    @AppStorage(RoomFilterPreferences.hideMaleKey) private var hideMaleRooms = true
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
@@ -28,7 +35,9 @@ struct SettingsView: View {
                 pandaSection
                 pan115Section
                 nutstoreSection
+                roomFilterSection
                 playbackSection
+                liveCaptionSection
                 logoutSection
                 footerSection
             }
@@ -168,6 +177,17 @@ struct SettingsView: View {
         }
     }
 
+    private var roomFilterSection: some View {
+        Section {
+            Toggle("只看女主播和情侣", isOn: $hideMaleRooms)
+            Text("按站点自带的主播类型过滤：隐藏男主播和跨性别房间，只显示女主播和情侣。作用于频道、搜索、关注和推荐列表，即时生效。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("房间过滤")
+        }
+    }
+
     private var playbackSection: some View {
         Section {
             Toggle("浏览省电", isOn: $playback.coolBrowsing)
@@ -180,6 +200,97 @@ struct SettingsView: View {
         } header: {
             Text("播放与省电")
         }
+    }
+
+    // MARK: - 实时翻译（英 → 中）
+
+    private var liveCaptionSection: some View {
+        Section {
+            Picker("出字节奏", selection: $captionPace) {
+                ForEach(LiveCaptionPaceMode.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            Text((LiveCaptionPaceMode(rawValue: captionPace) ?? .accurate).subtitle)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Toggle("显示原文（英文）", isOn: $captionShowEnglish)
+            Text("默认只显示中文，不等待翻译时也不闪英文。打开后可在「更快」模式下预览英文。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Picker("语音识别", selection: $captionASR) {
+                ForEach(LiveCaptionASREngine.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            if captionASR == LiveCaptionASREngine.whisper.rawValue {
+                Picker("Whisper 模型", selection: $captionWhisperModel) {
+                    ForEach(LiveCaptionWhisperModel.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                let model = LiveCaptionWhisperModel(rawValue: captionWhisperModel) ?? .smallEn
+                modelRow(
+                    title: "Whisper 模型状态",
+                    state: captionModels.whisperState(model),
+                    download: { captionModels.downloadWhisper(model) },
+                    cancel: nil,
+                    delete: { captionModels.deleteWhisper(model) }
+                )
+            }
+
+            Picker("翻译引擎", selection: $captionTranslator) {
+                ForEach(LiveCaptionTranslatorEngine.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            if captionTranslator == LiveCaptionTranslatorEngine.apple.rawValue {
+                Text("推荐。请确认已下载英语和简体中文语言包：设置 → App → 翻译 → 语言（或打开系统「翻译」App）。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if captionTranslator == LiveCaptionTranslatorEngine.qwen.rawValue {
+                modelRow(
+                    title: "Qwen 模型（约 1.1 GB）",
+                    state: captionModels.qwenState,
+                    download: { captionModels.downloadQwen() },
+                    cancel: { captionModels.cancelQwen() },
+                    delete: { captionModels.deleteQwen() }
+                )
+            }
+
+            Text("播放页左下角气泡按钮开关字幕。默认「更准」+ Apple 翻译：凑齐短句再翻成中文。Whisper 识别默认；未就绪时用 Apple 语音识别。识别端会过滤背景音乐/歌词，少把 BGM 翻成字幕。Apple 翻译需 iOS 18+，语言包在「设置 → App → 翻译 → 语言」下载英语和简体中文。Qwen 为可选本机大模型。字幕走独立音频，不影响最高画质播放。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("实时翻译（英 → 中）")
+        }
+    }
+
+    @ViewBuilder
+    private func modelRow(
+        title: String,
+        state: LiveCaptionModelStore.State,
+        download: @escaping () -> Void,
+        cancel: (() -> Void)?,
+        delete: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(state.label)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            switch state {
+            case .downloading(let p):
+                ProgressView(value: p)
+                if let cancel { Button("取消下载", role: .cancel, action: cancel).font(.footnote) }
+            case .preparing:
+                ProgressView()
+            case .ready:
+                Button("删除模型", role: .destructive, action: delete).font(.footnote)
+            case .notDownloaded, .failed:
+                Button("下载", action: download).font(.footnote)
+            }
+        }
+        .buttonStyle(.borderless)
     }
 
     private var nutstoreSection: some View {

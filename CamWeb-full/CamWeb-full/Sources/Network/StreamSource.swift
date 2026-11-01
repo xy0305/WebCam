@@ -219,6 +219,15 @@ enum StreamSource {
         throw last
     }
 
+    /// Caption-only: mint a brand-new Chaturbate edge master URL **without** calling
+    /// `HLSMaster.lock`. Lock GETs the master once to build the highest-quality mini playlist,
+    /// which burns Chaturbate's single-use token (`session_duplicated` / HTTP 403 on reuse).
+    /// LiveCaptionSession then fetches this unused master exactly once and opens the audio
+    /// media playlist. Does not touch the player's quality lock / max-quality path.
+    static func mintCaptionMaster(username: String) async throws -> URL {
+        try await fetchMaster(username: username)
+    }
+
     /// 依次尝试 ajax 与 chatvideocontext，返回官方 master URL
     private static func fetchMaster(username: String) async throws -> URL {
         if let url = await fromAjax(username: username) {

@@ -52,6 +52,18 @@ struct Room: Decodable, Identifiable, Hashable {
         }
     }
 
+    /// 「只看女主播和情侣」要隐藏的房间：单人男主播或跨性别。只看接口元数据，不做图像识别。
+    /// Chaturbate: m / f / c / s / t；Stripchat: male / female / maleFemale / femaleFemale / maleMale / tranny / trans* 等。
+    /// 女主播、情侣（含 maleMale、femaleFemale）保留；任何含跨性别的类型隐藏；未知类型保留。
+    var isHiddenByGenderFilter: Bool {
+        guard let g = gender?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !g.isEmpty else {
+            return false
+        }
+        if g == "m" || g == "male" || g == "men" { return true }
+        if g == "s" || g == "t" || g.contains("tran") { return true }
+        return false
+    }
+
     var thumb: URL? {
         if let imageURL, let u = URL(string: imageURL) { return u }
         if platform == .stripchat, let id = platformRoomID {
@@ -140,6 +152,7 @@ struct Room: Decodable, Identifiable, Hashable {
         imageURL: String? = nil,
         tags: [String]? = nil,
         presets: [String]? = nil,
+        gender: String? = nil,
         loadState: CardLoadState = .live
     ) {
         self.platform = platform
@@ -152,7 +165,7 @@ struct Room: Decodable, Identifiable, Hashable {
         self.imageURL = imageURL
         currentShow = nil
         isHD = nil
-        gender = nil
+        self.gender = gender
         self.tags = tags
         self.loadState = loadState
     }
@@ -168,6 +181,7 @@ struct Room: Decodable, Identifiable, Hashable {
             imageURL: live.imageURL ?? imageURL,
             tags: live.tags ?? tags,
             presets: live.presets ?? presets,
+            gender: live.gender ?? gender,
             loadState: live.loadState
         )
     }

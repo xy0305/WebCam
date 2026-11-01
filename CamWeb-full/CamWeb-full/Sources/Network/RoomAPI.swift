@@ -200,7 +200,8 @@ enum RoomAPI {
                 username: name,
                 displayName: (item["display_name"] as? String) ?? name,
                 roomSubject: (item["room_subject"] as? String) ?? (item["room_title"] as? String),
-                numUsers: viewers
+                numUsers: viewers,
+                gender: item["gender"] as? String
             ))
         }
         return out

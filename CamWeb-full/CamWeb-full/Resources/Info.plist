@@ -85,6 +85,8 @@
 	<string>Broadcasting from the website requires camera access.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Broadcasting from the website requires microphone access.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>实时翻译需要语音识别，把直播里的英语转成文字后再翻译成中文。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>读取相册以上传到 115。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

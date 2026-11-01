@@ -11,6 +11,9 @@ struct SearchView: View {
     @State private var editingHistory = false
     @State private var historyExpanded = false
     @FocusState private var searchFocused: Bool
+    @AppStorage(RoomFilterPreferences.hideMaleKey) private var hideMaleRooms = true
+
+    private var visibleResults: [Room] { results.hidingMaleRooms(hideMaleRooms) }
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: 160), spacing: AppTheme.gridSpacing)]
@@ -31,7 +34,7 @@ struct SearchView: View {
                     VStack(spacing: 18) {
                         if !history.items.isEmpty { historySection }
 
-                        if results.isEmpty && !searching {
+                        if visibleResults.isEmpty && !searching {
                             ContentUnavailableView {
                                 Label(errorText == nil ? "搜索主播" : "没有结果",
                                       systemImage: errorText == nil ? "magnifyingglass" : "person.slash")
@@ -41,7 +44,7 @@ struct SearchView: View {
                             .padding(.top, history.items.isEmpty ? 72 : 20)
                         } else {
                             LazyVGrid(columns: columns, spacing: 14) {
-                                ForEach(results) { room in
+                                ForEach(visibleResults) { room in
                                     Button {
                                         searchFocused = false
                                         Haptics.tap()

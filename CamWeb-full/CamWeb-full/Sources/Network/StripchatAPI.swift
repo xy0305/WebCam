@@ -53,7 +53,8 @@ enum StripchatAPI {
                 numUsers: viewersCount,
                 imageURL: cover,
                 tags: tags.isEmpty ? nil : tags,
-                presets: presets
+                presets: presets,
+                gender: gender
             )
         }
     }
