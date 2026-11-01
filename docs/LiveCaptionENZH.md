@@ -133,3 +133,8 @@
 
 - 移除 Build 94 的搜索页「打开地址」（粘贴 RTMP / HLS）入口及其独立播放器、`.direct` 平台；其它 KSPlayer 播放路径与最高画质逻辑不变。
 - 设置 →「房间过滤」→「隐藏男主播房间」（默认开）：按站点自带的主播类型字段过滤（Chaturbate `gender == "m"`，Stripchat `gender == "male"`），只隐藏单人男主播；情侣 / 女 / 跨性别保留。作用于频道列表、搜索结果、关注列表与播放页推荐。PandaTV 接口没有类型字段，不过滤。不做图像识别。
+
+## Build 96：只看女主播和情侣
+
+- 开关改名为 设置 →「房间过滤」→「只看女主播和情侣」（默认开，沿用 `camweb.hideMaleRooms`）。
+- 隐藏：单人男（Chaturbate `m` / Stripchat `male`）与跨性别（Chaturbate `s`/`t`，Stripchat 任何含 `tran` 的类型）。保留：女、情侣（含 Stripchat `maleFemale` / `femaleFemale` / `maleMale`）、未知类型。

@@ -52,14 +52,16 @@ struct Room: Decodable, Identifiable, Hashable {
         }
     }
 
-    /// 站点自带的主播类型是否为「单人男主播」。只看接口元数据，不做图像识别。
-    /// Chaturbate: m / f / c / s(t)；Stripchat: male / female / maleFemale / maleMale / trans 等。
-    /// 只隐藏单人男（m / male），情侣、女、跨性别都保留；未知类型不隐藏。
-    var isMaleRoom: Bool {
+    /// 「只看女主播和情侣」要隐藏的房间：单人男主播或跨性别。只看接口元数据，不做图像识别。
+    /// Chaturbate: m / f / c / s / t；Stripchat: male / female / maleFemale / femaleFemale / maleMale / tranny / trans* 等。
+    /// 女主播、情侣（含 maleMale、femaleFemale）保留；任何含跨性别的类型隐藏；未知类型保留。
+    var isHiddenByGenderFilter: Bool {
         guard let g = gender?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !g.isEmpty else {
             return false
         }
-        return g == "m" || g == "male" || g == "men"
+        if g == "m" || g == "male" || g == "men" { return true }
+        if g == "s" || g == "t" || g.contains("tran") { return true }
+        return false
     }
 
     var thumb: URL? {

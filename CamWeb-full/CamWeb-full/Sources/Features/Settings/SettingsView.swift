@@ -179,8 +179,8 @@ struct SettingsView: View {
 
     private var roomFilterSection: some View {
         Section {
-            Toggle("隐藏男主播房间", isOn: $hideMaleRooms)
-            Text("按站点自带的主播类型过滤：只隐藏单人男主播；情侣、女主播、跨性别照常显示。作用于频道、搜索、关注和推荐列表，即时生效。")
+            Toggle("只看女主播和情侣", isOn: $hideMaleRooms)
+            Text("按站点自带的主播类型过滤：隐藏男主播和跨性别房间，只显示女主播和情侣。作用于频道、搜索、关注和推荐列表，即时生效。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } header: {
