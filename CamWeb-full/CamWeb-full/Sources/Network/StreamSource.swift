@@ -193,20 +193,6 @@ enum StreamSource {
     static func resolve(room: Room) async throws -> ResolvedStream {
         if room.platform == .stripchat { return try await StripchatStreamSource.resolve(room: room) }
         if room.platform == .panda { return try await PandaStreamSource.resolve(room: room) }
-        if room.platform == .direct {
-            guard let subject = room.roomSubject, let url = DirectStreamURL.parse(subject) else {
-                throw StreamSourceError.badResponse
-            }
-            return ResolvedStream(
-                username: room.username,
-                requestContext: HLSRequestContext(referer: "", origin: nil),
-                hlsURL: url,
-                masterURL: url,
-                videoPlaylist: url,
-                audioPlaylist: nil,
-                status: "direct"
-            )
-        }
         return try await resolve(username: room.username)
     }
 

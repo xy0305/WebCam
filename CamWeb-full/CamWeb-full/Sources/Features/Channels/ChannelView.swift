@@ -18,7 +18,7 @@ struct ChannelView: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Picker("平台", selection: $platform) {
-                            ForEach(CamPlatform.browsable, id: \.self) { Text($0.title).tag($0) }
+                            ForEach(CamPlatform.allCases, id: \.self) { Text($0.title).tag($0) }
                         }
                         .pickerStyle(.menu)
                     }
@@ -62,6 +62,7 @@ struct ChannelListPage: View {
     @State private var searchText = ""
     @State private var localGender: String = ""
     @State private var requestGeneration = 0
+    @AppStorage(RoomFilterPreferences.hideMaleKey) private var hideMaleRooms = true
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: 160), spacing: AppTheme.gridSpacing)]
@@ -69,8 +70,9 @@ struct ChannelListPage: View {
 
     var filtered: [Room] {
         let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return rooms }
-        return rooms.filter { $0.username.contains(q) || $0.title.lowercased().contains(q) }
+        let visible = rooms.hidingMaleRooms(hideMaleRooms)
+        guard !q.isEmpty else { return visible }
+        return visible.filter { $0.username.contains(q) || $0.title.lowercased().contains(q) }
     }
 
     var body: some View {
@@ -167,7 +169,7 @@ struct ChannelListPage: View {
                                 .buttonStyle(SoftPress())
                                 .staggerAppear(index: index, enabled: index < 6)
                                 .onAppear {
-                                    if room.id == rooms.last?.id { Task { await loadMore() } }
+                                    if room.id == filtered.last?.id { Task { await loadMore() } }
                                 }
                             }
                         }

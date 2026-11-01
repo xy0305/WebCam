@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(LiveCaptionPreference.translatorKey) private var captionTranslator = LiveCaptionTranslatorEngine.apple.rawValue
     @AppStorage(LiveCaptionPreference.paceKey) private var captionPace = LiveCaptionPaceMode.accurate.rawValue
     @AppStorage(LiveCaptionPreference.showEnglishKey) private var captionShowEnglish = false
+    @AppStorage(RoomFilterPreferences.hideMaleKey) private var hideMaleRooms = true
     @State private var showChaturbateLogin = false
     @State private var showStripchatLogin = false
     @State private var showPandaLogin = false
@@ -34,6 +35,7 @@ struct SettingsView: View {
                 pandaSection
                 pan115Section
                 nutstoreSection
+                roomFilterSection
                 playbackSection
                 liveCaptionSection
                 logoutSection
@@ -172,6 +174,17 @@ struct SettingsView: View {
             }
             Text("对照 alist-ios：App 内嵌 Alist，本机 5244 挂 115。Cookie 需含 UID、CID、SEID。不用填外部地址。")
                 .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private var roomFilterSection: some View {
+        Section {
+            Toggle("隐藏男主播房间", isOn: $hideMaleRooms)
+            Text("按站点自带的主播类型过滤：只隐藏单人男主播；情侣、女主播、跨性别照常显示。作用于频道、搜索、关注和推荐列表，即时生效。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("房间过滤")
         }
     }
 

@@ -163,8 +163,6 @@ enum RoomAPI {
                         let live = hits.first { $0.username.caseInsensitiveCompare(room.username) == .orderedSame }
                             ?? hits.first
                         return (key, live)
-                    case .direct:
-                        return (key, nil)
                     }
                 }
                 inflight += 1
@@ -202,7 +200,8 @@ enum RoomAPI {
                 username: name,
                 displayName: (item["display_name"] as? String) ?? name,
                 roomSubject: (item["room_subject"] as? String) ?? (item["room_title"] as? String),
-                numUsers: viewers
+                numUsers: viewers,
+                gender: item["gender"] as? String
             ))
         }
         return out

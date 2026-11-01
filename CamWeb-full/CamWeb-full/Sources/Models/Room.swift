@@ -1,15 +1,12 @@
 import Foundation
 
 enum CamPlatform: String, Codable, Hashable, CaseIterable {
-    case chaturbate, stripchat, panda, direct
-    /// Platforms shown in the channel picker (excludes paste-only `.direct`).
-    static var browsable: [CamPlatform] { [.chaturbate, .stripchat, .panda] }
+    case chaturbate, stripchat, panda
     var title: String {
         switch self {
         case .chaturbate: return "Chaturbate"
         case .stripchat: return "Stripchat"
         case .panda: return "PandaTV"
-        case .direct: return "打开地址"
         }
     }
 }
@@ -55,8 +52,17 @@ struct Room: Decodable, Identifiable, Hashable {
         }
     }
 
+    /// 站点自带的主播类型是否为「单人男主播」。只看接口元数据，不做图像识别。
+    /// Chaturbate: m / f / c / s(t)；Stripchat: male / female / maleFemale / maleMale / trans 等。
+    /// 只隐藏单人男（m / male），情侣、女、跨性别都保留；未知类型不隐藏。
+    var isMaleRoom: Bool {
+        guard let g = gender?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !g.isEmpty else {
+            return false
+        }
+        return g == "m" || g == "male" || g == "men"
+    }
+
     var thumb: URL? {
-        if platform == .direct { return nil }
         if let imageURL, let u = URL(string: imageURL) { return u }
         if platform == .stripchat, let id = platformRoomID {
             return URL(string: "https://img.doppiocdn.com/thumbs/\(id)/\(id)")
@@ -72,9 +78,6 @@ struct Room: Decodable, Identifiable, Hashable {
             return URL(string: "https://www.pandalive.co.kr/play/\(username)")
         case .chaturbate:
             return URL(string: "https://chaturbate.com/\(username)/")
-        case .direct:
-            if let roomSubject, let u = DirectStreamURL.parse(roomSubject) { return u }
-            return nil
         }
     }
 
@@ -147,19 +150,20 @@ struct Room: Decodable, Identifiable, Hashable {
         imageURL: String? = nil,
         tags: [String]? = nil,
         presets: [String]? = nil,
+        gender: String? = nil,
         loadState: CardLoadState = .live
     ) {
         self.platform = platform
         self.platformRoomID = platformRoomID
         self.presets = presets
-        self.username = (platform == .panda || platform == .direct) ? username : username.lowercased()
+        self.username = platform == .panda ? username : username.lowercased()
         self.displayName = displayName ?? username
         self.roomSubject = roomSubject
         self.numUsers = numUsers
         self.imageURL = imageURL
         currentShow = nil
         isHD = nil
-        gender = nil
+        self.gender = gender
         self.tags = tags
         self.loadState = loadState
     }
@@ -175,6 +179,7 @@ struct Room: Decodable, Identifiable, Hashable {
             imageURL: live.imageURL ?? imageURL,
             tags: live.tags ?? tags,
             presets: live.presets ?? presets,
+            gender: live.gender ?? gender,
             loadState: live.loadState
         )
     }

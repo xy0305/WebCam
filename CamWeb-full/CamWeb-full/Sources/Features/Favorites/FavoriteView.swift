@@ -18,6 +18,7 @@ struct FavoriteView: View {
     @State private var heat: [String: Room] = [:]
     @State private var syncing = false
     @State private var syncMessage: String?
+    @AppStorage(RoomFilterPreferences.hideMaleKey) private var hideMaleRooms = true
 
     private var columns: [GridItem] { [GridItem(.adaptive(minimum: 160), spacing: AppTheme.gridSpacing)] }
     private var rooms: [Room] {
@@ -27,10 +28,11 @@ struct FavoriteView: View {
         case .favorites: base = special.items.map(\.room)
         case .following: base = mergedFollows
         }
-        return base.map { room in
+        let merged = base.map { room in
             if let live = heat[room.id] { return room.withHeat(live) }
             return room
         }
+        return selected == .following ? merged.hidingMaleRooms(hideMaleRooms) : merged
     }
     private var emptyText: String {
         switch selected {

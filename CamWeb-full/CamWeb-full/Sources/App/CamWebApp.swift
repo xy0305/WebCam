@@ -147,7 +147,6 @@ final class AppState: ObservableObject {
     @Published var playing115Title: String = ""
     @Published var playing115ImageURL: URL?
     @Published var playing115FFmpeg = false
-    @Published var playingDirectURL: URL?
 
     private init() {
         acceptedAge = UserDefaults.standard.bool(forKey: "camweb.age")
@@ -192,7 +191,6 @@ final class AppState: ObservableObject {
         playing115Title = ""
         playing115ImageURL = nil
         playing115FFmpeg = false
-        playingDirectURL = nil
         playingUsername = username
         if let room {
             playingRoom = room
@@ -211,7 +209,6 @@ final class AppState: ObservableObject {
         playing115URL = nil
         playing115ImageURL = nil
         playing115FFmpeg = false
-        playingDirectURL = nil
         playingRecordingURL = url
     }
 
@@ -221,7 +218,6 @@ final class AppState: ObservableObject {
         playingRoom = nil
         playingRecordingURL = nil
         playing115ImageURL = nil
-        playingDirectURL = nil
         playing115Title = title
         playing115FFmpeg = ffmpeg
         playing115URL = url
@@ -234,23 +230,8 @@ final class AppState: ObservableObject {
         playingRecordingURL = nil
         playing115URL = nil
         playing115FFmpeg = false
-        playingDirectURL = nil
         playing115Title = title
         playing115ImageURL = url
-    }
-
-    /// Paste-only RTMP / HLS / media. Does not scrape rooms or touch plugin quality lock.
-    func openDirectURL(_ url: URL) {
-        stopMini()
-        playingUsername = nil
-        playingRoom = nil
-        playingRecordingURL = nil
-        playing115URL = nil
-        playing115ImageURL = nil
-        playing115FFmpeg = false
-        playing115Title = ""
-        playingDirectURL = url
-        PastedURLStore.shared.record(url.absoluteString)
     }
 
     func closePlayer() {
@@ -261,7 +242,6 @@ final class AppState: ObservableObject {
         playing115ImageURL = nil
         playing115FFmpeg = false
         playing115Title = ""
-        playingDirectURL = nil
     }
 
     func openTag(_ tag: String) {
