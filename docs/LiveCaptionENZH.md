@@ -128,3 +128,11 @@
 - [ ] 关闭开关字幕立刻消失，播放不卡顿，画质仍是最高档
 - [ ] Chaturbate：开启后约 5–8 秒出字幕，播放器不黑屏
 - [ ] 拒绝语音识别权限时有可读错误提示
+
+## Build 94：粘贴 RTMP / HLS 地址播放
+
+搜索页新增「打开地址」：粘贴 `rtmp://` / `rtmps://` / `http(s)` `.m3u8` 或普通媒体地址即可播放（最近 10 条可快速重开）。
+
+- **播放**：独立 `DirectStreamPlayerView`；RTMP 走 KSPlayer FFmpeg（`rw_timeout` / `listen_timeout=-1`）；HLS 走 AVPlayer。**不走**插件 `HLSMaster.lock` 最高画质路径。
+- **实时翻译**：粘贴的 **HLS** 可开字幕；**RTMP** 暂不支持 demux 字幕，界面提示「RTMP 暂不支持实时翻译（可正常播放）」，不挡播放。
+- **不做**：不抓取多彩 / hebeisaixin 房间列表，只播用户粘贴的地址。

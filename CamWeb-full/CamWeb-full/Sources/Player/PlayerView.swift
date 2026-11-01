@@ -810,6 +810,19 @@ struct PlayerView: View {
             if let cookie = PandaSession.shared.cookieHeader {
                 o.appendHeader(["Cookie": cookie])
             }
+        } else if displayRoom.platform == .direct {
+            // Paste-only: play URL as-is. RTMP uses FFmpeg; HLS uses AVPlayer. No max-quality lock.
+            if let u = stream?.hlsURL, DirectStreamURL.needsFFmpeg(u) {
+                KSOptions.firstPlayerType = KSMEPlayer.self
+                KSOptions.secondPlayerType = KSAVPlayer.self
+                o.formatContextOptions["rw_timeout"] = 15_000_000
+                o.formatContextOptions["timeout"] = 15_000_000
+                o.formatContextOptions["listen_timeout"] = -1
+            } else {
+                KSOptions.firstPlayerType = KSAVPlayer.self
+                KSOptions.secondPlayerType = KSMEPlayer.self
+                o.appendHeader(APIClient.commonHeaders)
+            }
         } else {
             o.appendHeader(APIClient.commonHeaders)
         }
@@ -907,6 +920,7 @@ struct PlayerView: View {
         case .stripchat: return await StripchatAPI.fetchRecommended(excluding: username)
         case .panda: return await PandaAPI.fetchRecommended(excluding: username)
         case .chaturbate: return await RoomAPI.fetchRecommended(username: username)
+        case .direct: return []
         }
     }
 
@@ -920,6 +934,8 @@ struct PlayerView: View {
                 stream = try await StripchatStreamSource.resolve(room: displayRoom)
             } else if displayRoom.platform == .panda {
                 stream = try await PandaStreamSource.resolve(room: displayRoom)
+            } else if displayRoom.platform == .direct {
+                stream = try await StreamSource.resolve(room: displayRoom)
             } else {
                 stream = try await StreamSource.resolve(username: username)
             }

@@ -18,7 +18,7 @@ struct ChannelView: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Picker("平台", selection: $platform) {
-                            ForEach(CamPlatform.allCases, id: \.self) { Text($0.title).tag($0) }
+                            ForEach(CamPlatform.browsable, id: \.self) { Text($0.title).tag($0) }
                         }
                         .pickerStyle(.menu)
                     }

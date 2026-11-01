@@ -81,6 +81,11 @@ final class LiveCaptionController {
             return (h, PandaAPI.userAgent)
         case .chaturbate:
             return (APIClient.hlsHeaders, APIClient.userAgent)
+        case .direct:
+            return ([
+                "User-Agent": APIClient.userAgent,
+                "Accept": "*/*",
+            ], APIClient.userAgent)
         }
     }
 
@@ -154,6 +159,12 @@ final class LiveCaptionController {
                 case .chaturbate:
                     headers = APIClient.hlsHeaders
                     ua = APIClient.userAgent
+                case .direct:
+                    headers = [
+                        "User-Agent": APIClient.userAgent,
+                        "Accept": "*/*",
+                    ]
+                    ua = APIClient.userAgent
                 }
                 // Reusable playlists: prefer audio media URI when resolve already extracted it;
                 // otherwise the master / video playlist (session will classify).
@@ -169,6 +180,24 @@ final class LiveCaptionController {
                     url: url,
                     headers: headers,
                     userAgent: ua,
+                    requiresFreshPlaylist: false
+                )
+            case .direct:
+                // Paste-only URL: reuse the same address; never mint plugin tokens.
+                let url: URL
+                if let subject = room.roomSubject, let parsed = DirectStreamURL.parse(subject) {
+                    url = parsed
+                } else {
+                    return nil
+                }
+                guard DirectStreamURL.supportsLiveCaption(url) else { return nil }
+                return LiveCaptionSource(
+                    url: url,
+                    headers: [
+                        "User-Agent": APIClient.userAgent,
+                        "Accept": "*/*",
+                    ],
+                    userAgent: APIClient.userAgent,
                     requiresFreshPlaylist: false
                 )
             }
